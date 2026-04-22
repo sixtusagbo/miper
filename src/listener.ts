@@ -13,7 +13,11 @@ export interface NewPool {
   timestamp: number;
 }
 
-const INIT_KEYWORDS = ['initialize2', 'Initialize2', 'init_pc_amount', 'ray_log'];
+// `ray_log` is intentionally excluded: it appears in every Raydium log (swaps,
+// deposits, everything) and matching it turns every Raydium transaction into
+// an expensive getParsedTransaction call. The three keywords below are
+// specific to pool initialization.
+const INIT_KEYWORDS = ['initialize2', 'Initialize2', 'init_pc_amount'];
 export const SEEN_LIMIT = 5000;
 const LAMPORTS_PER_SOL = 1_000_000_000;
 

@@ -17,11 +17,15 @@ beforeEach(() => {
 });
 
 describe('isInitLog', () => {
-  it('matches any of the expected init keywords', () => {
+  it('matches init-specific keywords', () => {
     expect(isInitLog(['Program log: initialize2 success'])).toBe(true);
     expect(isInitLog(['Program log: Initialize2'])).toBe(true);
     expect(isInitLog(['Program log: init_pc_amount: 1000'])).toBe(true);
-    expect(isInitLog(['Program log: ray_log: init'])).toBe(true);
+  });
+
+  it('does NOT match ray_log alone (appears in every Raydium tx)', () => {
+    expect(isInitLog(['Program log: ray_log: A1B2C3'])).toBe(false);
+    expect(isInitLog(['Program log: Instruction: Swap', 'Program log: ray_log: xyz'])).toBe(false);
   });
 
   it('returns false when no message contains a keyword', () => {

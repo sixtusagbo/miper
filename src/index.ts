@@ -22,6 +22,14 @@ import { PoolListener } from './listener';
 import { analyzeToken } from './analyzer';
 import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } from './trader';
 import { startMonitoring, stopMonitoring } from './positions';
+import { InflightGate, withTimeout } from './concurrency';
+
+// Cap concurrent analyses. Free-tier RPCs (Helius: 10 req/s) survive easily
+// with this limit since each analysis makes ~3 RPC calls.
+const MAX_CONCURRENT_ANALYSES = 3;
+// Hard cap on a single pool's analyze pipeline (DexScreener + RPC + Claude).
+// If Claude is slow or DexScreener hangs, we give up rather than stall.
+const ANALYSIS_TIMEOUT_MS = 20_000;
 
 function printBanner(): void {
   const cfg = loadConfig();
@@ -59,8 +67,15 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
     wsEndpoint: cfg.solanaWsUrl,
   });
   const listener = new PoolListener(connection);
+  const gate = new InflightGate(MAX_CONCURRENT_ANALYSES);
 
   listener.on('newPool', async (pool) => {
+    if (!gate.tryAcquire()) {
+      logger.debug(
+        `analyzer busy (${gate.inflight}/${gate.capacity} in-flight), skipping ${pool.tokenMint}`
+      );
+      return;
+    }
     try {
       if (isTokenKnown(pool.tokenMint)) {
         logger.debug(`already seen ${pool.tokenMint}, skipping`);
@@ -72,7 +87,11 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
       }
 
       logger.info(`analyzing ${pool.tokenMint}...`);
-      const analysis = await analyzeToken(connection, pool, cfg);
+      const analysis = await withTimeout(
+        analyzeToken(connection, pool, cfg),
+        ANALYSIS_TIMEOUT_MS,
+        `analyze ${pool.tokenMint}`
+      );
 
       if (!analysis.shouldBuy) {
         logger.info(
@@ -124,6 +143,8 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
       });
     } catch (err) {
       logger.error(`newPool handler failed: ${(err as Error).message}`);
+    } finally {
+      gate.release();
     }
   });
 

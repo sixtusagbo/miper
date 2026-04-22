@@ -17,7 +17,12 @@ Required env:
 
 - `ANTHROPIC_API_KEY` - from https://console.anthropic.com
 - `WALLET_PRIVATE_KEY` - base58-encoded Solana private key (Phantom / Solflare export)
-- `SOLANA_RPC_URL` / `SOLANA_WS_URL` - public endpoints work for testing, but use Helius or QuickNode for production latency
+- `SOLANA_RPC_URL` / `SOLANA_WS_URL` - the public `api.mainnet-beta.solana.com` endpoint will 429 on almost every call. Use a dedicated RPC. Helius free tier (1M credits/month, 10 req/s) is enough for paper trading:
+   ```
+   SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+   SOLANA_WS_URL=wss://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+   ```
+   miper caps concurrent analyses at 3 and each makes ~3 RPC calls, so it stays comfortably under the 10 req/s ceiling.
 
 See `.env.example` for the full list.
 
