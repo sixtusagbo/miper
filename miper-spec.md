@@ -540,6 +540,21 @@ When `SIMULATE=true`:
 
 This lets Sixtus validate the strategy with real market data before risking any SOL.
 
+### Paper-trading plan
+
+Before flipping `SIMULATE=false`, paper-trade continuously for **at least 3-7 days**. Minimum useful: 4-6 hours/day during active trading hours (roughly 13:00-04:00 UTC when the US crowd is trading Solana memecoins), for 5+ days.
+
+Starting capital to simulate: **1 SOL**. With `BUY_AMOUNT_SOL=0.05` and `MAX_OPEN_POSITIONS=10`, peak exposure is 0.5 SOL (10 open positions × 0.05). Going smaller than 1 SOL forces the BUY_AMOUNT_SOL down and makes TP/SL math noisier.
+
+Config `SIMULATED_STARTING_SOL` (default `1.0`) controls the virtual starting balance. `miper status` shows `% return` against it in simulation mode so the user can see whether the strategy grew the paper bag.
+
+Signals the strategy is ready for live mode:
+- At least 20 completed (closed/stopped) positions in the DB — enough to judge win rate
+- Positive realized PnL across that sample
+- No repeated crashes or RPC timeouts in the run logs
+
+Running continuously is cheap: the bot is idle between pool detections. Either leave the laptop on, or deploy to a small VPS (a $5/month DigitalOcean droplet is plenty).
+
 ---
 
 ## 7. Risk & Safety Notes
