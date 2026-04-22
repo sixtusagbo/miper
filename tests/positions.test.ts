@@ -1,0 +1,353 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+const mocks = vi.hoisted(() => ({
+  mockFetch: vi.fn(),
+  mockSellToken: vi.fn(),
+}));
+
+vi.mock('node-fetch', () => ({ default: mocks.mockFetch }));
+
+vi.mock('../src/trader', () => ({
+  sellToken: mocks.mockSellToken,
+}));
+
+import { resetConfigCache } from '../src/config';
+import {
+  closeDb,
+  createPosition,
+  getPosition,
+  getTradesForPosition,
+  recordTrade,
+} from '../src/db';
+import {
+  checkPosition,
+  executeStopLoss,
+  executeTakeProfit,
+  fetchPriceSol,
+} from '../src/positions';
+
+let tempDir: string;
+
+const MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+
+beforeEach(() => {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miper-pos-'));
+  process.env.DB_PATH = path.join(tempDir, 'test.db');
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  process.env.WALLET_PRIVATE_KEY = '';
+  process.env.SIMULATE = 'true';
+  process.env.LOG_LEVEL = 'error';
+  process.env.TAKE_PROFIT_1 = '2';
+  process.env.TAKE_PROFIT_2 = '3';
+  process.env.TAKE_PROFIT_3 = '5';
+  process.env.SELL_PCT_TP1 = '40';
+  process.env.SELL_PCT_TP2 = '30';
+  process.env.SELL_PCT_TP3 = '30';
+  process.env.STOP_LOSS = '0.4';
+  resetConfigCache();
+  mocks.mockFetch.mockReset();
+  mocks.mockSellToken.mockReset();
+});
+
+afterEach(() => {
+  closeDb();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+function mkPosition(opts: { entryPriceSol?: number; amountTokens?: number; tokenMint?: string } = {}) {
+  const p = createPosition({
+    tokenMint: opts.tokenMint ?? MINT,
+    tokenSymbol: 'AAA',
+    entryPriceSol: opts.entryPriceSol ?? 0.0001,
+    amountTokens: opts.amountTokens ?? 1_000_000,
+    amountSolSpent: 0.05,
+    aiScore: 80,
+    poolAddress: 'POOL',
+    entryTx: 'TX',
+  });
+  // Record the buy so executeTakeProfit can derive original bag size.
+  recordTrade({
+    positionId: p.id,
+    type: 'buy',
+    amountTokens: opts.amountTokens ?? 1_000_000,
+    amountSol: 0.05,
+    priceSol: opts.entryPriceSol ?? 0.0001,
+    txSignature: 'TX',
+    simulated: true,
+  });
+  return p;
+}
+
+function mockSellSuccess(solOut: number, pricePerToken: number) {
+  mocks.mockSellToken.mockResolvedValueOnce({
+    success: true,
+    txSignature: 'SIM-1',
+    amountIn: 0,
+    amountOut: solOut,
+    pricePerToken,
+    simulated: true,
+  });
+}
+
+function mockSellFailure(error = 'pool drained') {
+  mocks.mockSellToken.mockResolvedValueOnce({
+    success: false,
+    txSignature: '',
+    amountIn: 0,
+    amountOut: 0,
+    pricePerToken: 0,
+    simulated: true,
+    error,
+  });
+}
+
+function mockPriceFetch(priceSol: number, mint = MINT) {
+  mocks.mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      pairs: [{ baseToken: { address: mint }, priceNative: String(priceSol) }],
+    }),
+    text: async () => '',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// fetchPriceSol
+// ---------------------------------------------------------------------------
+
+describe('fetchPriceSol', () => {
+  it('returns the priceNative as a number', async () => {
+    mockPriceFetch(0.00012, 'A1111111111111111111111111111111111111111112');
+    const price = await fetchPriceSol('A1111111111111111111111111111111111111111112');
+    expect(price).toBe(0.00012);
+  });
+
+  it('returns null when no pair is returned', async () => {
+    mocks.mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ pairs: [] }),
+      text: async () => '',
+    });
+    expect(await fetchPriceSol('B1111111111111111111111111111111111111111112')).toBeNull();
+  });
+
+  it('returns null when fetch throws', async () => {
+    mocks.mockFetch.mockRejectedValueOnce(new Error('network'));
+    expect(await fetchPriceSol('C1111111111111111111111111111111111111111112')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executeTakeProfit -- the TP sizing math
+// ---------------------------------------------------------------------------
+
+describe('executeTakeProfit', () => {
+  it('TP1 sells 40% of the original bag and marks position as partial', async () => {
+    const p = mkPosition({ amountTokens: 1_000_000 });
+    mockSellSuccess(0.04, 0.0002);
+    await executeTakeProfit(p, 1);
+
+    const sellCall = mocks.mockSellToken.mock.calls[0];
+    expect(sellCall[1]).toBeCloseTo(400_000); // 40% of 1M
+
+    const updated = getPosition(p.id)!;
+    expect(updated.tp_level).toBe(1);
+    expect(updated.status).toBe('partial');
+    expect(updated.amount_tokens).toBeCloseTo(600_000);
+    expect(updated.amount_sol_received).toBeCloseTo(0.04);
+  });
+
+  it('TP2 sells 30% of the original bag (not 30% of remaining)', async () => {
+    const p = mkPosition({ amountTokens: 1_000_000 });
+    // Simulate that TP1 already fired
+    p.amount_tokens = 600_000;
+    p.tp_level = 1;
+    p.status = 'partial';
+    p.amount_sol_received = 0.04;
+    // Persist that state by calling the same DB update path the real code uses
+    const { updatePosition } = await import('../src/db');
+    updatePosition(p.id, {
+      amountTokens: 600_000,
+      tpLevel: 1,
+      status: 'partial',
+      amountSolReceived: 0.04,
+    });
+    recordTrade({
+      positionId: p.id,
+      type: 'sell',
+      amountTokens: 400_000,
+      amountSol: 0.04,
+      priceSol: 0.0001,
+      txSignature: 'sim',
+      simulated: true,
+    });
+
+    const fresh = getPosition(p.id)!;
+    mockSellSuccess(0.06, 0.0003);
+    await executeTakeProfit(fresh, 2);
+
+    const sellCall = mocks.mockSellToken.mock.calls[0];
+    expect(sellCall[1]).toBeCloseTo(300_000); // 30% of original 1M
+
+    const updated = getPosition(p.id)!;
+    expect(updated.tp_level).toBe(2);
+    expect(updated.amount_tokens).toBeCloseTo(300_000);
+  });
+
+  it('TP3 sells all remaining tokens and closes the position', async () => {
+    const p = mkPosition({ amountTokens: 1_000_000 });
+    // Pretend TP1 and TP2 already happened, leaving 300k
+    const { updatePosition } = await import('../src/db');
+    updatePosition(p.id, { amountTokens: 300_000, tpLevel: 2, status: 'partial' });
+
+    const fresh = getPosition(p.id)!;
+    mockSellSuccess(0.15, 0.0005);
+    await executeTakeProfit(fresh, 3);
+
+    const sellCall = mocks.mockSellToken.mock.calls[0];
+    expect(sellCall[1]).toBeCloseTo(300_000); // all remaining
+
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.tp_level).toBe(3);
+    expect(closed.amount_tokens).toBe(0);
+  });
+
+  it('does not advance tp_level when the sell fails', async () => {
+    const p = mkPosition();
+    mockSellFailure('liquidity vanished');
+    await executeTakeProfit(p, 1);
+
+    const updated = getPosition(p.id)!;
+    expect(updated.tp_level).toBe(0);
+    expect(updated.status).toBe('open');
+    expect(updated.amount_tokens).toBeCloseTo(1_000_000); // unchanged
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executeStopLoss
+// ---------------------------------------------------------------------------
+
+describe('executeStopLoss', () => {
+  it('sells everything and marks the position as stopped', async () => {
+    const p = mkPosition();
+    mockSellSuccess(0.02, 0.00002);
+    await executeStopLoss(p);
+
+    const sellCall = mocks.mockSellToken.mock.calls[0];
+    expect(sellCall[1]).toBeCloseTo(1_000_000);
+
+    const updated = getPosition(p.id)!;
+    expect(updated.status).toBe('stopped');
+    expect(updated.amount_tokens).toBe(0);
+    expect(updated.amount_sol_received).toBeCloseTo(0.02);
+  });
+
+  it('leaves the position open when the sell fails', async () => {
+    const p = mkPosition();
+    mockSellFailure();
+    await executeStopLoss(p);
+
+    const updated = getPosition(p.id)!;
+    expect(updated.status).toBe('open');
+    expect(updated.amount_tokens).toBeCloseTo(1_000_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkPosition -- the decision logic
+// ---------------------------------------------------------------------------
+
+describe('checkPosition', () => {
+  it('triggers a stop-loss when price drops below SL multiplier', async () => {
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00003); // 0.3x entry, below 0.4 SL
+    mockSellSuccess(0.015, 0.00003);
+    await checkPosition(p);
+
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+    expect(getPosition(p.id)!.status).toBe('stopped');
+  });
+
+  it('triggers TP1 when price reaches 2x and tp_level is 0', async () => {
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00021); // > 2x
+    mockSellSuccess(0.04, 0.00021);
+    await checkPosition(p);
+
+    expect(getPosition(p.id)!.tp_level).toBe(1);
+  });
+
+  it('skips TP triggers when current price is null', async () => {
+    const p = mkPosition();
+    mocks.mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ pairs: [] }),
+      text: async () => '',
+    });
+    await checkPosition(p);
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    // Status untouched
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('jumps directly to TP3 when price multiplier exceeds the highest target', async () => {
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.001); // 10x, way past TP3 (5x)
+    mockSellSuccess(0.5, 0.001);
+    await checkPosition(p);
+
+    const closed = getPosition(p.id)!;
+    expect(closed.tp_level).toBe(3);
+    expect(closed.status).toBe('closed');
+  });
+
+  it('closes a dust position without trying to sell', async () => {
+    const p = mkPosition({ amountTokens: 1, entryPriceSol: 1e-20 });
+    mockPriceFetch(1e-20);
+    await checkPosition(p);
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('closed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// retry behavior on repeated sell failures
+// ---------------------------------------------------------------------------
+
+describe('sell failure retries', () => {
+  it('keeps the position open through repeated failures', async () => {
+    const p = mkPosition();
+    for (let i = 0; i < 3; i++) {
+      mockSellFailure();
+      await executeStopLoss(getPosition(p.id)!);
+    }
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(3);
+    expect(getPosition(p.id)!.status).toBe('open');
+    expect(getPosition(p.id)!.amount_tokens).toBeCloseTo(1_000_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// trade record side effects
+// ---------------------------------------------------------------------------
+
+describe('trade recording', () => {
+  it('records a sell trade for each successful TP', async () => {
+    const p = mkPosition();
+    mockSellSuccess(0.04, 0.0002);
+    await executeTakeProfit(p, 1);
+
+    const trades = getTradesForPosition(p.id);
+    const sells = trades.filter((t) => t.type === 'sell');
+    expect(sells).toHaveLength(1);
+    expect(sells[0].amount_sol).toBeCloseTo(0.04);
+  });
+});
