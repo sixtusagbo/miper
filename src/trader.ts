@@ -11,6 +11,7 @@ import fetch from 'node-fetch';
 import { Config, loadConfig, MIN_SOL_RESERVE, SOL_MINT_ADDRESS } from './config';
 import { logger } from './logger';
 
+
 const JUPITER_BASE = 'https://quote-api.jup.ag/v6';
 
 export interface SwapResult {
@@ -110,6 +111,7 @@ async function getQuote(params: {
   url.searchParams.set('slippageBps', String(params.slippageBps));
   url.searchParams.set('swapMode', 'ExactIn');
 
+  logger.debug(`jupiter quote: ${params.inputMint.slice(0, 8)}... -> ${params.outputMint.slice(0, 8)}... amount=${params.amount}`);
   const res = await fetch(url.toString());
   if (!res.ok) {
     const body = await res.text();

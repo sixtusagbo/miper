@@ -115,15 +115,33 @@ function makeConnection(): Connection {
   });
 }
 
+const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+
+interface ListenerCounters {
+  events: number;
+  initMatches: number;
+  poolsEmitted: number;
+  parseFailures: number;
+}
+
 export class PoolListener extends EventEmitter {
   private connection: Connection;
   private subscriptionId: number | null = null;
   private seen = new Set<string>();
   private running = false;
+  private counters: ListenerCounters = {
+    events: 0,
+    initMatches: 0,
+    poolsEmitted: 0,
+    parseFailures: 0,
+  };
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private readonly heartbeatMs: number;
 
-  constructor(connection?: Connection) {
+  constructor(connection?: Connection, heartbeatMs: number = HEARTBEAT_INTERVAL_MS) {
     super();
     this.connection = connection ?? makeConnection();
+    this.heartbeatMs = heartbeatMs;
   }
 
   async start(): Promise<void> {
@@ -139,11 +157,18 @@ export class PoolListener extends EventEmitter {
       },
       'confirmed'
     );
+    if (this.heartbeatMs > 0) {
+      this.heartbeatTimer = setInterval(() => this.logHeartbeat(), this.heartbeatMs);
+    }
   }
 
   async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     if (this.subscriptionId !== null) {
       try {
         await this.connection.removeOnLogsListener(this.subscriptionId);
@@ -154,24 +179,50 @@ export class PoolListener extends EventEmitter {
     }
   }
 
+  getCounters(): Readonly<ListenerCounters> {
+    return { ...this.counters };
+  }
+
+  private logHeartbeat(): void {
+    const { events, initMatches, poolsEmitted, parseFailures } = this.counters;
+    const minutes = this.heartbeatMs / 60_000;
+    logger.info(
+      `listener heartbeat (${minutes}min): ${events} Raydium events | ${initMatches} init matches | ${poolsEmitted} pools emitted | ${parseFailures} parse failures`
+    );
+    if (events === 0) {
+      logger.warn(
+        'No Raydium events in the last window. If this repeats, the RPC WebSocket may be dead. Check SOLANA_WS_URL.'
+      );
+    }
+    this.counters = { events: 0, initMatches: 0, poolsEmitted: 0, parseFailures: 0 };
+  }
+
   private async handleLogs(
     signature: string,
     logs: string[] | null,
     err: unknown
   ): Promise<void> {
+    this.counters.events++;
     if (err) return;
     if (this.seen.has(signature)) return;
     if (!isInitLog(logs ?? undefined)) return;
 
+    this.counters.initMatches++;
     this.seen.add(signature);
     trimSeen(this.seen);
 
+    logger.debug(`init match: ${signature} (${logs?.length ?? 0} log lines)`);
+
     const pool = await parsePoolFromSignature(this.connection, signature);
     if (pool) {
+      this.counters.poolsEmitted++;
       logger.info(
         `New pool detected: ${pool.tokenMint} (${pool.initialLiquiditySol.toFixed(3)} SOL)`
       );
       this.emit('newPool', pool);
+    } else {
+      this.counters.parseFailures++;
+      logger.debug(`parse returned null for ${signature}`);
     }
   }
 }

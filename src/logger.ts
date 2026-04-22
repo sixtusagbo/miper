@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import { createWriteStream, WriteStream } from 'fs';
 import { LogLevel, loadConfig } from './config';
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
@@ -26,18 +27,56 @@ function currentLevel(): LogLevel {
   }
 }
 
-function enabled(level: LogLevel): boolean {
+function consoleEnabled(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[currentLevel()];
 }
 
+let logStream: WriteStream | null = null;
+let logStreamPath: string | undefined = undefined;
+
+function getLogStream(): WriteStream | null {
+  const path = process.env.LOG_FILE?.trim();
+  if (!path) {
+    if (logStream) closeLogFile();
+    return null;
+  }
+  if (path !== logStreamPath) {
+    if (logStream) logStream.end();
+    logStream = createWriteStream(path, { flags: 'a' });
+    logStreamPath = path;
+  }
+  return logStream;
+}
+
+// When LOG_FILE is set, the file receives every log line (including debug)
+// regardless of LOG_LEVEL, so the terminal stays calibrated while the file
+// becomes a full audit trail.
+export function closeLogFile(): void {
+  if (logStream) {
+    logStream.end();
+    logStream = null;
+    logStreamPath = undefined;
+  }
+}
+
 function write(level: LogLevel, color: (s: string) => string, tag: string, msg: string, data?: unknown): void {
-  if (!enabled(level)) return;
-  const line = `${chalk.gray(timestamp())} ${color(`[${tag}]`)} ${msg}`;
-  // eslint-disable-next-line no-console
-  console.log(line);
-  if (data !== undefined) {
+  const ts = timestamp();
+  const inConsole = consoleEnabled(level);
+  const stream = getLogStream();
+
+  if (inConsole) {
     // eslint-disable-next-line no-console
-    console.log(chalk.gray(typeof data === 'string' ? data : JSON.stringify(data, null, 2)));
+    console.log(`${chalk.gray(ts)} ${color(`[${tag}]`)} ${msg}`);
+    if (data !== undefined) {
+      // eslint-disable-next-line no-console
+      console.log(chalk.gray(typeof data === 'string' ? data : JSON.stringify(data, null, 2)));
+    }
+  }
+  if (stream) {
+    stream.write(`${ts} [${tag}] ${msg}\n`);
+    if (data !== undefined) {
+      stream.write((typeof data === 'string' ? data : JSON.stringify(data)) + '\n');
+    }
   }
 }
 
@@ -61,6 +100,11 @@ export const logger = {
     const bar = chalk.magenta('='.repeat(Math.max(text.length + 4, 40)));
     // eslint-disable-next-line no-console
     console.log(`\n${bar}\n${chalk.magenta.bold('  ' + text)}\n${bar}\n`);
+    const stream = getLogStream();
+    if (stream) {
+      const plainBar = '='.repeat(Math.max(text.length + 4, 40));
+      stream.write(`\n${plainBar}\n  ${text}\n${plainBar}\n\n`);
+    }
   },
   position(action: 'BUY' | 'SELL' | 'STOPLOSS' | 'TP1' | 'TP2' | 'TP3', token: string, details: string): void {
     const painter =

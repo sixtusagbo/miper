@@ -143,6 +143,7 @@ export async function getSolUsdPrice(): Promise<number | null> {
 
 export async function fetchMarketData(pool: NewPool): Promise<MarketData> {
   try {
+    logger.debug(`dexscreener: fetching ${pool.tokenMint}`);
     const res = await fetch(`${DEXSCREENER_BASE}/latest/dex/tokens/${pool.tokenMint}`);
     const json = (await res.json()) as DexScreenerResponse;
     const pairs = json.pairs ?? [];
@@ -253,6 +254,7 @@ export async function scoreWithAi(
 ): Promise<AiScore> {
   try {
     const client = getAnthropic(cfg);
+    logger.debug(`claude: scoring ${pool.tokenMint}`);
     const response = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 600,

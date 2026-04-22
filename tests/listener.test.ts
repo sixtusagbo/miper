@@ -150,6 +150,38 @@ describe('PoolListener', () => {
     await listener.stop();
   });
 
+  it('increments heartbeat counters for events and emissions', async () => {
+    const tokenMint = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+    const accounts = new Array(10)
+      .fill(null)
+      .map(() => new PublicKey('11111111111111111111111111111111'));
+    accounts[8] = new PublicKey(SOL_MINT_ADDRESS);
+    accounts[9] = new PublicKey(tokenMint);
+    const tx = {
+      blockTime: 1,
+      transaction: {
+        message: { instructions: [{ programId: PROGRAM_IDS.RAYDIUM_AMM, accounts }] },
+      },
+      meta: { preBalances: [0], postBalances: [0] },
+    };
+    const { conn, invoke } = setupListenerConnection(tx);
+    const { PoolListener } = await import('../src/listener');
+    // heartbeatMs=0 disables the interval, so counters don't reset mid-test
+    const listener = new PoolListener(conn, 0);
+    await listener.start();
+
+    const cb = invoke()!;
+    await cb({ signature: 'SWAP', logs: ['Program log: ray_log: xx'], err: null });
+    await cb({ signature: 'INIT', logs: ['Program log: Initialize2'], err: null });
+    await new Promise((r) => setImmediate(r));
+
+    const c = listener.getCounters();
+    expect(c.events).toBe(2);
+    expect(c.initMatches).toBe(1);
+    expect(c.poolsEmitted).toBe(1);
+    await listener.stop();
+  });
+
   it('deduplicates repeat signatures', async () => {
     const tokenMint = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
     const accounts = new Array(10)

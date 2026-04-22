@@ -36,6 +36,36 @@ Three ways:
 
 Status shows open positions, win rate, total spent/received, realized PnL, and (in paper mode) your paper bag balance as a percentage return against `SIMULATED_STARTING_SOL` (default 1 SOL).
 
+## Knowing the bot is alive (listener heartbeat)
+
+Every 5 minutes the listener prints:
+
+```
+listener heartbeat (5min): 142 Raydium events | 3 init matches | 2 pools emitted | 1 parse failures
+```
+
+How to read it:
+
+| Pattern | What it means |
+|---------|---------------|
+| `events > 0` | WebSocket is alive, RPC is delivering. |
+| `events = 0` for multiple intervals | WebSocket is dead — check `SOLANA_WS_URL`, maybe bounce the bot. |
+| `events > 0` but `initMatches = 0` | No pools are being created right now. Normal during quiet hours; try again during 18:00-04:00 UTC. |
+| `initMatches > 0`, `poolsEmitted = 0` | Parser is rejecting every candidate. Investigate with debug logging. |
+| `parseFailures > 0` | RPC timing out on `getParsedTransaction`. Usually transient. |
+
+## Full audit log
+
+Set `LOG_FILE=./miper.log` in `.env` and every log line — including debug-level detail that doesn't appear in the terminal — goes to that file. Good for post-hoc debugging:
+
+```
+tail -f miper.log              # stream the file in another terminal
+grep 'analyzing' miper.log     # every pool the bot considered
+grep 'BUYING\|skip' miper.log  # every decision it made
+```
+
+The file uses plain text (no color codes), one event per line, timestamps first. Append mode, so you can tail across restarts.
+
 ## How long to run
 
 **Minimum 3-7 days** before you even think about live mode. You need a sample of at least **20 completed positions** (closed + stopped) to have any read on the strategy.
