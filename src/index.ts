@@ -30,6 +30,8 @@ const MAX_CONCURRENT_ANALYSES = 3;
 // Hard cap on a single pool's analyze pipeline (DexScreener + RPC + Claude).
 // If Claude is slow or DexScreener hangs, we give up rather than stall.
 const ANALYSIS_TIMEOUT_MS = 20_000;
+// How often the snipe command prints a rolling status summary during a run.
+const STATUS_PRINT_INTERVAL_MS = 15 * 60 * 1000;
 
 function printBanner(): void {
   const cfg = loadConfig();
@@ -151,8 +153,17 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
   await listener.start();
   startMonitoring();
 
+  const statusTimer = setInterval(() => {
+    try {
+      printStatus();
+    } catch (err) {
+      logger.error(`status print failed: ${(err as Error).message}`);
+    }
+  }, STATUS_PRINT_INTERVAL_MS);
+
   const shutdown = async () => {
     logger.info('shutting down...');
+    clearInterval(statusTimer);
     await listener.stop();
     stopMonitoring();
     printStatus();
@@ -162,7 +173,9 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  logger.info('sniper running. Press Ctrl+C to stop.');
+  logger.info(
+    `sniper running. Rolling status every ${STATUS_PRINT_INTERVAL_MS / 60_000} min. Press Ctrl+C to stop.`
+  );
 }
 
 async function monitorCommand(): Promise<void> {
