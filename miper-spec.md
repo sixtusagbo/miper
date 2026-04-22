@@ -556,6 +556,45 @@ Build these safeguards into the code:
 
 ---
 
+## 7A. Tests
+
+This is a money-moving bot. Silent bugs cost real SOL. The codebase must have a focused test suite that exercises the pure logic and the stages that wrap external services, with all network and on-chain calls mocked.
+
+**Framework**: `vitest`. Fast, zero-config TypeScript support, built-in mocking. Coverage via `@vitest/coverage-v8`.
+
+**Scripts:**
+
+```
+npm test              # run once
+npm run test:watch    # watch mode
+npm run test:coverage # with coverage report
+```
+
+**Test layout**: mirror `src/` under `tests/`. One test file per module.
+
+**Coverage targets by module:**
+
+| Module | What to cover |
+|--------|---------------|
+| `config.ts` | env parsing, numeric/boolean coercion, TP-percent-sum validation, stop-loss range, monotonic TP ordering, simulate-vs-live requirements |
+| `db.ts` | create/update positions, record trades, rejections, `isTokenKnown`, `getOpenPositions`, `getPnlSummary` (spent/received/win rate). Use an in-memory or temp-file sqlite DB and reset between tests. |
+| `listener.ts` | `isInitLog` keyword matching, `trimSeen` eviction behavior, `estimateSolLiquidity` balance-delta math, `parsePoolFromSignature` with a mocked `Connection.getParsedTransaction` (SOL/non-SOL pair, malformed tx, non-Raydium ix). |
+| `analyzer.ts` | `runSafetyChecks` pass/fail by config flags and top-holder %, `fetchMarketData` happy path and `pool-fallback` path (mocked fetch), `scoreWithAi` JSON parsing, out-of-range clamping, parse-error fallback, API-error fallback (mocked `Anthropic`). |
+| `trader.ts` | simulation path (no tx send), balance guard in live mode, quote/swap error propagation, sell with `amount too small` (mocked fetch). |
+| `positions.ts` | `fetchPriceSol` rate limiting and no-price cycle, TP sizing math against original bag, dust cleanup threshold, stop-loss trigger, sell retry counter cap. |
+
+**Excluded from coverage**: `src/index.ts` (CLI wiring — integration-ish, not worth the mock burden), `logger.ts` (trivial wrapping). Everything else should be comfortably above 80% line coverage.
+
+**Mocking conventions:**
+- Use `vi.mock('node-fetch')` for DexScreener and Jupiter.
+- Use `vi.mock('@anthropic-ai/sdk')` for Claude calls.
+- Use `vi.mock('@solana/web3.js')` / `@solana/spl-token` for on-chain reads. For `Connection`, provide a stub with just the methods the code actually calls.
+- DB tests point `DB_PATH` at a temp file via `beforeEach`, deleted in `afterEach`. No mocking of sqlite itself — the real driver is fast enough.
+
+No tests are expected to hit a live network, RPC, or pay any API cost. If a test does, it's broken.
+
+---
+
 ## 8. Phase 2 Features (Not for initial build)
 
 These are planned for later, do NOT build them now:

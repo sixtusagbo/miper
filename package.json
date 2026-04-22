@@ -15,7 +15,10 @@
     "simulate": "SIMULATE=true ts-node src/index.ts snipe",
     "monitor": "ts-node src/index.ts monitor",
     "status": "ts-node src/index.ts status",
-    "balance": "ts-node src/index.ts balance"
+    "balance": "ts-node src/index.ts balance",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -33,7 +36,9 @@
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.0.0",
     "@types/node-fetch": "^2.6.0",
+    "@vitest/coverage-v8": "^4.1.5",
     "ts-node": "^10.9.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.5"
   }
 }
