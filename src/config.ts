@@ -78,6 +78,12 @@ function parseLogLevel(value: string | undefined): LogLevel {
 
 let cached: Config | null = null;
 
+// Clears the cached Config so the next loadConfig() re-reads process.env.
+// Intended for tests; production callers should not need it.
+export function resetConfigCache(): void {
+  cached = null;
+}
+
 export function loadConfig(): Config {
   if (cached) return cached;
 
