@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+sniper.db
+sniper.db-journal
+sniper.db-wal
+sniper.db-shm
+.DS_Store
