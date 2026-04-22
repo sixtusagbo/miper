@@ -1,4 +1,4 @@
-# sol-sniper
+# miper
 
 Autonomous Solana memecoin sniping bot. Listens for new Raydium AMM pools, runs on-chain safety checks, asks Claude for a score, and auto-buys via Jupiter V6 when the score clears the threshold. Manages positions with tiered take-profit (2x/3x/5x by default) and a stop-loss.
 
@@ -75,7 +75,7 @@ When `SIMULATE=true`:
 - Pool detection and safety checks use real on-chain data
 - Claude scoring runs for real (API calls still cost)
 - Jupiter *quotes* are fetched, but swap transactions are not sent
-- All simulated trades are written to the DB with `simulated = 1`, so `sol-sniper status` shows paper PnL
+- All simulated trades are written to the DB with `simulated = 1`, so `miper status` shows paper PnL
 
 ## Caveats
 

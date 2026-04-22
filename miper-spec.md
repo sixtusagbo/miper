@@ -1,4 +1,4 @@
-# SOL SNIPER - Project Specification
+# MIPER - Project Specification
 
 > **Purpose**: Hand this document to Claude Code to build the entire project.
 > **Author**: Sixtus (full-stack developer, 5+ years experience)
@@ -102,7 +102,7 @@ These are the exact prompts/thoughts Sixtus shared that led to this spec:
 ### Project Structure
 
 ```
-sol-sniper/
+miper/
 ├── package.json
 ├── tsconfig.json
 ├── .env.example
@@ -495,19 +495,19 @@ Use `commander` for subcommands:
 
 ```bash
 # Main sniping mode -- listen for pools, analyze, buy, monitor
-sol-sniper snipe [--simulate]
+miper snipe [--simulate]
 
 # Monitor existing positions only (no new buys)
-sol-sniper monitor
+miper monitor
 
 # Show current status -- open positions, PnL summary
-sol-sniper status
+miper status
 
 # Show wallet balance
-sol-sniper balance
+miper balance
 
 # Manually sell a position
-sol-sniper sell <position-id> [--pct 100]
+miper sell <position-id> [--pct 100]
 ```
 
 **`snipe` command flow:**
@@ -621,7 +621,7 @@ Do NOT batch the entire project into one big commit at the end. Commit as you go
 
 ```bash
 # Initialize the project
-mkdir sol-sniper && cd sol-sniper
+mkdir miper && cd miper
 npm init -y
 # Install all deps from the dependency list above
 # Set up tsconfig.json
@@ -656,7 +656,7 @@ The bot is working when:
 3. It runs safety checks and AI scoring on each new token
 4. In simulation mode, it records simulated buys for tokens that pass
 5. The position monitor tracks prices and records simulated sells at TP/SL levels
-6. `sol-sniper status` shows a table of positions and PnL summary
+6. `miper status` shows a table of positions and PnL summary
 7. Switching to live mode (`SIMULATE=false`) executes real swaps via Jupiter
 
 

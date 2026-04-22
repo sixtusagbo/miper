@@ -1,6 +1,6 @@
-# sol-sniper
+# miper
 
-Autonomous Solana memecoin sniping bot. Full spec: `sol-sniper-spec.md`.
+Autonomous Solana memecoin sniping bot. Full spec: `miper-spec.md`.
 
 ## What it does
 

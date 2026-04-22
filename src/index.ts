@@ -25,7 +25,7 @@ import { startMonitoring, stopMonitoring } from './positions';
 
 function printBanner(): void {
   const cfg = loadConfig();
-  logger.banner(`SOL SNIPER ${cfg.simulate ? '(SIMULATION)' : '(LIVE)'}`);
+  logger.banner(`MIPER ${cfg.simulate ? '(SIMULATION)' : '(LIVE)'}`);
   logger.info(
     `buy ${cfg.buyAmountSol} SOL | TPs ${cfg.takeProfit1}x/${cfg.takeProfit2}x/${cfg.takeProfit3}x | SL ${cfg.stopLoss}x | min AI score ${cfg.minAiScore}`
   );
@@ -147,7 +147,7 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
 async function monitorCommand(): Promise<void> {
   loadConfig();
   getDb();
-  logger.banner('SOL SNIPER monitor');
+  logger.banner('MIPER monitor');
   startMonitoring();
 
   const shutdown = () => {
@@ -285,7 +285,7 @@ async function sellCommand(positionId: string, options: { pct?: string }): Promi
 
 const program = new Command();
 program
-  .name('sol-sniper')
+  .name('miper')
   .description('Autonomous Solana memecoin sniper with Claude AI scoring')
   .version('0.1.0');
 

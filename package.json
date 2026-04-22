@@ -1,11 +1,11 @@
 {
-  "name": "sol-sniper",
+  "name": "miper",
   "version": "0.1.0",
   "description": "Autonomous Solana memecoin sniping bot with Claude AI scoring",
   "private": true,
   "main": "dist/index.js",
   "bin": {
-    "sol-sniper": "dist/index.js"
+    "miper": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
