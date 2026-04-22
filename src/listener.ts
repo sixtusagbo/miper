@@ -14,10 +14,10 @@ export interface NewPool {
 }
 
 const INIT_KEYWORDS = ['initialize2', 'Initialize2', 'init_pc_amount', 'ray_log'];
-const SEEN_LIMIT = 5000;
+export const SEEN_LIMIT = 5000;
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
-function isInitLog(messages: readonly string[] | undefined): boolean {
+export function isInitLog(messages: readonly string[] | undefined): boolean {
   if (!messages) return false;
   for (const m of messages) {
     for (const kw of INIT_KEYWORDS) {
@@ -27,7 +27,7 @@ function isInitLog(messages: readonly string[] | undefined): boolean {
   return false;
 }
 
-function trimSeen(seen: Set<string>): void {
+export function trimSeen(seen: Set<string>): void {
   if (seen.size < SEEN_LIMIT) return;
   const over = seen.size - Math.floor(SEEN_LIMIT / 2);
   const it = seen.values();
@@ -38,7 +38,7 @@ function trimSeen(seen: Set<string>): void {
   }
 }
 
-function estimateSolLiquidity(meta: { preBalances: number[]; postBalances: number[] } | null): number {
+export function estimateSolLiquidity(meta: { preBalances: number[]; postBalances: number[] } | null): number {
   if (!meta) return 0;
   let maxDelta = 0;
   const len = Math.min(meta.preBalances.length, meta.postBalances.length);
@@ -49,7 +49,7 @@ function estimateSolLiquidity(meta: { preBalances: number[]; postBalances: numbe
   return maxDelta / LAMPORTS_PER_SOL;
 }
 
-async function parsePoolFromSignature(
+export async function parsePoolFromSignature(
   connection: Connection,
   signature: string
 ): Promise<NewPool | null> {
