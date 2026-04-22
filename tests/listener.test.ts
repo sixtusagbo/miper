@@ -74,6 +74,111 @@ describe('estimateSolLiquidity', () => {
   });
 });
 
+describe('PoolListener', () => {
+  function setupListenerConnection(tx: unknown) {
+    let capturedCallback: ((r: any) => void) | null = null;
+    const conn = {
+      onLogs: vi.fn((_: unknown, cb: (r: any) => void) => {
+        capturedCallback = cb;
+        return 42;
+      }),
+      removeOnLogsListener: vi.fn().mockResolvedValue(undefined),
+      getParsedTransaction: vi.fn().mockResolvedValue(tx),
+    } as any;
+    return { conn, invoke: () => capturedCallback };
+  }
+
+  it('emits newPool when a matching log comes through', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    process.env.WALLET_PRIVATE_KEY = '';
+    process.env.SIMULATE = 'true';
+    process.env.LOG_LEVEL = 'error';
+    const { resetConfigCache } = await import('../src/config');
+    resetConfigCache();
+
+    const tokenMint = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+    const accounts = new Array(10)
+      .fill(null)
+      .map(() => new PublicKey('11111111111111111111111111111111'));
+    accounts[8] = new PublicKey(SOL_MINT_ADDRESS);
+    accounts[9] = new PublicKey(tokenMint);
+    const tx = {
+      blockTime: 1,
+      transaction: {
+        message: { instructions: [{ programId: PROGRAM_IDS.RAYDIUM_AMM, accounts }] },
+      },
+      meta: { preBalances: [1_000_000_000], postBalances: [500_000_000] },
+    };
+    const { conn, invoke } = setupListenerConnection(tx);
+
+    const { PoolListener } = await import('../src/listener');
+    const listener = new PoolListener(conn);
+    const spy = vi.fn();
+    listener.on('newPool', spy);
+    await listener.start();
+
+    const cb = invoke()!;
+    await cb({
+      signature: 'SIG1',
+      logs: ['Program log: initialize2 success'],
+      err: null,
+    });
+    // Let the async handleLogs settle
+    await new Promise((r) => setImmediate(r));
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0].tokenMint).toBe(tokenMint);
+    await listener.stop();
+  });
+
+  it('ignores logs that do not contain init keywords', async () => {
+    const { conn, invoke } = setupListenerConnection(null);
+    const { PoolListener } = await import('../src/listener');
+    const listener = new PoolListener(conn);
+    const spy = vi.fn();
+    listener.on('newPool', spy);
+    await listener.start();
+
+    await invoke()!({ signature: 'S', logs: ['swap'], err: null });
+    await new Promise((r) => setImmediate(r));
+    expect(spy).not.toHaveBeenCalled();
+    expect(conn.getParsedTransaction).not.toHaveBeenCalled();
+    await listener.stop();
+  });
+
+  it('deduplicates repeat signatures', async () => {
+    const tokenMint = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+    const accounts = new Array(10)
+      .fill(null)
+      .map(() => new PublicKey('11111111111111111111111111111111'));
+    accounts[8] = new PublicKey(SOL_MINT_ADDRESS);
+    accounts[9] = new PublicKey(tokenMint);
+    const tx = {
+      blockTime: 1,
+      transaction: {
+        message: { instructions: [{ programId: PROGRAM_IDS.RAYDIUM_AMM, accounts }] },
+      },
+      meta: { preBalances: [0], postBalances: [0] },
+    };
+    const { conn, invoke } = setupListenerConnection(tx);
+    const { PoolListener } = await import('../src/listener');
+    const listener = new PoolListener(conn);
+    const spy = vi.fn();
+    listener.on('newPool', spy);
+    await listener.start();
+
+    const cb = invoke()!;
+    const logs = ['initialize2'];
+    await cb({ signature: 'DUP', logs, err: null });
+    await new Promise((r) => setImmediate(r));
+    await cb({ signature: 'DUP', logs, err: null });
+    await new Promise((r) => setImmediate(r));
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    await listener.stop();
+  });
+});
+
 describe('parsePoolFromSignature', () => {
   function makeConnection(tx: unknown) {
     return {
