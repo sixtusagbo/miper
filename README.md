@@ -1,6 +1,6 @@
 # miper
 
-Autonomous Solana memecoin sniping bot. Listens for new Raydium AMM pools, runs on-chain safety checks, asks Claude for a score, and auto-buys via Jupiter V6 when the score clears the threshold. Manages positions with tiered take-profit (2x/3x/5x by default) and a stop-loss.
+Autonomous Solana memecoin sniping bot. For the operational playbook (how long to run, peak hours, going-live checklist), see [RUNNING.md](./RUNNING.md). Listens for new Raydium AMM pools, runs on-chain safety checks, asks Claude for a score, and auto-buys via Jupiter V6 when the score clears the threshold. Manages positions with tiered take-profit (2x/3x/5x by default) and a stop-loss.
 
 **Starts in simulation mode by default.** No real transactions are sent until you flip `SIMULATE=false`.
 
