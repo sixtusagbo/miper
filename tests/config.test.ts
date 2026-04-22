@@ -25,6 +25,7 @@ function setEnv(overrides: Record<string, string | undefined> = {}): void {
       key === 'REQUIRE_FREEZE_REVOKED' ||
       key === 'MIN_AI_SCORE' ||
       key === 'SIMULATE' ||
+      key === 'SIMULATED_STARTING_SOL' ||
       key === 'LOG_LEVEL' ||
       key === 'MAX_OPEN_POSITIONS' ||
       key === 'DB_PATH'
@@ -53,8 +54,14 @@ describe('loadConfig', () => {
     expect(cfg.stopLoss).toBe(0.4);
     expect(cfg.minAiScore).toBe(70);
     expect(cfg.simulate).toBe(true);
+    expect(cfg.simulatedStartingSol).toBe(1.0);
     expect(cfg.logLevel).toBe('info');
     expect(cfg.dbPath).toBe('./sniper.db');
+  });
+
+  it('throws if SIMULATED_STARTING_SOL is not positive', () => {
+    setEnv({ SIMULATED_STARTING_SOL: '0' });
+    expect(() => loadConfig()).toThrow(/SIMULATED_STARTING_SOL/);
   });
 
   it('caches after first call', () => {

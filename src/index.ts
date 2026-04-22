@@ -188,6 +188,7 @@ function fmt(n: number | null, digits = 4): string {
 }
 
 function printStatus(): void {
+  const cfg = loadConfig();
   const positions = getOpenPositions();
   const pnl = getPnlSummary();
 
@@ -198,6 +199,14 @@ function printStatus(): void {
   logger.info(
     `spent ${fmt(pnl.totalSpent)} SOL | received ${fmt(pnl.totalReceived)} SOL | PnL ${chalk.bold(fmt(pnl.realizedPnlSol))} SOL`
   );
+  if (cfg.simulate) {
+    const current = cfg.simulatedStartingSol + pnl.realizedPnlSol;
+    const pctReturn = (pnl.realizedPnlSol / cfg.simulatedStartingSol) * 100;
+    const tinted = pctReturn >= 0 ? chalk.green : chalk.red;
+    logger.info(
+      `paper bag: ${fmt(current)} SOL (started ${fmt(cfg.simulatedStartingSol)}, ${tinted(`${pctReturn >= 0 ? '+' : ''}${pctReturn.toFixed(2)}%`)})`
+    );
+  }
 
   if (positions.length === 0) {
     logger.info('no open positions');

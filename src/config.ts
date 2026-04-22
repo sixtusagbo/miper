@@ -36,6 +36,7 @@ export interface Config {
   requireFreezeRevoked: boolean;
   minAiScore: number;
   simulate: boolean;
+  simulatedStartingSol: number;
   logLevel: LogLevel;
   maxOpenPositions: number;
   dbPath: string;
@@ -120,6 +121,7 @@ export function loadConfig(): Config {
     requireFreezeRevoked: boolFromEnv('REQUIRE_FREEZE_REVOKED', true),
     minAiScore: numberFromEnv('MIN_AI_SCORE', 70),
     simulate,
+    simulatedStartingSol: numberFromEnv('SIMULATED_STARTING_SOL', 1.0),
     logLevel: parseLogLevel(process.env.LOG_LEVEL),
     maxOpenPositions: numberFromEnv('MAX_OPEN_POSITIONS', 10),
     dbPath: process.env.DB_PATH?.trim() || './sniper.db',
@@ -146,6 +148,9 @@ function validateConfig(c: Config): void {
   }
   if (c.buyAmountSol <= 0) {
     throw new Error(`BUY_AMOUNT_SOL must be > 0, got ${c.buyAmountSol}`);
+  }
+  if (c.simulatedStartingSol <= 0) {
+    throw new Error(`SIMULATED_STARTING_SOL must be > 0, got ${c.simulatedStartingSol}`);
   }
 }
 
