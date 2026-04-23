@@ -116,12 +116,21 @@ function makeConnection(): Connection {
 }
 
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+// Two back-to-back empty heartbeat windows (~10 min) is a strong signal the
+// WebSocket has silently died. Raydium sees hundreds of events per minute in
+// normal operation, so genuine stretches of zero activity don't last this long.
+const DEFAULT_RECONNECT_AFTER_EMPTY_WINDOWS = 2;
 
 interface ListenerCounters {
   events: number;
   initMatches: number;
   poolsEmitted: number;
   parseFailures: number;
+}
+
+export interface PoolListenerOptions {
+  reconnectAfterEmptyWindows?: number;
+  connectionFactory?: () => Connection;
 }
 
 export class PoolListener extends EventEmitter {
@@ -137,17 +146,34 @@ export class PoolListener extends EventEmitter {
   };
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private readonly heartbeatMs: number;
+  private readonly reconnectAfter: number;
+  private readonly connectionFactory: () => Connection;
+  private consecutiveEmptyWindows = 0;
+  private reconnecting = false;
 
-  constructor(connection?: Connection, heartbeatMs: number = HEARTBEAT_INTERVAL_MS) {
+  constructor(
+    connection?: Connection,
+    heartbeatMs: number = HEARTBEAT_INTERVAL_MS,
+    options: PoolListenerOptions = {}
+  ) {
     super();
     this.connection = connection ?? makeConnection();
     this.heartbeatMs = heartbeatMs;
+    this.reconnectAfter = options.reconnectAfterEmptyWindows ?? DEFAULT_RECONNECT_AFTER_EMPTY_WINDOWS;
+    this.connectionFactory = options.connectionFactory ?? makeConnection;
   }
 
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
     logger.info('Subscribing to Raydium AMM logs via WebSocket');
+    this.subscribe();
+    if (this.heartbeatMs > 0) {
+      this.heartbeatTimer = setInterval(() => this.logHeartbeat(), this.heartbeatMs);
+    }
+  }
+
+  private subscribe(): void {
     this.subscriptionId = this.connection.onLogs(
       PROGRAM_IDS.RAYDIUM_AMM,
       (logsResult) => {
@@ -157,9 +183,6 @@ export class PoolListener extends EventEmitter {
       },
       'confirmed'
     );
-    if (this.heartbeatMs > 0) {
-      this.heartbeatTimer = setInterval(() => this.logHeartbeat(), this.heartbeatMs);
-    }
   }
 
   async stop(): Promise<void> {
@@ -190,11 +213,50 @@ export class PoolListener extends EventEmitter {
       `listener heartbeat (${minutes}min): ${events} Raydium events | ${initMatches} init matches | ${poolsEmitted} pools emitted | ${parseFailures} parse failures`
     );
     if (events === 0) {
+      this.consecutiveEmptyWindows++;
       logger.warn(
-        'No Raydium events in the last window. If this repeats, the RPC WebSocket may be dead. Check SOLANA_WS_URL.'
+        `No Raydium events in the last window (${this.consecutiveEmptyWindows} in a row). RPC WebSocket may be dead.`
       );
+      if (
+        this.reconnectAfter > 0 &&
+        this.consecutiveEmptyWindows >= this.reconnectAfter &&
+        this.running &&
+        !this.reconnecting
+      ) {
+        this.reconnect().catch((err) =>
+          logger.error(`reconnect failed: ${(err as Error).message}`)
+        );
+      }
+    } else {
+      this.consecutiveEmptyWindows = 0;
     }
     this.counters = { events: 0, initMatches: 0, poolsEmitted: 0, parseFailures: 0 };
+  }
+
+  private async reconnect(): Promise<void> {
+    this.reconnecting = true;
+    try {
+      logger.warn('Tearing down dead WebSocket subscription and rebuilding...');
+      if (this.subscriptionId !== null) {
+        try {
+          await this.connection.removeOnLogsListener(this.subscriptionId);
+        } catch (err) {
+          logger.debug(`removeOnLogsListener on reconnect: ${(err as Error).message}`);
+        }
+        this.subscriptionId = null;
+      }
+      try {
+        this.connection = this.connectionFactory();
+      } catch (err) {
+        logger.error(`failed to build fresh Connection: ${(err as Error).message}`);
+        return;
+      }
+      this.subscribe();
+      this.consecutiveEmptyWindows = 0;
+      logger.info('Listener re-subscribed to Raydium AMM logs on a fresh WebSocket');
+    } finally {
+      this.reconnecting = false;
+    }
   }
 
   private async handleLogs(

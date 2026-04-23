@@ -182,6 +182,65 @@ describe('PoolListener', () => {
     await listener.stop();
   });
 
+  it('reconnects after N consecutive empty heartbeat windows', async () => {
+    const { conn: connA } = setupListenerConnection(null);
+    const { conn: connB } = setupListenerConnection(null);
+    let factoryCalls = 0;
+    const factory = () => {
+      factoryCalls++;
+      return connB;
+    };
+
+    const { PoolListener } = await import('../src/listener');
+    const listener = new PoolListener(connA, 100, {
+      reconnectAfterEmptyWindows: 2,
+      connectionFactory: factory,
+    });
+    await listener.start();
+    expect(connA.onLogs).toHaveBeenCalledTimes(1);
+
+    // First empty window — just a warning, no reconnect.
+    (listener as any).logHeartbeat();
+    expect(factoryCalls).toBe(0);
+
+    // Second empty window — reconnect fires.
+    (listener as any).logHeartbeat();
+    await new Promise((r) => setImmediate(r));
+
+    expect(factoryCalls).toBe(1);
+    expect(connA.removeOnLogsListener).toHaveBeenCalledTimes(1);
+    expect(connB.onLogs).toHaveBeenCalledTimes(1);
+    await listener.stop();
+  });
+
+  it('resets the empty-window counter when events arrive', async () => {
+    const { conn, invoke } = setupListenerConnection(null);
+    let factoryCalls = 0;
+    const factory = () => {
+      factoryCalls++;
+      return conn;
+    };
+
+    const { PoolListener } = await import('../src/listener');
+    const listener = new PoolListener(conn, 100, {
+      reconnectAfterEmptyWindows: 2,
+      connectionFactory: factory,
+    });
+    await listener.start();
+
+    (listener as any).logHeartbeat(); // empty window 1
+    // Inject an event so the next heartbeat sees events > 0.
+    const cb = invoke()!;
+    await cb({ signature: 'X', logs: ['swap'], err: null });
+
+    (listener as any).logHeartbeat(); // non-empty -> resets counter
+    (listener as any).logHeartbeat(); // empty again — only 1 in a row
+    await new Promise((r) => setImmediate(r));
+
+    expect(factoryCalls).toBe(0);
+    await listener.stop();
+  });
+
   it('deduplicates repeat signatures', async () => {
     const tokenMint = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
     const accounts = new Array(10)

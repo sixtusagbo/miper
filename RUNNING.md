@@ -49,7 +49,8 @@ How to read it:
 | Pattern | What it means |
 |---------|---------------|
 | `events > 0` | WebSocket is alive, RPC is delivering. |
-| `events = 0` for multiple intervals | WebSocket is dead — check `SOLANA_WS_URL`, maybe bounce the bot. |
+| `events = 0` once | Warning is logged. Could be a transient blip. |
+| `events = 0` twice in a row | Listener auto-reconnects on a fresh WebSocket (`Tearing down dead WebSocket subscription and rebuilding...`). If you see this keep repeating, `SOLANA_WS_URL` is probably broken. |
 | `events > 0` but `initMatches = 0` | No pools are being created right now. Normal during quiet hours; try again during 18:00-04:00 UTC. |
 | `initMatches > 0`, `poolsEmitted = 0` | Parser is rejecting every candidate. Investigate with debug logging. |
 | `parseFailures > 0` | RPC timing out on `getParsedTransaction`. Usually transient. |
