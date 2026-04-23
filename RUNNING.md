@@ -28,13 +28,30 @@ That's it. The bot will:
 
 ## Seeing your stats
 
-Three ways:
+Three quick views:
 
 1. **Rolling summary** — automatic every 15 minutes during the run
 2. **On demand** — open a second terminal and run `npm run status`
 3. **On shutdown** — Ctrl+C prints a final status before exiting
 
 Status shows open positions, win rate, total spent/received, realized PnL, and (in paper mode) your paper bag balance as a percentage return against `SIMULATED_STARTING_SOL` (default 1 SOL).
+
+## Full review: is it time to go live?
+
+```
+npm run review
+```
+
+Deeper than `status`. Surfaces everything the DB has accumulated across all runs (the DB persists forever — `rm sniper.db` to reset):
+
+- Data window (first → last activity, in days)
+- PnL summary + paper bag return
+- Best & worst finished positions
+- Top 10 rejection reasons with counts (tells you why most pools are being filtered out)
+- **Live-readiness checklist** with PASS/FAIL on the RUNNING.md criteria: ≥20 finished positions, positive realized PnL, ≥3 days of data
+- Verdict line: "NOT READY — $reasons" or "Data-driven checks PASSED. Review the log for stability, then consider going live."
+
+Run it before each decision about flipping `SIMULATE=false`. The verdict is advisory — still sanity-check the log for RPC drops and crashes.
 
 ## Knowing the bot is alive (listener heartbeat)
 

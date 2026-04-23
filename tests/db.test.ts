@@ -7,9 +7,13 @@ import {
   closeDb,
   countOpenPositions,
   createPosition,
+  getActivityWindow,
+  getFinishedPositions,
   getOpenPositions,
   getPnlSummary,
   getPosition,
+  getRejectionCount,
+  getTopRejectionReasons,
   getTradesForPosition,
   isTokenKnown,
   recordRejection,
@@ -170,5 +174,64 @@ describe('db: PnL summary', () => {
     const pnl = getPnlSummary();
     expect(pnl.winRate).toBe(0);
     expect(pnl.openCount).toBe(1);
+  });
+});
+
+describe('db: review helpers', () => {
+  it('getFinishedPositions sorts by pnl descending and skips open positions', () => {
+    const big = mkPosition({ tokenMint: 'BIG', amountSolSpent: 0.05 });
+    updatePosition(big.id, { status: 'closed', amountSolReceived: 0.25 }); // +0.20
+
+    const mid = mkPosition({ tokenMint: 'MID', amountSolSpent: 0.05 });
+    updatePosition(mid.id, { status: 'closed', amountSolReceived: 0.08 }); // +0.03
+
+    const loser = mkPosition({ tokenMint: 'LOSER', amountSolSpent: 0.05 });
+    updatePosition(loser.id, { status: 'stopped', amountSolReceived: 0.02 }); // -0.03
+
+    mkPosition({ tokenMint: 'OPEN' }); // still open — must not appear
+
+    const finished = getFinishedPositions();
+    expect(finished.map((p) => p.token_mint)).toEqual(['BIG', 'MID', 'LOSER']);
+    expect(finished[0].pnl_sol).toBeCloseTo(0.2);
+    expect(finished[0].multiplier).toBeCloseTo(5);
+    expect(finished[2].pnl_sol).toBeCloseTo(-0.03);
+  });
+
+  it('getTopRejectionReasons groups by reason and ranks by count', () => {
+    const rej = (reason: string, mint: string) =>
+      recordRejection({ tokenMint: mint, reason, aiScore: null, poolAddress: null });
+    rej('safety: top holder 95%', 'A');
+    rej('safety: top holder 95%', 'B');
+    rej('safety: top holder 95%', 'C');
+    rej('safety: liquidity low', 'D');
+    rej('ai score too low', 'E');
+    rej('ai score too low', 'F');
+
+    const top = getTopRejectionReasons(10);
+    expect(top[0]).toEqual({ reason: 'safety: top holder 95%', count: 3 });
+    expect(top[1]).toEqual({ reason: 'ai score too low', count: 2 });
+    expect(top[2]).toEqual({ reason: 'safety: liquidity low', count: 1 });
+    expect(getRejectionCount()).toBe(6);
+  });
+
+  it('getActivityWindow spans both positions and rejections', () => {
+    mkPosition();
+    recordRejection({
+      tokenMint: 'REJ',
+      reason: 'safety',
+      aiScore: null,
+      poolAddress: null,
+    });
+    const w = getActivityWindow();
+    expect(w.first).not.toBeNull();
+    expect(w.last).not.toBeNull();
+    // first <= last
+    expect((w.first ?? '') <= (w.last ?? '')).toBe(true);
+  });
+
+  it('getActivityWindow returns nulls for an empty DB', () => {
+    const w = getActivityWindow();
+    expect(w.first).toBeNull();
+    expect(w.last).toBeNull();
   });
 });

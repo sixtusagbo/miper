@@ -318,6 +318,63 @@ export function getPnlSummary(): PnlSummary {
   };
 }
 
+export interface FinishedPosition extends Position {
+  pnl_sol: number;
+  multiplier: number;
+}
+
+export function getFinishedPositions(): FinishedPosition[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT *,
+              (amount_sol_received - amount_sol_spent) AS pnl_sol,
+              CASE WHEN amount_sol_spent > 0
+                   THEN amount_sol_received / amount_sol_spent
+                   ELSE 0 END AS multiplier
+       FROM positions
+       WHERE status IN ('closed','stopped')
+       ORDER BY pnl_sol DESC`
+    )
+    .all() as FinishedPosition[];
+  return rows;
+}
+
+export function getTopRejectionReasons(
+  limit = 10
+): Array<{ reason: string; count: number }> {
+  return getDb()
+    .prepare(
+      `SELECT reason, COUNT(*) AS count
+       FROM rejected_tokens
+       GROUP BY reason
+       ORDER BY count DESC
+       LIMIT ?`
+    )
+    .all(limit) as Array<{ reason: string; count: number }>;
+}
+
+export function getRejectionCount(): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS c FROM rejected_tokens')
+    .get() as { c: number };
+  return row.c;
+}
+
+export function getActivityWindow(): { first: string | null; last: string | null } {
+  const conn = getDb();
+  const pos = conn
+    .prepare('SELECT MIN(created_at) AS first, MAX(updated_at) AS last FROM positions')
+    .get() as { first: string | null; last: string | null };
+  const rej = conn
+    .prepare('SELECT MIN(created_at) AS first, MAX(created_at) AS last FROM rejected_tokens')
+    .get() as { first: string | null; last: string | null };
+  const first =
+    [pos.first, rej.first].filter((s): s is string => !!s).sort()[0] ?? null;
+  const last =
+    [pos.last, rej.last].filter((s): s is string => !!s).sort().slice(-1)[0] ?? null;
+  return { first, last };
+}
+
 export function closeDb(): void {
   if (db) {
     db.close();

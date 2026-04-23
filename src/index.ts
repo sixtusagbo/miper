@@ -23,6 +23,7 @@ import { analyzeToken } from './analyzer';
 import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } from './trader';
 import { startMonitoring, stopMonitoring } from './positions';
 import { InflightGate, withTimeout } from './concurrency';
+import { reviewCommand } from './review';
 
 // Cap concurrent analyses. Free-tier RPCs (Helius: 10 req/s) survive easily
 // with this limit since each analysis makes ~3 RPC calls.
@@ -352,6 +353,11 @@ program
   .command('balance')
   .description('Show wallet SOL balance')
   .action(balanceCommand);
+
+program
+  .command('review')
+  .description('Summarize the DB: PnL, positions, rejections, live-readiness')
+  .action(reviewCommand);
 
 program
   .command('sell <positionId>')

@@ -15,6 +15,7 @@
     "simulate": "SIMULATE=true ts-node src/index.ts snipe",
     "monitor": "ts-node src/index.ts monitor",
     "status": "ts-node src/index.ts status",
+    "review": "ts-node src/index.ts review",
     "balance": "ts-node src/index.ts balance",
     "test": "vitest run",
     "test:watch": "vitest",
