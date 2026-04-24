@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   mockFetch: vi.fn(),
   mockGetMint: vi.fn(),
   mockGetTokenLargestAccounts: vi.fn(),
+  mockGetAccountInfo: vi.fn(),
+  mockGetSignaturesForAddress: vi.fn(),
 }));
 
 vi.mock('node-fetch', () => ({ default: mocks.mockFetch }));
@@ -39,6 +41,7 @@ import {
   scoreWithAi,
 } from '../src/analyzer';
 import type { NewPool } from '../src/listener';
+import { clearCreatorHistoryCache } from '../src/creatorHistory';
 
 beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
@@ -57,6 +60,12 @@ beforeEach(() => {
   mocks.mockFetch.mockReset();
   mocks.mockGetMint.mockReset();
   mocks.mockGetTokenLargestAccounts.mockReset();
+  mocks.mockGetAccountInfo.mockReset();
+  mocks.mockGetSignaturesForAddress.mockReset();
+  // Default: metadata account missing, creator wallet untouched.
+  mocks.mockGetAccountInfo.mockResolvedValue(null);
+  mocks.mockGetSignaturesForAddress.mockResolvedValue([]);
+  clearCreatorHistoryCache();
 });
 
 function fakePool(overrides: Partial<NewPool> = {}): NewPool {
@@ -76,6 +85,8 @@ function fakePool(overrides: Partial<NewPool> = {}): NewPool {
 function fakeConnection() {
   return {
     getTokenLargestAccounts: mocks.mockGetTokenLargestAccounts,
+    getAccountInfo: mocks.mockGetAccountInfo,
+    getSignaturesForAddress: mocks.mockGetSignaturesForAddress,
   } as any;
 }
 
@@ -492,5 +503,67 @@ describe('pump source', () => {
     expect(analysis.shouldBuy).toBe(true);
     expect(analysis.ai.score).toBe(80);
     expect(mocks.mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('pump analysis fetches metadata + creator history and surfaces both in the AI prompt', async () => {
+    mocks.mockGetMint.mockResolvedValue({
+      mintAuthority: null,
+      freezeAuthority: null,
+      supply: 1_000_000n * 1_000_000n,
+      decimals: 6,
+    });
+    // Build a realistic Metaplex metadata account so fetchTokenMetadata
+    // returns real name/symbol/uri rather than null.
+    const metadataBuffer = (() => {
+      const header = Buffer.alloc(1 + 32 + 32, 0);
+      header[0] = 4;
+      const strField = (s: string, max: number) => {
+        const len = Buffer.alloc(4);
+        len.writeUInt32LE(max, 0);
+        const body = Buffer.alloc(max, 0);
+        Buffer.from(s).copy(body, 0);
+        return Buffer.concat([len, body]);
+      };
+      return Buffer.concat([
+        header,
+        strField('Pepe 2.0', 32),
+        strField('PEPE2', 10),
+        strField('https://example.com/p.json', 200),
+        Buffer.alloc(32, 0),
+      ]);
+    })();
+    mocks.mockGetAccountInfo.mockResolvedValue({ data: metadataBuffer });
+    const nowSec = Math.floor(Date.now() / 1000);
+    mocks.mockGetSignaturesForAddress.mockResolvedValue([
+      { signature: 'a', blockTime: nowSec - 86400 },
+      { signature: 'b', blockTime: nowSec - 7 * 86400 },
+    ]);
+    mocks.mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"score": 65, "reasoning": "aged creator + real metadata"}' }],
+    });
+
+    const analysis = await analyzeToken(
+      fakeConnection(),
+      fakePool({
+        tokenMint: VALID_MINT,
+        creator: 'So11111111111111111111111111111111111111112',
+        initialLiquiditySol: 2.5,
+      })
+    );
+
+    expect(analysis.shouldBuy).toBe(false); // 65 < MIN_AI_SCORE=70 default
+    expect(analysis.ai.score).toBe(65);
+    expect(mocks.mockGetAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockGetSignaturesForAddress).toHaveBeenCalledTimes(1);
+
+    // Inspect the user prompt Claude actually saw.
+    const call = mocks.mockCreate.mock.calls[0][0];
+    const userPrompt = call.messages[0].content as string;
+    expect(userPrompt).toContain('Pepe 2.0');
+    expect(userPrompt).toContain('PEPE2');
+    expect(userPrompt).toContain('https://example.com/p.json');
+    expect(userPrompt).toContain('2.500 SOL'); // initialLiquiditySol
+    expect(userPrompt).toContain('2 recent txs');
+    expect(call.system).toContain('pump.fun launches');
   });
 });

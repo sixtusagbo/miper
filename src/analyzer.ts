@@ -10,6 +10,8 @@ import { Config, loadConfig, SOL_MINT_ADDRESS } from './config';
 import { NewPool } from './listener';
 import { logger } from './logger';
 import { retry } from './concurrency';
+import { fetchTokenMetadata } from './metadata';
+import { fetchCreatorHistory } from './creatorHistory';
 
 // Fresh mints often aren't visible to every RPC node for a second or two
 // after creation. We sleep before the first getMint call so the common path
@@ -297,7 +299,7 @@ export async function fetchMarketData(pool: NewPool): Promise<MarketData> {
 // Stage 3: Claude AI scoring
 // ---------------------------------------------------------------------------
 
-const AI_SYSTEM_PROMPT = `You are a Solana memecoin trading analyst. You evaluate new tokens for quick 2-5x trades.
+const RAYDIUM_AI_SYSTEM_PROMPT = `You are a Solana memecoin trading analyst. You evaluate new tokens for quick 2-5x trades.
 You are cautious, data-driven, and focused on avoiding rugs. Your job is to score tokens 0-100
 based on how likely they are to pump profitably while being safe enough to trade.
 
@@ -310,7 +312,46 @@ SCORING GUIDE:
 Respond in exactly this JSON format, no markdown:
 {"score": <number 0-100>, "reasoning": "<1-2 sentence explanation>"}`;
 
-function buildUserPrompt(pool: NewPool, market: MarketData, safety: SafetyCheck): string {
+// Pump.fun scoring is RELATIVE to typical pump launches, not to some ideal
+// safe token. Every fresh pump.fun mint has 100% concentration in the
+// bonding-curve PDA, seconds of age, and sub-10-SOL liquidity by design —
+// those are structural invariants, not per-token red flags. Claude's job here
+// is to identify launches that are ABOVE AVERAGE for pump.fun based on
+// dev commitment, creator track record, and metadata effort.
+const PUMP_AI_SYSTEM_PROMPT = `You are a Solana memecoin trading analyst specializing in pump.fun launches.
+
+IMPORTANT CONTEXT: every pump.fun token launches with these baseline conditions:
+- 100% of supply held by the bonding-curve PDA at t=0 (this is how pump.fun works)
+- Pool age < 1 minute (you only see them seconds after launch)
+- Liquidity < 10 SOL at launch (the bonding curve starts with ~30 SOL virtual reserves)
+
+DO NOT penalize these baseline facts — they are the same for every launch and carry zero differentiating signal. Your job is to score RELATIVE to typical pump.fun launches, looking for the ~1% of launches that differentiate themselves on real signals.
+
+SIGNALS THAT MATTER (in descending order of importance):
+1. Dev commitment — how much SOL did the creator co-deposit in the create tx? Minimum launch is ~0.03 SOL. A 2+ SOL initial buy signals skin in the game.
+2. Creator track record — is this a fresh disposable wallet (<1 day old, <5 prior txs) or an aged active wallet? Brand-new wallets are the overwhelming signature of rug-launchers. Aged wallets are marginally reassuring.
+3. Metadata effort — does the token have a real name/symbol, or placeholder trash? Does the URI look like a real hosted JSON vs garbage?
+4. Mint address vanity — addresses ending in "pump" are vanity-ground (takes some compute); raw random addresses suggest less effort.
+
+SCORING GUIDE (relative to typical pump launches):
+- 80-100: Standout launch — aged creator with history + large dev buy + quality metadata. Rare. Buy.
+- 60-79: Above-average on 1-2 signals. Marginal buy depending on threshold.
+- 40-59: Typical pump launch. Nothing differentiates it either way. Skip.
+- 0-39: Worse than typical (e.g. metadata is literally empty, or creator has visible recent rug pattern). Skip.
+
+Respond in exactly this JSON format, no markdown:
+{"score": <number 0-100>, "reasoning": "<1-2 sentence explanation citing the specific signals you weighted>"}`;
+
+export interface PumpSignalContext {
+  metadata: { name: string; symbol: string; uri: string } | null;
+  creator: {
+    address: string | null;
+    totalRecentTxs: number;
+    oldestActivityDaysAgo: number | null;
+  };
+}
+
+function buildRaydiumUserPrompt(pool: NewPool, market: MarketData, safety: SafetyCheck): string {
   const ageMinutes = Math.max(0, (Date.now() / 1000 - pool.timestamp) / 60);
   return `Analyze this new Solana memecoin for a quick snipe trade (target 2-5x, small position).
 
@@ -339,6 +380,34 @@ POOL:
 Score this token 0-100 for a quick 2-5x snipe trade. Consider rug risk, liquidity depth, holder distribution, and potential for a pump.`;
 }
 
+function buildPumpUserPrompt(pool: NewPool, ctx: PumpSignalContext): string {
+  const md = ctx.metadata;
+  const creatorLine = ctx.creator.address
+    ? `${ctx.creator.address} (${ctx.creator.totalRecentTxs} recent txs, ${ctx.creator.oldestActivityDaysAgo !== null ? `oldest activity ${ctx.creator.oldestActivityDaysAgo.toFixed(1)} days ago` : 'no visible history'})`
+    : 'unknown';
+  const mintVanity = pool.tokenMint.toLowerCase().endsWith('pump')
+    ? "yes (ends in 'pump')"
+    : 'no (raw random address)';
+  return `Score this pump.fun launch relative to typical pump.fun launches.
+
+CREATOR:
+- Address: ${creatorLine}
+
+DEV COMMITMENT:
+- Initial SOL deposit in create tx: ${pool.initialLiquiditySol.toFixed(3)} SOL
+
+METADATA:
+- Name: ${md?.name ? `"${md.name}"` : 'MISSING'}
+- Symbol: ${md?.symbol ? `"${md.symbol}"` : 'MISSING'}
+- URI: ${md?.uri ? md.uri : 'MISSING'}
+
+MINT:
+- Address: ${pool.tokenMint}
+- Vanity-ground: ${mintVanity}
+
+Apply the relative scoring rubric. Cite the specific signals you weighted in your reasoning.`;
+}
+
 function clampScore(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, Math.round(n)));
@@ -357,16 +426,22 @@ export async function scoreWithAi(
   pool: NewPool,
   market: MarketData,
   safety: SafetyCheck,
-  cfg: Config = loadConfig()
+  cfg: Config = loadConfig(),
+  pumpCtx: PumpSignalContext | null = null
 ): Promise<AiScore> {
   try {
     const client = getAnthropic(cfg);
     logger.debug(`claude: scoring ${pool.tokenMint}`);
+    const isPump = cfg.source === 'pump' && pumpCtx !== null;
+    const systemPrompt = isPump ? PUMP_AI_SYSTEM_PROMPT : RAYDIUM_AI_SYSTEM_PROMPT;
+    const userPrompt = isPump
+      ? buildPumpUserPrompt(pool, pumpCtx)
+      : buildRaydiumUserPrompt(pool, market, safety);
     const response = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 600,
-      system: AI_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: buildUserPrompt(pool, market, safety) }],
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
     });
 
     const textBlock = response.content.find((b) => b.type === 'text');
@@ -391,6 +466,34 @@ export async function scoreWithAi(
 // Pipeline
 // ---------------------------------------------------------------------------
 
+async function buildPumpContext(
+  connection: Connection,
+  pool: NewPool
+): Promise<PumpSignalContext> {
+  // Metadata and creator history are independent reads — fetch in parallel
+  // so we don't stack two round-trips onto the already-painful pump analysis
+  // latency. Each settles independently; a failure turns into "unknown" in
+  // the prompt rather than blocking the analysis.
+  const [metadata, creatorHistory] = await Promise.all([
+    fetchTokenMetadata(connection, pool.tokenMint),
+    pool.creator
+      ? fetchCreatorHistory(connection, pool.creator)
+      : Promise.resolve({
+          totalRecentTxs: 0,
+          oldestActivityDaysAgo: null,
+          fetchedAt: Date.now(),
+        }),
+  ]);
+  return {
+    metadata,
+    creator: {
+      address: pool.creator,
+      totalRecentTxs: creatorHistory.totalRecentTxs,
+      oldestActivityDaysAgo: creatorHistory.oldestActivityDaysAgo,
+    },
+  };
+}
+
 export async function analyzeToken(
   connection: Connection,
   pool: NewPool,
@@ -410,7 +513,8 @@ export async function analyzeToken(
     };
   }
 
-  const ai = await scoreWithAi(pool, market, safety, cfg);
+  const pumpCtx = cfg.source === 'pump' ? await buildPumpContext(connection, pool) : null;
+  const ai = await scoreWithAi(pool, market, safety, cfg, pumpCtx);
   const passesAi = ai.score >= cfg.minAiScore;
 
   return {
