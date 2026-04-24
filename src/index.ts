@@ -382,31 +382,31 @@ program
   .command('snipe')
   .description('Listen for new Raydium or pump.fun launches and auto-buy/auto-manage')
   .option('--simulate', 'force simulation mode')
-  .option('--source <source>', "token source: 'raydium' or 'pump'", 'raydium')
+  .option('--source <source>', "token source: 'raydium' or 'pump' (falls back to SOURCE env, then 'raydium')")
   .action(snipeCommand);
 
 program
   .command('monitor')
   .description('Monitor existing positions (no new buys)')
-  .option('--source <source>', "which ledger to read: 'raydium' or 'pump'", 'raydium')
+  .option('--source <source>', "which ledger to read: 'raydium' or 'pump' (falls back to SOURCE env, then 'raydium')")
   .action(monitorCommand);
 
 program
   .command('status')
   .description('Show open positions and PnL summary')
-  .option('--source <source>', "which ledger to read: 'raydium' or 'pump'", 'raydium')
+  .option('--source <source>', "which ledger to read: 'raydium' or 'pump' (falls back to SOURCE env, then 'raydium')")
   .action(statusCommand);
 
 program
   .command('balance')
   .description('Show wallet SOL balance')
-  .option('--source <source>', "resolve config for: 'raydium' or 'pump'", 'raydium')
+  .option('--source <source>', "resolve config for: 'raydium' or 'pump' (falls back to SOURCE env, then 'raydium')")
   .action(balanceCommand);
 
 program
   .command('review')
   .description('Summarize the DB: PnL, positions, rejections, live-readiness')
-  .option('--source <source>', "which ledger to review: 'raydium' or 'pump'", 'raydium')
+  .option('--source <source>', "which ledger to review: 'raydium' or 'pump' (falls back to SOURCE env, then 'raydium')")
   .action((options) => {
     applyCliFlags(options);
     return reviewCommand();
@@ -416,7 +416,7 @@ program
   .command('sell <positionId>')
   .description('Manually sell a position')
   .option('--pct <pct>', 'percentage of position to sell (1-100)', '100')
-  .option('--source <source>', "which ledger to sell from: 'raydium' or 'pump'", 'raydium')
+  .option('--source <source>', "which ledger to sell from: 'raydium' or 'pump' (falls back to SOURCE env, then 'raydium')")
   .action(sellCommand);
 
 program.parseAsync(process.argv).catch((err) => {
