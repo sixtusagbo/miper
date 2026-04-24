@@ -1,5 +1,9 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-import { getMint } from '@solana/spl-token';
+import {
+  getMint,
+  TOKEN_2022_PROGRAM_ID,
+  TokenInvalidAccountOwnerError,
+} from '@solana/spl-token';
 import Anthropic from '@anthropic-ai/sdk';
 import fetch from 'node-fetch';
 import { Config, loadConfig, SOL_MINT_ADDRESS } from './config';
@@ -30,6 +34,21 @@ function getSafetyPreReadDelayMs(): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Pump.fun mints are Token-2022, not the classic SPL Token program, so
+// getMint's default programId bounces with TokenInvalidAccountOwnerError.
+// Try the default first (cheap happy path for Raydium / legacy mints) and
+// fall back to Token-2022 only on that specific error.
+async function getMintAcrossPrograms(connection: Connection, mintPk: PublicKey) {
+  try {
+    return await getMint(connection, mintPk);
+  } catch (err) {
+    if (err instanceof TokenInvalidAccountOwnerError) {
+      return await getMint(connection, mintPk, undefined, TOKEN_2022_PROGRAM_ID);
+    }
+    throw err;
+  }
 }
 
 export interface SafetyCheck {
@@ -106,7 +125,7 @@ export async function runSafetyChecks(
   try {
     await sleep(getSafetyPreReadDelayMs());
     const mintPk = new PublicKey(tokenMint);
-    const mintInfo = await retry(() => getMint(connection, mintPk), {
+    const mintInfo = await retry(() => getMintAcrossPrograms(connection, mintPk), {
       attempts: SAFETY_RETRY_ATTEMPTS,
       baseDelayMs: SAFETY_RETRY_BASE_MS,
       label: `getMint ${tokenMint.slice(0, 8)}`,

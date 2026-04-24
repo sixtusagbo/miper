@@ -17,7 +17,17 @@ vi.mock('@anthropic-ai/sdk', () => {
   return { default: MockAnthropic };
 });
 
-vi.mock('@solana/spl-token', () => ({ getMint: mocks.mockGetMint }));
+vi.mock('@solana/spl-token', async () => {
+  const { PublicKey } = await import('@solana/web3.js');
+  class TokenInvalidAccountOwnerError extends Error {
+    name = 'TokenInvalidAccountOwnerError';
+  }
+  return {
+    getMint: mocks.mockGetMint,
+    TOKEN_2022_PROGRAM_ID: new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'),
+    TokenInvalidAccountOwnerError,
+  };
+});
 
 import { resetConfigCache, loadConfig } from '../src/config';
 import {
@@ -162,6 +172,39 @@ describe('runSafetyChecks', () => {
     const result = await runSafetyChecks(fakeConnection(), 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', 10_000, cfg);
     expect(result.passed).toBe(false);
     expect(result.failures.some((f) => f.includes('rpc timeout'))).toBe(true);
+  });
+
+  it('retries getMint with Token-2022 when the default program rejects the owner', async () => {
+    // Import the mocked class so we can throw the exact type the handler
+    // catches (instanceof check in getMintAcrossPrograms).
+    const spl = await import('@solana/spl-token');
+    const invalidOwner = new spl.TokenInvalidAccountOwnerError('');
+
+    // First call (default SPL Token programId) rejects — pump.fun mint.
+    // Second call (with TOKEN_2022_PROGRAM_ID) succeeds.
+    mocks.mockGetMint
+      .mockRejectedValueOnce(invalidOwner)
+      .mockResolvedValueOnce({
+        mintAuthority: null,
+        freezeAuthority: null,
+        supply: 1_000_000n * 1_000_000n,
+        decimals: 6,
+      });
+    mocks.mockGetTokenLargestAccounts.mockResolvedValue({
+      value: [{ amount: '50000000000' }],
+    });
+
+    const result = await runSafetyChecks(
+      fakeConnection(),
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+      10_000,
+      loadConfig()
+    );
+    expect(result.passed).toBe(true);
+    expect(mocks.mockGetMint).toHaveBeenCalledTimes(2);
+    // Second call must pass the Token-2022 program ID.
+    const secondCallArgs = mocks.mockGetMint.mock.calls[1];
+    expect(secondCallArgs[3].toBase58()).toBe('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
   });
 
   it('retries getMint when the mint has not propagated yet', async () => {
