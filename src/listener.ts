@@ -11,6 +11,9 @@ export interface NewPool {
   initialLiquiditySol: number;
   txSignature: string;
   timestamp: number;
+  // The creator/deployer wallet. For pump.fun this is accounts[7] of the
+  // Create instruction; for Raydium it's not meaningful so we leave it null.
+  creator: string | null;
 }
 
 // `ray_log` is intentionally excluded: it appears in every Raydium log (swaps,
@@ -109,6 +112,7 @@ export async function parsePoolFromSignature(
         initialLiquiditySol: estimateSolLiquidity(tx.meta ?? null),
         txSignature: signature,
         timestamp: tx.blockTime ?? Math.floor(Date.now() / 1000),
+        creator: null,
       };
     }
     return null;
@@ -119,9 +123,11 @@ export async function parsePoolFromSignature(
 }
 
 // Pump.fun `create` instruction account layout (from the public IDL):
-//   [0] mint, [1] mint_authority, [2] bonding_curve, ...
+//   [0] mint, [1] mint_authority, [2] bonding_curve, [3] associated_bonding_curve,
+//   [4] global, [5] mpl_token_metadata, [6] metadata, [7] user (creator), ...
 // We treat the bonding curve PDA as the pool address so downstream code that
-// keys on poolAddress still has a stable identifier.
+// keys on poolAddress still has a stable identifier, and surface accounts[7]
+// as the creator so the analyzer can look up their launch history.
 export async function parsePumpMintFromSignature(
   connection: Connection,
   signature: string
@@ -143,6 +149,7 @@ export async function parsePumpMintFromSignature(
 
       const mint = accounts[0]?.toBase58();
       const bondingCurve = accounts[2]?.toBase58();
+      const creator = accounts[7]?.toBase58() ?? null;
       if (!mint) continue;
 
       return {
@@ -153,6 +160,7 @@ export async function parsePumpMintFromSignature(
         initialLiquiditySol: estimateSolLiquidity(tx.meta ?? null),
         txSignature: signature,
         timestamp: tx.blockTime ?? Math.floor(Date.now() / 1000),
+        creator,
       };
     }
     return null;

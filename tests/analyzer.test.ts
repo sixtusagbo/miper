@@ -68,6 +68,7 @@ function fakePool(overrides: Partial<NewPool> = {}): NewPool {
     initialLiquiditySol: 10,
     txSignature: 'SIG',
     timestamp: Math.floor(Date.now() / 1000),
+    creator: null,
     ...overrides,
   };
 }
