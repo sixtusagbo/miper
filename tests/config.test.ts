@@ -28,7 +28,9 @@ function setEnv(overrides: Record<string, string | undefined> = {}): void {
       key === 'SIMULATED_STARTING_SOL' ||
       key === 'LOG_LEVEL' ||
       key === 'MAX_OPEN_POSITIONS' ||
-      key === 'DB_PATH'
+      key === 'DB_PATH' ||
+      key === 'LOG_FILE' ||
+      key === 'SOURCE'
     ) {
       delete process.env[key];
     }
@@ -150,5 +152,32 @@ describe('loadConfig', () => {
     const cfg = loadConfig();
     expect(cfg.solanaRpcUrl).toBe('https://api.mainnet-beta.solana.com');
     expect(cfg.solanaWsUrl).toBe('wss://api.mainnet-beta.solana.com');
+  });
+
+  it("defaults source to 'raydium' with ./sniper.db and no log file", () => {
+    const cfg = loadConfig();
+    expect(cfg.source).toBe('raydium');
+    expect(cfg.dbPath).toBe('./sniper.db');
+    expect(cfg.logFile).toBeNull();
+  });
+
+  it("when SOURCE=pump, defaults dbPath to ./pump.db and logFile to ./pump.log", () => {
+    setEnv({ SOURCE: 'pump' });
+    const cfg = loadConfig();
+    expect(cfg.source).toBe('pump');
+    expect(cfg.dbPath).toBe('./pump.db');
+    expect(cfg.logFile).toBe('./pump.log');
+  });
+
+  it('respects explicit DB_PATH and LOG_FILE when SOURCE=pump', () => {
+    setEnv({ SOURCE: 'pump', DB_PATH: '/tmp/custom.db', LOG_FILE: '/tmp/custom.log' });
+    const cfg = loadConfig();
+    expect(cfg.dbPath).toBe('/tmp/custom.db');
+    expect(cfg.logFile).toBe('/tmp/custom.log');
+  });
+
+  it('throws on an unknown SOURCE value', () => {
+    setEnv({ SOURCE: 'bogus' });
+    expect(() => loadConfig()).toThrow(/SOURCE/);
   });
 });

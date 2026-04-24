@@ -34,8 +34,19 @@ function consoleEnabled(level: LogLevel): boolean {
 let logStream: WriteStream | null = null;
 let logStreamPath: string | undefined = undefined;
 
+function resolveLogFilePath(): string | undefined {
+  try {
+    const fromConfig = loadConfig().logFile?.trim();
+    if (fromConfig) return fromConfig;
+  } catch {
+    // loadConfig may throw before env is set up (e.g. during early CLI bootstrap);
+    // fall through to reading process.env directly.
+  }
+  return process.env.LOG_FILE?.trim() || undefined;
+}
+
 function getLogStream(): WriteStream | null {
-  const path = process.env.LOG_FILE?.trim();
+  const path = resolveLogFilePath();
   if (!path) {
     if (logStream) closeLogFile();
     return null;

@@ -6,6 +6,7 @@ dotenv.config();
 export const PROGRAM_IDS = {
   RAYDIUM_AMM: new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8'),
   RAYDIUM_CPMM: new PublicKey('CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C'),
+  PUMP_FUN: new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'),
   TOKEN_PROGRAM: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
   JUPITER_V6: new PublicKey('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'),
   SOL_MINT: new PublicKey('So11111111111111111111111111111111111111112'),
@@ -15,6 +16,7 @@ export const PROGRAM_IDS = {
 export const SOL_MINT_ADDRESS = PROGRAM_IDS.SOL_MINT.toBase58();
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'trade';
+export type Source = 'raydium' | 'pump';
 
 export interface Config {
   solanaRpcUrl: string;
@@ -40,6 +42,8 @@ export interface Config {
   logLevel: LogLevel;
   maxOpenPositions: number;
   dbPath: string;
+  logFile: string | null;
+  source: Source;
 }
 
 function required(name: string): string {
@@ -77,6 +81,12 @@ function parseLogLevel(value: string | undefined): LogLevel {
   throw new Error(`Invalid LOG_LEVEL: ${value}`);
 }
 
+function parseSource(value: string | undefined): Source {
+  const normalized = (value ?? 'raydium').trim().toLowerCase();
+  if (normalized === 'raydium' || normalized === 'pump') return normalized;
+  throw new Error(`Invalid SOURCE: ${value} (expected 'raydium' or 'pump')`);
+}
+
 let cached: Config | null = null;
 
 // Clears the cached Config so the next loadConfig() re-reads process.env.
@@ -89,6 +99,7 @@ export function loadConfig(): Config {
   if (cached) return cached;
 
   const simulate = boolFromEnv('SIMULATE', true);
+  const source = parseSource(process.env.SOURCE);
   const walletKey = process.env.WALLET_PRIVATE_KEY?.trim() ?? '';
   const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() ?? '';
 
@@ -124,7 +135,11 @@ export function loadConfig(): Config {
     simulatedStartingSol: numberFromEnv('SIMULATED_STARTING_SOL', 1.0),
     logLevel: parseLogLevel(process.env.LOG_LEVEL),
     maxOpenPositions: numberFromEnv('MAX_OPEN_POSITIONS', 10),
-    dbPath: process.env.DB_PATH?.trim() || './sniper.db',
+    // Per-source defaults so Raydium and pump.fun runs write to separate files
+    // and never cross-contaminate each other's trade history.
+    dbPath: process.env.DB_PATH?.trim() || (source === 'pump' ? './pump.db' : './sniper.db'),
+    logFile: process.env.LOG_FILE?.trim() || (source === 'pump' ? './pump.log' : null),
+    source,
   };
 
   validateConfig(config);
