@@ -269,13 +269,13 @@ export async function scoreWithAi(
       return { score: 0, reasoning: 'no JSON in response', error: 'parse error' };
     }
     const parsed = JSON.parse(jsonMatch[0]) as { score?: number; reasoning?: string };
-    return {
-      score: clampScore(Number(parsed.score ?? 0)),
-      reasoning: String(parsed.reasoning ?? '').slice(0, 400),
-    };
+    const score = clampScore(Number(parsed.score ?? 0));
+    const reasoning = String(parsed.reasoning ?? '').slice(0, 400);
+    logger.info(`AI scored ${pool.tokenMint}: ${score}/100 — ${reasoning}`);
+    return { score, reasoning };
   } catch (err) {
     const message = (err as Error).message;
-    logger.warn(`AI scoring failed: ${message}`);
+    logger.warn(`AI scoring failed for ${pool.tokenMint}: ${message}`);
     return { score: 0, reasoning: '', error: message };
   }
 }
