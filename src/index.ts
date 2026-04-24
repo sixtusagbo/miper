@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { Connection } from '@solana/web3.js';
 import chalk from 'chalk';
-import { loadConfig } from './config';
+import { loadConfig, resetConfigCache } from './config';
 import { logger } from './logger';
 import {
   countOpenPositions,
@@ -18,7 +18,7 @@ import {
   updatePosition,
   closeDb,
 } from './db';
-import { PoolListener } from './listener';
+import { PoolListener, PumpListener, LogListener } from './listener';
 import { analyzeToken } from './analyzer';
 import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } from './trader';
 import { startMonitoring, stopMonitoring } from './positions';
@@ -36,17 +36,34 @@ const STATUS_PRINT_INTERVAL_MS = 15 * 60 * 1000;
 
 function printBanner(): void {
   const cfg = loadConfig();
-  logger.banner(`MIPER ${cfg.simulate ? '(SIMULATION)' : '(LIVE)'}`);
+  logger.banner(`MIPER ${cfg.simulate ? '(SIMULATION)' : '(LIVE)'} — source: ${cfg.source}`);
   logger.info(
     `buy ${cfg.buyAmountSol} SOL | TPs ${cfg.takeProfit1}x/${cfg.takeProfit2}x/${cfg.takeProfit3}x | SL ${cfg.stopLoss}x | min AI score ${cfg.minAiScore}`
   );
   logger.info(
     `min liq $${cfg.minLiquidityUsd} | max top holder ${cfg.maxTopHolderPct}% | slippage ${cfg.maxSlippageBps}bps`
   );
+  logger.info(`db: ${cfg.dbPath}${cfg.logFile ? ` | log file: ${cfg.logFile}` : ''}`);
 }
 
-async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
+function applyCliFlags(options: { simulate?: boolean; source?: string }): void {
   if (options.simulate) process.env.SIMULATE = 'true';
+  if (options.source) {
+    const normalized = options.source.trim().toLowerCase();
+    if (normalized !== 'raydium' && normalized !== 'pump') {
+      throw new Error(`--source must be 'raydium' or 'pump', got '${options.source}'`);
+    }
+    process.env.SOURCE = normalized;
+  }
+  // Config is cached; reset so the new env wins when loadConfig() is next called.
+  resetConfigCache();
+}
+
+async function snipeCommand(options: {
+  simulate?: boolean;
+  source?: string;
+}): Promise<void> {
+  applyCliFlags(options);
   const cfg = loadConfig();
   printBanner();
 
@@ -69,7 +86,8 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
     commitment: 'confirmed',
     wsEndpoint: cfg.solanaWsUrl,
   });
-  const listener = new PoolListener(connection);
+  const listener: LogListener =
+    cfg.source === 'pump' ? new PumpListener(connection) : new PoolListener(connection);
   const gate = new InflightGate(MAX_CONCURRENT_ANALYSES);
   // Guards against the same mint being analyzed by concurrent events (multiple
   // init signatures for one pool, or replay after reconnect). Without this,
@@ -350,8 +368,9 @@ program
 
 program
   .command('snipe')
-  .description('Listen for new Raydium pools and auto-buy/auto-manage')
+  .description('Listen for new Raydium or pump.fun launches and auto-buy/auto-manage')
   .option('--simulate', 'force simulation mode')
+  .option('--source <source>', "token source: 'raydium' or 'pump'", 'raydium')
   .action(snipeCommand);
 
 program
