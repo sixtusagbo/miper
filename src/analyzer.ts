@@ -25,8 +25,17 @@ export interface MarketData {
   marketCapUsd: number | null;
   volume24hUsd: number | null;
   supply: number | null;
-  source: 'dexscreener' | 'pool-fallback';
+  source: 'dexscreener' | 'pool-fallback' | 'pump-curve';
 }
+
+// Pump.fun bonding curve initial virtual reserves (from the program's `global`
+// account): ~30 virtual SOL against ~1.073B virtual tokens at launch.
+// Price = virtual_sol / virtual_tokens ≈ 2.8e-8 SOL per token at t=0.
+const PUMP_VIRTUAL_SOL_RESERVES = 30;
+const PUMP_VIRTUAL_TOKEN_RESERVES = 1_073_000_000;
+export const PUMP_INITIAL_PRICE_SOL =
+  PUMP_VIRTUAL_SOL_RESERVES / PUMP_VIRTUAL_TOKEN_RESERVES;
+const PUMP_TOTAL_SUPPLY = 1_000_000_000;
 
 export interface AiScore {
   score: number;
@@ -80,10 +89,15 @@ export async function runSafetyChecks(
 
   if (cfg.requireMintRevoked && !mintRevoked) failures.push('mint authority not revoked');
   if (cfg.requireFreezeRevoked && !freezeRevoked) failures.push('freeze authority not revoked');
-  if (topHolderPct > cfg.maxTopHolderPct) {
+  // Pump.fun tokens always start with ~100% of supply in the bonding-curve PDA
+  // and near-zero external liquidity — the Raydium-era thresholds would reject
+  // every single launch. For pump sources we lean on AI scoring + mint/freeze
+  // revocation instead.
+  const isPump = cfg.source === 'pump';
+  if (!isPump && topHolderPct > cfg.maxTopHolderPct) {
     failures.push(`top holder owns ${topHolderPct.toFixed(1)}% (max ${cfg.maxTopHolderPct}%)`);
   }
-  if (marketLiquidityUsd !== null && marketLiquidityUsd < cfg.minLiquidityUsd) {
+  if (!isPump && marketLiquidityUsd !== null && marketLiquidityUsd < cfg.minLiquidityUsd) {
     failures.push(`liquidity $${marketLiquidityUsd.toFixed(0)} below min $${cfg.minLiquidityUsd}`);
   }
 
@@ -139,6 +153,24 @@ export async function getSolUsdPrice(): Promise<number | null> {
     logger.debug(`getSolUsdPrice failed: ${(err as Error).message}`);
   }
   return solUsdCache?.price ?? null;
+}
+
+// Fresh pump.fun tokens rarely show up on DexScreener in the first few minutes,
+// so we synthesize market data from the program's known initial bonding-curve
+// state and any SOL the creator co-deposited in the create tx.
+export function pumpMarketData(pool: NewPool): MarketData {
+  return {
+    symbol: null,
+    name: null,
+    priceUsd: null,
+    priceSol: PUMP_INITIAL_PRICE_SOL,
+    liquidityUsd: null,
+    liquiditySol: pool.initialLiquiditySol,
+    marketCapUsd: null,
+    volume24hUsd: null,
+    supply: PUMP_TOTAL_SUPPLY,
+    source: 'pump-curve',
+  };
 }
 
 export async function fetchMarketData(pool: NewPool): Promise<MarketData> {
@@ -289,7 +321,7 @@ export async function analyzeToken(
   pool: NewPool,
   cfg: Config = loadConfig()
 ): Promise<TokenAnalysis> {
-  const market = await fetchMarketData(pool);
+  const market = cfg.source === 'pump' ? pumpMarketData(pool) : await fetchMarketData(pool);
   const safety = await runSafetyChecks(connection, pool.tokenMint, market.liquidityUsd, cfg);
 
   if (!safety.passed) {

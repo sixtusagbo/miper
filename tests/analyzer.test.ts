@@ -21,8 +21,10 @@ vi.mock('@solana/spl-token', () => ({ getMint: mocks.mockGetMint }));
 
 import { resetConfigCache, loadConfig } from '../src/config';
 import {
+  PUMP_INITIAL_PRICE_SOL,
   analyzeToken,
   fetchMarketData,
+  pumpMarketData,
   runSafetyChecks,
   scoreWithAi,
 } from '../src/analyzer';
@@ -38,6 +40,7 @@ beforeEach(() => {
   process.env.MAX_TOP_HOLDER_PCT = '30';
   process.env.REQUIRE_MINT_REVOKED = 'true';
   process.env.REQUIRE_FREEZE_REVOKED = 'true';
+  delete process.env.SOURCE;
   resetConfigCache();
   mocks.mockCreate.mockReset();
   mocks.mockFetch.mockReset();
@@ -360,5 +363,65 @@ describe('analyzeToken', () => {
     expect(analysis.shouldBuy).toBe(false);
     expect(analysis.rejectionReason).toMatch(/safety/);
     expect(mocks.mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pump.fun source specifics
+// ---------------------------------------------------------------------------
+
+describe('pump source', () => {
+  const VALID_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+
+  beforeEach(() => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+  });
+
+  it('pumpMarketData returns the bonding-curve initial price, not DexScreener', () => {
+    const md = pumpMarketData(fakePool({ initialLiquiditySol: 0.3 }));
+    expect(md.source).toBe('pump-curve');
+    expect(md.priceSol).toBe(PUMP_INITIAL_PRICE_SOL);
+    expect(md.liquiditySol).toBe(0.3);
+    expect(md.supply).toBe(1_000_000_000);
+  });
+
+  it('runSafetyChecks ignores top-holder % and min liquidity for pump source', async () => {
+    // The bonding curve PDA holds 100% of supply at t=0 — Raydium defaults
+    // would reject this, pump must tolerate it.
+    mocks.mockGetMint.mockResolvedValue({
+      mintAuthority: null,
+      freezeAuthority: null,
+      supply: 1_000_000n * 1_000_000n,
+      decimals: 6,
+    });
+    mocks.mockGetTokenLargestAccounts.mockResolvedValue({
+      value: [{ amount: '1000000000000' }], // the entire supply
+    });
+    const result = await runSafetyChecks(fakeConnection(), VALID_MINT, 50, loadConfig());
+    expect(result.passed).toBe(true);
+    expect(result.failures).toEqual([]);
+    expect(result.topHolderPct).toBeCloseTo(100);
+  });
+
+  it('analyzeToken uses pump market data and skips DexScreener entirely', async () => {
+    mocks.mockGetMint.mockResolvedValue({
+      mintAuthority: null,
+      freezeAuthority: null,
+      supply: 1_000_000n * 1_000_000n,
+      decimals: 6,
+    });
+    mocks.mockGetTokenLargestAccounts.mockResolvedValue({
+      value: [{ amount: '1000000000000' }],
+    });
+    mocks.mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"score": 80, "reasoning": "pump"}' }],
+    });
+
+    const analysis = await analyzeToken(fakeConnection(), fakePool({ tokenMint: VALID_MINT }));
+    expect(analysis.market.source).toBe('pump-curve');
+    expect(analysis.shouldBuy).toBe(true);
+    expect(analysis.ai.score).toBe(80);
+    expect(mocks.mockFetch).not.toHaveBeenCalled();
   });
 });
