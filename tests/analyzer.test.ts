@@ -40,6 +40,7 @@ beforeEach(() => {
   process.env.MAX_TOP_HOLDER_PCT = '30';
   process.env.REQUIRE_MINT_REVOKED = 'true';
   process.env.REQUIRE_FREEZE_REVOKED = 'true';
+  process.env.MIPER_SAFETY_PRE_READ_DELAY_MS = '0';
   delete process.env.SOURCE;
   resetConfigCache();
   mocks.mockCreate.mockReset();

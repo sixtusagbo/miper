@@ -8,10 +8,27 @@ import { logger } from './logger';
 import { retry } from './concurrency';
 
 // Fresh mints often aren't visible to every RPC node for a few hundred ms
-// after creation. Three attempts with 300/600/900 ms spacing gives the chain
-// ~1.8s to propagate before we give up and flag the token as broken.
+// after creation. We sleep briefly BEFORE the first getMint call so the
+// common path uses one RPC round-trip instead of burning attempts on the
+// propagation race, and fall back to a short retry for the stragglers.
+// The env var is read per-call so tests can zero it out without monkey-
+// patching module state.
+const SAFETY_PRE_READ_DELAY_DEFAULT_MS = 400;
 const SAFETY_RETRY_ATTEMPTS = 3;
 const SAFETY_RETRY_BASE_MS = 300;
+
+function getSafetyPreReadDelayMs(): number {
+  const raw = process.env.MIPER_SAFETY_PRE_READ_DELAY_MS;
+  if (raw !== undefined && raw.trim() !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return SAFETY_PRE_READ_DELAY_DEFAULT_MS;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 export interface SafetyCheck {
   mintRevoked: boolean;
@@ -85,6 +102,7 @@ export async function runSafetyChecks(
   let holderCount = 0;
 
   try {
+    await sleep(getSafetyPreReadDelayMs());
     const mintPk = new PublicKey(tokenMint);
     const mintInfo = await retry(() => getMint(connection, mintPk), {
       attempts: SAFETY_RETRY_ATTEMPTS,
