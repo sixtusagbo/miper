@@ -109,12 +109,17 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
         logger.info(
           `skipping ${pool.tokenMint} (score ${analysis.ai.score}): ${analysis.rejectionReason}`
         );
-        recordRejection({
-          tokenMint: pool.tokenMint,
-          reason: analysis.rejectionReason ?? 'unknown',
-          aiScore: analysis.ai.score,
-          poolAddress: pool.poolAddress,
-        });
+        // Don't permanently blocklist mints where AI scoring had a transient
+        // error (rate limit, timeout). Without this, a 429 storm poisons the
+        // rejected_tokens table with mints we never actually evaluated.
+        if (!analysis.ai.error) {
+          recordRejection({
+            tokenMint: pool.tokenMint,
+            reason: analysis.rejectionReason ?? 'unknown',
+            aiScore: analysis.ai.score,
+            poolAddress: pool.poolAddress,
+          });
+        }
         return;
       }
 
