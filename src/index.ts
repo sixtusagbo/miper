@@ -54,6 +54,11 @@ function applyCliFlags(options: { simulate?: boolean; source?: string }): void {
       throw new Error(`--source must be 'raydium' or 'pump', got '${options.source}'`);
     }
     process.env.SOURCE = normalized;
+    // An explicit --source takes ownership of path defaults. Without this,
+    // stale shell env (e.g. DB_PATH=./sniper.db exported from a previous
+    // Raydium session) silently routes pump work into the wrong DB/log.
+    delete process.env.DB_PATH;
+    delete process.env.LOG_FILE;
   }
   // Config is cached; reset so the new env wins when loadConfig() is next called.
   resetConfigCache();
@@ -212,10 +217,11 @@ async function snipeCommand(options: {
   );
 }
 
-async function monitorCommand(): Promise<void> {
-  loadConfig();
+async function monitorCommand(options: { source?: string } = {}): Promise<void> {
+  applyCliFlags(options);
+  const cfg = loadConfig();
   getDb();
-  logger.banner('MIPER monitor');
+  logger.banner(`MIPER monitor — source: ${cfg.source} (db: ${cfg.dbPath})`);
   startMonitoring();
 
   const shutdown = () => {
@@ -286,14 +292,16 @@ function printStatus(): void {
   console.log('');
 }
 
-async function statusCommand(): Promise<void> {
+async function statusCommand(options: { source?: string } = {}): Promise<void> {
+  applyCliFlags(options);
   loadConfig();
   getDb();
   printStatus();
   closeDb();
 }
 
-async function balanceCommand(): Promise<void> {
+async function balanceCommand(options: { source?: string } = {}): Promise<void> {
+  applyCliFlags(options);
   const cfg = loadConfig();
   const wallet = getWallet(cfg);
   logger.info(`wallet: ${wallet.publicKey.toBase58()}`);
@@ -305,7 +313,11 @@ async function balanceCommand(): Promise<void> {
   }
 }
 
-async function sellCommand(positionId: string, options: { pct?: string }): Promise<void> {
+async function sellCommand(
+  positionId: string,
+  options: { pct?: string; source?: string }
+): Promise<void> {
+  applyCliFlags(options);
   const cfg = loadConfig();
   getDb();
   const id = Number(positionId);
@@ -376,27 +388,35 @@ program
 program
   .command('monitor')
   .description('Monitor existing positions (no new buys)')
+  .option('--source <source>', "which ledger to read: 'raydium' or 'pump'", 'raydium')
   .action(monitorCommand);
 
 program
   .command('status')
   .description('Show open positions and PnL summary')
+  .option('--source <source>', "which ledger to read: 'raydium' or 'pump'", 'raydium')
   .action(statusCommand);
 
 program
   .command('balance')
   .description('Show wallet SOL balance')
+  .option('--source <source>', "resolve config for: 'raydium' or 'pump'", 'raydium')
   .action(balanceCommand);
 
 program
   .command('review')
   .description('Summarize the DB: PnL, positions, rejections, live-readiness')
-  .action(reviewCommand);
+  .option('--source <source>', "which ledger to review: 'raydium' or 'pump'", 'raydium')
+  .action((options) => {
+    applyCliFlags(options);
+    return reviewCommand();
+  });
 
 program
   .command('sell <positionId>')
   .description('Manually sell a position')
   .option('--pct <pct>', 'percentage of position to sell (1-100)', '100')
+  .option('--source <source>', "which ledger to sell from: 'raydium' or 'pump'", 'raydium')
   .action(sellCommand);
 
 program.parseAsync(process.argv).catch((err) => {

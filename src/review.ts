@@ -58,7 +58,7 @@ export async function reviewCommand(): Promise<void> {
     return;
   }
 
-  logger.info(`Mode: ${cfg.simulate ? 'SIMULATION' : 'LIVE'}`);
+  logger.info(`Mode: ${cfg.simulate ? 'SIMULATION' : 'LIVE'} — source: ${cfg.source} (db: ${cfg.dbPath})`);
   logger.info(`Data window: ${window.first} UTC -> ${window.last} UTC (${days.toFixed(1)} days)`);
 
   if (cfg.simulate) {

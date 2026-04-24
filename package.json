@@ -15,9 +15,13 @@
     "simulate": "SIMULATE=true ts-node src/index.ts snipe",
     "simulate:pump": "SIMULATE=true ts-node src/index.ts snipe --source pump",
     "monitor": "ts-node src/index.ts monitor",
+    "monitor:pump": "ts-node src/index.ts monitor --source pump",
     "status": "ts-node src/index.ts status",
+    "status:pump": "ts-node src/index.ts status --source pump",
     "review": "ts-node src/index.ts review",
+    "review:pump": "ts-node src/index.ts review --source pump",
     "balance": "ts-node src/index.ts balance",
+    "balance:pump": "ts-node src/index.ts balance --source pump",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
