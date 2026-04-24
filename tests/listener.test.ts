@@ -4,7 +4,9 @@ import {
   SEEN_LIMIT,
   estimateSolLiquidity,
   isInitLog,
+  isPumpCreateLog,
   parsePoolFromSignature,
+  parsePumpMintFromSignature,
   trimSeen,
 } from '../src/listener';
 import { PROGRAM_IDS, SOL_MINT_ADDRESS } from '../src/config';
@@ -377,5 +379,145 @@ describe('parsePoolFromSignature', () => {
     };
     const conn = makeConnection(tx);
     expect(await parsePoolFromSignature(conn, 'sig')).toBeNull();
+  });
+});
+
+describe('isPumpCreateLog', () => {
+  it('matches the pump.fun Create instruction log line', () => {
+    expect(isPumpCreateLog(['Program log: Instruction: Create'])).toBe(true);
+    expect(isPumpCreateLog(['noise', 'Program log: Instruction: Create', 'more'])).toBe(true);
+  });
+
+  it('ignores non-Create pump logs', () => {
+    expect(isPumpCreateLog(['Program log: Instruction: Buy'])).toBe(false);
+    expect(isPumpCreateLog(['Program log: Instruction: Sell'])).toBe(false);
+    expect(isPumpCreateLog([])).toBe(false);
+    expect(isPumpCreateLog(undefined)).toBe(false);
+  });
+});
+
+describe('parsePumpMintFromSignature', () => {
+  const newMint = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+  const bondingCurve = 'So11111111111111111111111111111111111111112';
+
+  function makeConnection(tx: unknown) {
+    return { getParsedTransaction: vi.fn().mockResolvedValue(tx) } as any;
+  }
+
+  it('extracts the mint from accounts[0] of the pump.fun instruction', async () => {
+    const accounts = [
+      new PublicKey(newMint),              // 0 mint
+      new PublicKey('11111111111111111111111111111111'), // 1 mint_authority
+      new PublicKey(bondingCurve),         // 2 bonding_curve
+    ];
+    const tx = {
+      blockTime: 1_700_000_000,
+      transaction: {
+        message: {
+          instructions: [{ programId: PROGRAM_IDS.PUMP_FUN, accounts }],
+        },
+      },
+      meta: { preBalances: [2_000_000_000], postBalances: [1_500_000_000] }, // 0.5 SOL creator deposit
+    };
+    const pool = await parsePumpMintFromSignature(makeConnection(tx), 'sig');
+    expect(pool).not.toBeNull();
+    expect(pool!.tokenMint).toBe(newMint);
+    expect(pool!.poolAddress).toBe(bondingCurve);
+    expect(pool!.baseMint).toBe(SOL_MINT_ADDRESS);
+    expect(pool!.initialLiquiditySol).toBeCloseTo(0.5);
+    expect(pool!.timestamp).toBe(1_700_000_000);
+  });
+
+  it('returns null when no pump instruction is present', async () => {
+    const tx = {
+      blockTime: 1,
+      transaction: {
+        message: {
+          instructions: [{ programId: PROGRAM_IDS.TOKEN_PROGRAM, accounts: [] }],
+        },
+      },
+      meta: { preBalances: [], postBalances: [] },
+    };
+    expect(await parsePumpMintFromSignature(makeConnection(tx), 'sig')).toBeNull();
+  });
+
+  it('swallows RPC errors and returns null', async () => {
+    const conn = {
+      getParsedTransaction: vi.fn().mockRejectedValue(new Error('rpc down')),
+    } as any;
+    expect(await parsePumpMintFromSignature(conn, 'sig')).toBeNull();
+  });
+});
+
+describe('PumpListener', () => {
+  function setupListenerConnection(tx: unknown) {
+    let capturedCallback: ((r: any) => void) | null = null;
+    const conn = {
+      onLogs: vi.fn((_: unknown, cb: (r: any) => void) => {
+        capturedCallback = cb;
+        return 99;
+      }),
+      removeOnLogsListener: vi.fn().mockResolvedValue(undefined),
+      getParsedTransaction: vi.fn().mockResolvedValue(tx),
+    } as any;
+    return { conn, invoke: () => capturedCallback };
+  }
+
+  it('emits newPool when a pump.fun Create log comes through', async () => {
+    const newMint = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+    const accounts = [
+      new PublicKey(newMint),
+      new PublicKey('11111111111111111111111111111111'),
+      new PublicKey(SOL_MINT_ADDRESS),
+    ];
+    const tx = {
+      blockTime: 10,
+      transaction: {
+        message: {
+          instructions: [{ programId: PROGRAM_IDS.PUMP_FUN, accounts }],
+        },
+      },
+      meta: { preBalances: [1_000_000_000], postBalances: [900_000_000] },
+    };
+    const { conn, invoke } = setupListenerConnection(tx);
+
+    const { PumpListener } = await import('../src/listener');
+    const listener = new PumpListener(conn, 0);
+    const spy = vi.fn();
+    listener.on('newPool', spy);
+    await listener.start();
+
+    const cb = invoke()!;
+    await cb({
+      signature: 'SIG_PUMP',
+      logs: ['Program log: Instruction: Create'],
+      err: null,
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0].tokenMint).toBe(newMint);
+    // Pump subscribes to the pump.fun program, not Raydium.
+    expect(conn.onLogs).toHaveBeenCalledWith(
+      PROGRAM_IDS.PUMP_FUN,
+      expect.any(Function),
+      'confirmed'
+    );
+    await listener.stop();
+  });
+
+  it('ignores non-Create pump logs', async () => {
+    const { conn, invoke } = setupListenerConnection(null);
+    const { PumpListener } = await import('../src/listener');
+    const listener = new PumpListener(conn, 0);
+    const spy = vi.fn();
+    listener.on('newPool', spy);
+    await listener.start();
+
+    await invoke()!({ signature: 'S', logs: ['Program log: Instruction: Buy'], err: null });
+    await new Promise((r) => setImmediate(r));
+    expect(spy).not.toHaveBeenCalled();
+    expect(conn.getParsedTransaction).not.toHaveBeenCalled();
+    await listener.stop();
   });
 });
