@@ -162,6 +162,31 @@ describe('runSafetyChecks', () => {
     expect(result.passed).toBe(false);
     expect(result.failures.some((f) => f.includes('rpc timeout'))).toBe(true);
   });
+
+  it('retries getMint when the mint has not propagated yet', async () => {
+    // First two attempts: fresh mint not visible on the RPC (simulated
+    // empty-message throw). Third attempt succeeds — the realistic case.
+    mocks.mockGetMint
+      .mockRejectedValueOnce(new Error(''))
+      .mockRejectedValueOnce(new Error(''))
+      .mockResolvedValueOnce({
+        mintAuthority: null,
+        freezeAuthority: null,
+        supply: 1_000_000n * 1_000_000n,
+        decimals: 6,
+      });
+    mocks.mockGetTokenLargestAccounts.mockResolvedValue({
+      value: [{ amount: '50000000000' }], // 5% top holder
+    });
+    const result = await runSafetyChecks(
+      fakeConnection(),
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+      10_000,
+      loadConfig()
+    );
+    expect(result.passed).toBe(true);
+    expect(mocks.mockGetMint).toHaveBeenCalledTimes(3);
+  });
 });
 
 // ---------------------------------------------------------------------------

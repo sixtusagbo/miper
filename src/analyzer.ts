@@ -5,6 +5,13 @@ import fetch from 'node-fetch';
 import { Config, loadConfig, SOL_MINT_ADDRESS } from './config';
 import { NewPool } from './listener';
 import { logger } from './logger';
+import { retry } from './concurrency';
+
+// Fresh mints often aren't visible to every RPC node for a few hundred ms
+// after creation. Three attempts with 300/600/900 ms spacing gives the chain
+// ~1.8s to propagate before we give up and flag the token as broken.
+const SAFETY_RETRY_ATTEMPTS = 3;
+const SAFETY_RETRY_BASE_MS = 300;
 
 export interface SafetyCheck {
   mintRevoked: boolean;
@@ -79,21 +86,30 @@ export async function runSafetyChecks(
 
   try {
     const mintPk = new PublicKey(tokenMint);
-    const mintInfo = await getMint(connection, mintPk);
+    const mintInfo = await retry(() => getMint(connection, mintPk), {
+      attempts: SAFETY_RETRY_ATTEMPTS,
+      baseDelayMs: SAFETY_RETRY_BASE_MS,
+      label: `getMint ${tokenMint.slice(0, 8)}`,
+    });
     mintRevoked = mintInfo.mintAuthority === null;
     freezeRevoked = mintInfo.freezeAuthority === null;
 
     const decimals = mintInfo.decimals;
     const supply = Number(mintInfo.supply) / 10 ** decimals;
 
-    const largest = await connection.getTokenLargestAccounts(mintPk);
+    const largest = await retry(() => connection.getTokenLargestAccounts(mintPk), {
+      attempts: SAFETY_RETRY_ATTEMPTS,
+      baseDelayMs: SAFETY_RETRY_BASE_MS,
+      label: `getTokenLargestAccounts ${tokenMint.slice(0, 8)}`,
+    });
     holderCount = largest.value.length;
     if (largest.value.length > 0 && supply > 0) {
       const topAmount = Number(largest.value[0].amount) / 10 ** decimals;
       topHolderPct = (topAmount / supply) * 100;
     }
   } catch (err) {
-    failures.push(`on-chain check error: ${(err as Error).message}`);
+    const msg = (err as Error).message || 'empty error';
+    failures.push(`on-chain check error: ${msg}`);
   }
 
   if (cfg.requireMintRevoked && !mintRevoked) failures.push('mint authority not revoked');
