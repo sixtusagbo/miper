@@ -43,6 +43,15 @@ export interface TokenAnalysis {
   rejectionReason: string | null;
 }
 
+// Compact USD formatter: $52, $5k, $1.2M. Keeps safety-failure messages
+// readable when thresholds are configured as raw dollar amounts.
+function fmtUsd(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (abs >= 1_000) return `$${(n / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
+  return `$${n.toFixed(0)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Stage 1: on-chain safety checks
 // ---------------------------------------------------------------------------
@@ -84,7 +93,9 @@ export async function runSafetyChecks(
     failures.push(`top holder owns ${topHolderPct.toFixed(1)}% (max ${cfg.maxTopHolderPct}%)`);
   }
   if (marketLiquidityUsd !== null && marketLiquidityUsd < cfg.minLiquidityUsd) {
-    failures.push(`liquidity $${marketLiquidityUsd.toFixed(0)} below min $${cfg.minLiquidityUsd}`);
+    failures.push(
+      `liquidity ${fmtUsd(marketLiquidityUsd)} (below min ${fmtUsd(cfg.minLiquidityUsd)})`
+    );
   }
 
   return {
