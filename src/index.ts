@@ -71,19 +71,28 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
   });
   const listener = new PoolListener(connection);
   const gate = new InflightGate(MAX_CONCURRENT_ANALYSES);
+  // Guards against the same mint being analyzed by concurrent events (multiple
+  // init signatures for one pool, or replay after reconnect). Without this,
+  // several analyses for one mint hit Claude in parallel and trigger 429s.
+  const inflightMints = new Set<string>();
 
   listener.on('newPool', async (pool) => {
+    if (inflightMints.has(pool.tokenMint)) {
+      logger.debug(`already analyzing ${pool.tokenMint}, skipping duplicate`);
+      return;
+    }
+    if (isTokenKnown(pool.tokenMint)) {
+      logger.debug(`already seen ${pool.tokenMint}, skipping`);
+      return;
+    }
     if (!gate.tryAcquire()) {
       logger.debug(
         `analyzer busy (${gate.inflight}/${gate.capacity} in-flight), skipping ${pool.tokenMint}`
       );
       return;
     }
+    inflightMints.add(pool.tokenMint);
     try {
-      if (isTokenKnown(pool.tokenMint)) {
-        logger.debug(`already seen ${pool.tokenMint}, skipping`);
-        return;
-      }
       if (countOpenPositions() >= cfg.maxOpenPositions) {
         logger.debug(`max open positions (${cfg.maxOpenPositions}) reached, skipping`);
         return;
@@ -148,6 +157,7 @@ async function snipeCommand(options: { simulate?: boolean }): Promise<void> {
       logger.error(`newPool handler failed: ${(err as Error).message}`);
     } finally {
       gate.release();
+      inflightMints.delete(pool.tokenMint);
     }
   });
 
