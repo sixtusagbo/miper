@@ -112,7 +112,13 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
     -> market data
          * Raydium: DexScreener, falls back to pool liquidity
          * pump:    synthetic — priced from the known bonding-curve virtual reserves
+    -> enrich signal (pump only, in parallel):
+         * Metaplex metadata (name, symbol, URI)
+         * creator wallet history (recent tx count, oldest activity age)
     -> Claude scoring (0-100)
+         * Raydium: absolute rubric (safety + liquidity + holder distribution)
+         * pump:    relative rubric, baselined to "typical pump.fun launch",
+                    grading on dev commitment, creator track record, metadata quality
     -> buy if score >= MIN_AI_SCORE
          * Raydium: Jupiter V6 swap
          * pump: synthetic paper buy at bonding-curve initial price (no live buy)
@@ -157,17 +163,19 @@ If you're on a slow RPC and still see `TokenAccountNotFoundError` on every token
 
 ```
 src/
-  index.ts        CLI entry + command wiring
-  config.ts       env loading, typed config, program IDs, source resolution
-  logger.ts       colorized logger with optional file sink
-  db.ts           SQLite schema and queries (positions, trades, rejections)
-  listener.ts     generic LogListener + Raydium and pump.fun bindings
-  analyzer.ts     on-chain safety, market data, Claude scoring
-  trader.ts       Jupiter V6 swaps + synthetic pump paper trades
-  positions.ts    TP/SL monitoring loop
-  review.ts       PnL + live-readiness summary
-  concurrency.ts  InflightGate, withTimeout, retry helpers
-tests/            vitest unit tests per module
+  index.ts            CLI entry + command wiring
+  config.ts           env loading, typed config, program IDs, source resolution
+  logger.ts           colorized logger with optional file sink
+  db.ts               SQLite schema and queries (positions, trades, rejections)
+  listener.ts         generic LogListener + Raydium and pump.fun bindings
+  analyzer.ts         on-chain safety, market data, Claude scoring (per-source prompts)
+  metadata.ts         Metaplex token metadata PDA + decoder
+  creatorHistory.ts   creator wallet activity lookup + in-memory cache
+  trader.ts           Jupiter V6 swaps + synthetic pump paper trades
+  positions.ts        TP/SL monitoring loop
+  review.ts           PnL + live-readiness summary
+  concurrency.ts      InflightGate, withTimeout, retry helpers
+tests/                vitest unit tests per module
 ```
 
 ---
