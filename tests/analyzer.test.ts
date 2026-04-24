@@ -455,22 +455,21 @@ describe('pump source', () => {
     expect(md.supply).toBe(1_000_000_000);
   });
 
-  it('runSafetyChecks ignores top-holder % and min liquidity for pump source', async () => {
+  it('runSafetyChecks skips holder distribution and min liquidity for pump source', async () => {
     // The bonding curve PDA holds 100% of supply at t=0 — Raydium defaults
-    // would reject this, pump must tolerate it.
+    // would reject this, pump must tolerate it. We also can't call
+    // getTokenLargestAccounts at all because the RPC rejects Token-2022
+    // mints as "not a Token mint".
     mocks.mockGetMint.mockResolvedValue({
       mintAuthority: null,
       freezeAuthority: null,
       supply: 1_000_000n * 1_000_000n,
       decimals: 6,
     });
-    mocks.mockGetTokenLargestAccounts.mockResolvedValue({
-      value: [{ amount: '1000000000000' }], // the entire supply
-    });
     const result = await runSafetyChecks(fakeConnection(), VALID_MINT, 50, loadConfig());
     expect(result.passed).toBe(true);
     expect(result.failures).toEqual([]);
-    expect(result.topHolderPct).toBeCloseTo(100);
+    expect(mocks.mockGetTokenLargestAccounts).not.toHaveBeenCalled();
   });
 
   it('analyzeToken uses pump market data and skips DexScreener entirely', async () => {

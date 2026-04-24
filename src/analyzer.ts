@@ -136,15 +136,21 @@ export async function runSafetyChecks(
     const decimals = mintInfo.decimals;
     const supply = Number(mintInfo.supply) / 10 ** decimals;
 
-    const largest = await retry(() => connection.getTokenLargestAccounts(mintPk), {
-      attempts: SAFETY_RETRY_ATTEMPTS,
-      baseDelayMs: SAFETY_RETRY_BASE_MS,
-      label: `getTokenLargestAccounts ${tokenMint.slice(0, 8)}`,
-    });
-    holderCount = largest.value.length;
-    if (largest.value.length > 0 && supply > 0) {
-      const topAmount = Number(largest.value[0].amount) / 10 ** decimals;
-      topHolderPct = (topAmount / supply) * 100;
+    // Skip holder distribution for pump.fun. The RPC's getTokenLargestAccounts
+    // throws "Invalid param: not a Token mint" on Token-2022 accounts, and we
+    // already don't gate pump tokens on top-holder percentage (the bonding
+    // curve PDA holds ~100% at launch by design).
+    if (cfg.source !== 'pump') {
+      const largest = await retry(() => connection.getTokenLargestAccounts(mintPk), {
+        attempts: SAFETY_RETRY_ATTEMPTS,
+        baseDelayMs: SAFETY_RETRY_BASE_MS,
+        label: `getTokenLargestAccounts ${tokenMint.slice(0, 8)}`,
+      });
+      holderCount = largest.value.length;
+      if (largest.value.length > 0 && supply > 0) {
+        const topAmount = Number(largest.value[0].amount) / 10 ** decimals;
+        topHolderPct = (topAmount / supply) * 100;
+      }
     }
   } catch (err) {
     const e = err as Error;
