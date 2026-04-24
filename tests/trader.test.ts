@@ -44,6 +44,7 @@ beforeEach(() => {
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
   process.env.MAX_SLIPPAGE_BPS = '300';
+  delete process.env.SOURCE;
   resetConfigCache();
   for (const m of Object.values(mocks)) m.mockReset();
   mocks.mockGetMint.mockResolvedValue({ decimals: 6 });
@@ -129,6 +130,40 @@ describe('buyToken (live mode balance guard)', () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/insufficient balance/);
     // Jupiter shouldn't have been hit
+    expect(mocks.mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('buyToken (pump source)', () => {
+  beforeEach(() => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+  });
+
+  it('paper-buys at the bonding-curve initial price without hitting Jupiter', async () => {
+    const result = await buyToken(VALID_MINT, 0.05);
+    expect(result.success).toBe(true);
+    expect(result.simulated).toBe(true);
+    expect(result.amountIn).toBe(0.05);
+    // Initial price ≈ 30/1.073e9 ≈ 2.796e-8 SOL/token; 0.05 SOL → ~1.79M tokens.
+    expect(result.amountOut).toBeGreaterThan(1_700_000);
+    expect(result.amountOut).toBeLessThan(1_900_000);
+    expect(result.txSignature).toMatch(/^SIM-/);
+    expect(mocks.mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses live pump buys (phase 1 is paper-only)', async () => {
+    process.env.SIMULATE = 'false';
+    const { Keypair } = await import('@solana/web3.js');
+    const bs58 = (await import('bs58')).default;
+    process.env.WALLET_PRIVATE_KEY = bs58.encode(Keypair.generate().secretKey);
+    resetConfigCache();
+
+    vi.resetModules();
+    const { buyToken: buy } = await import('../src/trader');
+    const result = await buy(VALID_MINT, 0.05);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/pump\.fun/);
     expect(mocks.mockFetch).not.toHaveBeenCalled();
   });
 });
