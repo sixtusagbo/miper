@@ -48,7 +48,12 @@ export async function retry<T>(
     }
   }
   if (label) {
-    (lastErr as Error).message = `${label}: ${(lastErr as Error).message || 'unknown error'}`;
+    const e = lastErr as Error;
+    // Error classes like SPL's TokenAccountNotFoundError carry their signal
+    // in `.name` with an empty message, so fall back to that before the
+    // generic placeholder.
+    const detail = e.message || e.name || 'unknown error';
+    e.message = `${label}: ${detail}`;
   }
   throw lastErr;
 }

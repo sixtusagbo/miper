@@ -7,15 +7,17 @@ import { NewPool } from './listener';
 import { logger } from './logger';
 import { retry } from './concurrency';
 
-// Fresh mints often aren't visible to every RPC node for a few hundred ms
-// after creation. We sleep briefly BEFORE the first getMint call so the
-// common path uses one RPC round-trip instead of burning attempts on the
-// propagation race, and fall back to a short retry for the stragglers.
+// Fresh mints often aren't visible to every RPC node for a second or two
+// after creation. We sleep before the first getMint call so the common path
+// uses one RPC round-trip instead of burning attempts on the propagation
+// race, and fall back to retry for the stragglers. 400ms proved too short
+// on real pump.fun traffic (~74% of tokens still hit TokenAccountNotFound),
+// so the default is now 1500ms with a 500/1000/1500ms retry ramp on top.
 // The env var is read per-call so tests can zero it out without monkey-
 // patching module state.
-const SAFETY_PRE_READ_DELAY_DEFAULT_MS = 400;
+const SAFETY_PRE_READ_DELAY_DEFAULT_MS = 1500;
 const SAFETY_RETRY_ATTEMPTS = 3;
-const SAFETY_RETRY_BASE_MS = 300;
+const SAFETY_RETRY_BASE_MS = 500;
 
 function getSafetyPreReadDelayMs(): number {
   const raw = process.env.MIPER_SAFETY_PRE_READ_DELAY_MS;
@@ -126,8 +128,11 @@ export async function runSafetyChecks(
       topHolderPct = (topAmount / supply) * 100;
     }
   } catch (err) {
-    const msg = (err as Error).message || 'empty error';
-    failures.push(`on-chain check error: ${msg}`);
+    const e = err as Error;
+    // SPL's TokenAccountNotFoundError ships with an empty message and all the
+    // signal in `.name` — log both so the rejection reason is actually useful.
+    const detail = e.message || e.name || 'empty error';
+    failures.push(`on-chain check error: ${detail}`);
   }
 
   if (cfg.requireMintRevoked && !mintRevoked) failures.push('mint authority not revoked');

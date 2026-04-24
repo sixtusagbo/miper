@@ -57,11 +57,14 @@ describe('retry', () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
-  it('rewrites empty error messages so the caller sees the label', async () => {
-    const fn = vi.fn().mockRejectedValue(new Error(''));
+  it('falls back to err.name when the message is empty (e.g. SPL token errors)', async () => {
+    class NamedError extends Error {
+      name = 'TokenAccountNotFoundError';
+    }
+    const fn = vi.fn().mockRejectedValue(new NamedError(''));
     await expect(
-      retry(fn, { attempts: 1, baseDelayMs: 0, label: 'lookup' })
-    ).rejects.toThrow(/lookup: unknown error/);
+      retry(fn, { attempts: 1, baseDelayMs: 0, label: 'getMint' })
+    ).rejects.toThrow(/getMint: TokenAccountNotFoundError/);
   });
 });
 
