@@ -175,6 +175,23 @@ describe('db: PnL summary', () => {
     expect(pnl.winRate).toBe(0);
     expect(pnl.openCount).toBe(1);
   });
+
+  it('does not count still-running partials as wins', () => {
+    // A partial that already cleared its cost basis on the first TP would
+    // get counted as a win, blowing the win rate past 100% if the
+    // denominator only counts closed/stopped. Scope wins to finished only.
+    const closed = mkPosition({ tokenMint: 'C', amountSolSpent: 0.05 });
+    updatePosition(closed.id, { status: 'closed', amountSolReceived: 0.15 });
+    const stopped = mkPosition({ tokenMint: 'S', amountSolSpent: 0.05 });
+    updatePosition(stopped.id, { status: 'stopped', amountSolReceived: 0.01 });
+    const partial = mkPosition({ tokenMint: 'P', amountSolSpent: 0.05 });
+    // Partial already received more than it spent (a winning TP1) but is
+    // still holding the rest of the bag.
+    updatePosition(partial.id, { status: 'partial', amountSolReceived: 0.08 });
+
+    const pnl = getPnlSummary();
+    expect(pnl.winRate).toBeCloseTo(0.5); // 1 closed-win / 2 finished, NOT 2/2
+  });
 });
 
 describe('db: review helpers', () => {
