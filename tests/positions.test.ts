@@ -249,6 +249,17 @@ describe('executeStopLoss', () => {
     expect(updated.amount_sol_received).toBeCloseTo(0.02);
   });
 
+  it('passes the position current price as a hint to sellToken', async () => {
+    // Without this hint, paper-mode pump sells fall back to the bonding-curve
+    // init price and book every exit at entry — fake breakeven on every
+    // position. We rely on positions.ts threading current_price_sol through.
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockSellSuccess(0.015, 0.00003);
+    await executeStopLoss(getPosition(p.id)!);
+    const sellCall = mocks.mockSellToken.mock.calls[0];
+    expect(sellCall[3]).toBe(0.0001); // mkPosition's seeded current_price_sol
+  });
+
   it('leaves the position open when the sell fails', async () => {
     const p = mkPosition();
     mockSellFailure();

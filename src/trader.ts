@@ -284,7 +284,8 @@ async function pumpBuy(
 async function pumpSell(
   tokenMint: string,
   amountTokens: number,
-  cfg: Config
+  cfg: Config,
+  currentPriceSol: number | null
 ): Promise<SwapResult> {
   if (!cfg.simulate) {
     return {
@@ -297,13 +298,21 @@ async function pumpSell(
       error: PUMP_LIVE_NOT_SUPPORTED,
     };
   }
-  // No real price feed for fresh pump tokens in paper mode. Treat the sell as
-  // a no-op at the entry price so bookkeeping stays consistent if the position
-  // monitor or a manual sell fires.
-  const pricePerToken = PUMP_INITIAL_PRICE_SOL;
+  // Paper sells must reflect the actual price the position monitor saw,
+  // otherwise stop-loss and TP exits both book at entry and every paper
+  // pump position closes at wash. Fall back to the bonding-curve init
+  // price only when no current price is available (e.g. manual sell on a
+  // token we never got a quote for) — that case still records a fake
+  // breakeven, but it's the best we can do without a live price feed.
+  const pricePerToken =
+    currentPriceSol !== null && Number.isFinite(currentPriceSol) && currentPriceSol > 0
+      ? currentPriceSol
+      : PUMP_INITIAL_PRICE_SOL;
   const solOut = amountTokens * pricePerToken;
+  const priceSource =
+    pricePerToken === PUMP_INITIAL_PRICE_SOL ? 'pump bonding-curve init price' : 'last observed price';
   logger.sim(
-    `SELL ${tokenMint} ${amountTokens.toFixed(0)} tokens -> ${solOut} SOL @ ${pricePerToken.toExponential(4)} SOL (pump bonding-curve init price)`
+    `SELL ${tokenMint} ${amountTokens.toFixed(0)} tokens -> ${solOut} SOL @ ${pricePerToken.toExponential(4)} SOL (${priceSource})`
   );
   return {
     success: true,
@@ -318,10 +327,14 @@ async function pumpSell(
 export async function sellToken(
   tokenMint: string,
   amountTokens: number,
-  cfg: Config = loadConfig()
+  cfg: Config = loadConfig(),
+  // Hint of the current market price, supplied by the caller when known.
+  // Required for accurate paper-mode pump bookkeeping; ignored on the
+  // Raydium path because Jupiter's outAmount is the source of truth.
+  currentPriceSol: number | null = null
 ): Promise<SwapResult> {
   if (cfg.source === 'pump') {
-    return pumpSell(tokenMint, amountTokens, cfg);
+    return pumpSell(tokenMint, amountTokens, cfg, currentPriceSol);
   }
 
   try {

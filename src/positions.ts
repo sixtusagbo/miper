@@ -64,7 +64,16 @@ async function executePartialSell(
   tokensToSell: number,
   cfg: Config
 ): Promise<boolean> {
-  const result = await sellToken(position.token_mint, tokensToSell, cfg);
+  // Pass the most recent observed price as a hint. The Raydium path ignores
+  // it (Jupiter's outAmount is authoritative), but pump's paper-mode sell
+  // uses it instead of the bonding-curve init price so TP and SL exits
+  // actually reflect realized PnL.
+  const result = await sellToken(
+    position.token_mint,
+    tokensToSell,
+    cfg,
+    position.current_price_sol
+  );
   if (!result.success) {
     const retries = (sellFailureCount.get(position.id) ?? 0) + 1;
     sellFailureCount.set(position.id, retries);

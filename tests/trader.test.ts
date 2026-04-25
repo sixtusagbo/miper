@@ -168,6 +168,46 @@ describe('buyToken (pump source)', () => {
   });
 });
 
+describe('sellToken (pump source)', () => {
+  beforeEach(() => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+  });
+
+  it('uses the supplied current price hint so paper PnL reflects realized loss/gain', async () => {
+    // 5x drawdown vs the bonding-curve init: 1M tokens sold at the new price
+    // should yield 1/5 of what an init-priced sell would produce.
+    const initPrice = 30 / 1_073_000_000;
+    const crashedPrice = initPrice / 5;
+    const result = await sellToken(VALID_MINT, 1_000_000, undefined, crashedPrice);
+    expect(result.success).toBe(true);
+    expect(result.pricePerToken).toBe(crashedPrice);
+    expect(result.amountOut).toBeCloseTo(1_000_000 * crashedPrice, 12);
+    expect(mocks.mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the bonding-curve init price when no hint is provided', async () => {
+    const initPrice = 30 / 1_073_000_000;
+    const result = await sellToken(VALID_MINT, 1_000_000);
+    expect(result.success).toBe(true);
+    expect(result.pricePerToken).toBeCloseTo(initPrice, 12);
+  });
+
+  it('refuses live pump sells', async () => {
+    process.env.SIMULATE = 'false';
+    const { Keypair } = await import('@solana/web3.js');
+    const bs58 = (await import('bs58')).default;
+    process.env.WALLET_PRIVATE_KEY = bs58.encode(Keypair.generate().secretKey);
+    resetConfigCache();
+
+    vi.resetModules();
+    const { sellToken: sell } = await import('../src/trader');
+    const result = await sell(VALID_MINT, 1_000_000, undefined, 1e-8);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/pump\.fun/);
+  });
+});
+
 describe('sellToken (simulate)', () => {
   it('returns success with computed price per token for a normal sell', async () => {
     // selling 1_000_000 tokens at 6 decimals = 1e12 raw, gets 0.1 SOL = 1e8 lamports
