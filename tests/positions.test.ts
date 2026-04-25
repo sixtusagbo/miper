@@ -286,6 +286,21 @@ describe('checkPosition', () => {
     expect(getPosition(p.id)!.status).toBe('stopped');
   });
 
+  it('passes the freshly-observed price to sellToken (not the stale tick-start value)', async () => {
+    // Regression: when a TP triggers on the first successful price fetch,
+    // the in-memory position.current_price_sol still equals entry. We must
+    // refresh it before downstream sells, otherwise pump paper exits book
+    // at zero PnL despite a real TP/SL multiplier firing.
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    expect(p.current_price_sol).toBe(0.0001); // sanity: starts at entry
+    mockPriceFetch(0.00055); // 5.5x → triggers TP3
+    mockSellSuccess(0.55, 0.00055);
+    await checkPosition(p);
+
+    const sellCall = mocks.mockSellToken.mock.calls[0];
+    expect(sellCall[3]).toBe(0.00055);
+  });
+
   it('triggers TP1 when price reaches 2x and tp_level is 0', async () => {
     const p = mkPosition({ entryPriceSol: 0.0001 });
     mockPriceFetch(0.00021); // > 2x

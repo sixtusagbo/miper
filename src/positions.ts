@@ -188,6 +188,11 @@ export async function checkPosition(
   }
 
   updatePosition(position.id, { currentPriceSol: currentPrice });
+  // Keep the in-memory copy in sync so downstream sells (TP/SL) see the
+  // freshly observed price, not the stale value the tick started with.
+  // Without this, a TP triggered on the first successful price fetch would
+  // pass the entry price into pumpSell and book the exit at zero PnL.
+  position.current_price_sol = currentPrice;
 
   // Position can go "dust" after partial sells — close it out so we don't keep polling.
   const positionValueSol = currentPrice * position.amount_tokens;
