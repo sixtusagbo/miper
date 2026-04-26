@@ -437,12 +437,34 @@ export async function scoreWithAi(
     const userPrompt = isPump
       ? buildPumpUserPrompt(pool, pumpCtx)
       : buildRaydiumUserPrompt(pool, market, safety);
+    // Haiku 4.5 is ~3x cheaper than Sonnet 4 ($1/$5 vs $3/$15 per 1M tokens)
+    // and the relative-scoring task is structured signal interpretation, not
+    // multi-step reasoning — Haiku handles it well. cache_control is set on
+    // the system prompt so identical-prefix requests within the 5-min TTL
+    // pay 0.1x for the cached portion. Note: Haiku 4.5's minimum cacheable
+    // prefix is 4096 tokens; our prompts sit ~450-700 tokens so the marker
+    // silently no-ops today. Kept here so caching activates automatically
+    // if/when the system prompt is expanded with examples.
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5',
       max_tokens: 600,
-      system: systemPrompt,
+      system: [
+        {
+          type: 'text',
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
       messages: [{ role: 'user', content: userPrompt }],
     });
+    const usage = (response.usage ?? {}) as {
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+      input_tokens?: number;
+    };
+    logger.debug(
+      `claude usage ${pool.tokenMint}: input=${usage.input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0} cache_read=${usage.cache_read_input_tokens ?? 0}`
+    );
 
     const textBlock = response.content.find((b) => b.type === 'text');
     const raw = textBlock && textBlock.type === 'text' ? textBlock.text.trim() : '';

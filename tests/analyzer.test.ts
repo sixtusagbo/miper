@@ -564,6 +564,11 @@ describe('pump source', () => {
     expect(userPrompt).toContain('https://example.com/p.json');
     expect(userPrompt).toContain('2.500 SOL'); // initialLiquiditySol
     expect(userPrompt).toContain('2 recent txs');
-    expect(call.system).toContain('pump.fun launches');
+    // System is sent as a cached text block (cache_control: ephemeral) so we
+    // assert on the inner text rather than treating system as a bare string.
+    expect(call.system[0].type).toBe('text');
+    expect(call.system[0].text).toContain('pump.fun launches');
+    expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
+    expect(call.model).toBe('claude-haiku-4-5');
   });
 });
