@@ -123,6 +123,10 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
          * Raydium: Jupiter V6 swap
          * pump: synthetic paper buy at bonding-curve initial price (no live buy)
     -> position monitor polls price every ~7s
+         * Raydium: DexScreener priceNative
+         * pump:    bonding-curve account read (real-time, always available
+                    pre-graduation), falls back to DexScreener once the
+                    curve completes and the token moves to PumpSwap
     -> partial sell at TP1 / TP2 / TP3, full exit at stop-loss
 ```
 
@@ -171,6 +175,7 @@ src/
   analyzer.ts         on-chain safety, market data, Claude scoring (per-source prompts)
   metadata.ts         Metaplex token metadata PDA + decoder
   creatorHistory.ts   creator wallet activity lookup + in-memory cache
+  bondingCurve.ts     pump.fun bonding-curve account decoder + price helper
   trader.ts           Jupiter V6 swaps + synthetic pump paper trades
   positions.ts        TP/SL monitoring loop
   review.ts           PnL + live-readiness summary
