@@ -190,7 +190,9 @@ async function snipeCommand(options: {
   });
 
   await listener.start();
-  startMonitoring();
+  // Hand the connection to the monitor so pump positions can poll the
+  // bonding curve directly instead of waiting for DexScreener to index.
+  startMonitoring(undefined, connection);
 
   const statusTimer = setInterval(() => {
     try {
@@ -222,7 +224,11 @@ async function monitorCommand(options: { source?: string } = {}): Promise<void> 
   const cfg = loadConfig();
   getDb();
   logger.banner(`MIPER monitor — source: ${cfg.source} (db: ${cfg.dbPath})`);
-  startMonitoring();
+  const connection = new Connection(cfg.solanaRpcUrl, {
+    commitment: 'confirmed',
+    wsEndpoint: cfg.solanaWsUrl,
+  });
+  startMonitoring(undefined, connection);
 
   const shutdown = () => {
     stopMonitoring();

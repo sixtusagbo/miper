@@ -47,6 +47,7 @@ beforeEach(() => {
   process.env.SELL_PCT_TP2 = '30';
   process.env.SELL_PCT_TP3 = '30';
   process.env.STOP_LOSS = '0.4';
+  delete process.env.SOURCE;
   resetConfigCache();
   mocks.mockFetch.mockReset();
   mocks.mockSellToken.mockReset();
@@ -57,7 +58,12 @@ afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-function mkPosition(opts: { entryPriceSol?: number; amountTokens?: number; tokenMint?: string } = {}) {
+function mkPosition(opts: {
+  entryPriceSol?: number;
+  amountTokens?: number;
+  tokenMint?: string;
+  poolAddress?: string;
+} = {}) {
   const p = createPosition({
     tokenMint: opts.tokenMint ?? MINT,
     tokenSymbol: 'AAA',
@@ -65,7 +71,7 @@ function mkPosition(opts: { entryPriceSol?: number; amountTokens?: number; token
     amountTokens: opts.amountTokens ?? 1_000_000,
     amountSolSpent: 0.05,
     aiScore: 80,
-    poolAddress: 'POOL',
+    poolAddress: opts.poolAddress ?? 'POOL',
     entryTx: 'TX',
   });
   // Record the buy so executeTakeProfit can derive original bag size.
@@ -139,6 +145,80 @@ describe('fetchPriceSol', () => {
   it('returns null when fetch throws', async () => {
     mocks.mockFetch.mockRejectedValueOnce(new Error('network'));
     expect(await fetchPriceSol('C1111111111111111111111111111111111111111112')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchPositionPriceSol -- per-source price oracle dispatch
+// ---------------------------------------------------------------------------
+
+describe('fetchPositionPriceSol', () => {
+  // Build a fake bonding curve account buffer for the connection mock.
+  function buildCurveBuffer(virtualSolLamports: bigint, virtualTokens: bigint): Buffer {
+    const buf = Buffer.alloc(8 + 5 * 8 + 1);
+    let offset = 8;
+    buf.writeBigUInt64LE(virtualTokens, offset); offset += 8;
+    buf.writeBigUInt64LE(virtualSolLamports, offset); offset += 8;
+    buf.writeBigUInt64LE(0n, offset); offset += 8;
+    buf.writeBigUInt64LE(0n, offset); offset += 8;
+    buf.writeBigUInt64LE(0n, offset); offset += 8;
+    buf[offset] = 0;
+    return buf;
+  }
+
+  it('reads the bonding curve when source=pump and the position has a pool address', async () => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const conn = {
+      getAccountInfo: vi.fn().mockResolvedValue({
+        data: buildCurveBuffer(60n * 1_000_000_000n, 1_073_000_000n * 1_000_000n),
+      }),
+    } as any;
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+    const price = await fetchPositionPriceSol(p, loadConfig(), conn);
+    // Doubled virtual SOL → 2× the launch price.
+    expect(price).toBeCloseTo(2 * (30 / 1_073_000_000), 12);
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('falls back to DexScreener when the bonding curve has graduated', async () => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const completedBuf = (() => {
+      const b = buildCurveBuffer(60n * 1_000_000_000n, 1_073_000_000n * 1_000_000n);
+      b[b.length - 1] = 1; // complete=true
+      return b;
+    })();
+    const conn = {
+      getAccountInfo: vi.fn().mockResolvedValue({ data: completedBuf }),
+    } as any;
+    mockPriceFetch(0.00099, MINT);
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+    const price = await fetchPositionPriceSol(p, loadConfig(), conn);
+    expect(price).toBe(0.00099);
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses DexScreener for raydium positions (no bonding curve)', async () => {
+    process.env.SOURCE = 'raydium';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const conn = { getAccountInfo: vi.fn() } as any;
+    mockPriceFetch(0.00007, MINT);
+    const p = mkPosition();
+    const price = await fetchPositionPriceSol(p, loadConfig(), conn);
+    expect(price).toBe(0.00007);
+    expect(conn.getAccountInfo).not.toHaveBeenCalled();
   });
 });
 

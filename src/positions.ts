@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { Connection } from '@solana/web3.js';
 import { Config, loadConfig } from './config';
 import {
   Position,
@@ -9,6 +10,7 @@ import {
 } from './db';
 import { logger } from './logger';
 import { sellToken } from './trader';
+import { fetchBondingCurvePrice } from './bondingCurve';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const DEFAULT_INTERVAL_MS = 7000;
@@ -45,6 +47,27 @@ export async function fetchPriceSol(tokenMint: string): Promise<number | null> {
     logger.debug(`fetchPriceSol ${tokenMint}: ${(err as Error).message}`);
     return null;
   }
+}
+
+// Picks the right price source for a position. pump.fun positions read the
+// bonding curve directly — DexScreener doesn't index fresh pumps for the
+// first 1-2 minutes, which is exactly the window we need to watch for
+// TP/SL exits. Once a curve graduates (complete=true → bondingCurvePrice
+// returns null) we fall through to DexScreener since the token has moved
+// to PumpSwap and lives on aggregators normally.
+export async function fetchPositionPriceSol(
+  position: Position,
+  cfg: Config,
+  connection: Connection | null
+): Promise<number | null> {
+  if (cfg.source === 'pump' && connection && position.pool_address) {
+    const curvePrice = await fetchBondingCurvePrice(connection, position.pool_address);
+    if (curvePrice !== null) return curvePrice;
+    logger.debug(
+      `bonding-curve price unavailable for ${position.token_mint} (graduated?), falling back to DexScreener`
+    );
+  }
+  return fetchPriceSol(position.token_mint);
 }
 
 function sellPctForLevel(cfg: Config, level: 1 | 2 | 3): number {
@@ -177,11 +200,12 @@ function recentSolReceived(positionId: number): number {
 
 export async function checkPosition(
   position: Position,
-  cfg: Config = loadConfig()
+  cfg: Config = loadConfig(),
+  connection: Connection | null = null
 ): Promise<void> {
   if (position.amount_tokens <= 0) return;
 
-  const currentPrice = await fetchPriceSol(position.token_mint);
+  const currentPrice = await fetchPositionPriceSol(position, cfg, connection);
   if (currentPrice === null) {
     logger.debug(`No price for ${position.token_mint} this cycle`);
     return;
@@ -221,9 +245,17 @@ export async function checkPosition(
 
 let monitorTimer: NodeJS.Timeout | null = null;
 let monitorRunning = false;
+let monitorConnection: Connection | null = null;
 
-export function startMonitoring(intervalMs: number = DEFAULT_INTERVAL_MS): void {
+// Caller (the snipe command) hands in the Connection it already built so
+// pump positions can read their bonding curves without us standing up a
+// second RPC client just for this loop.
+export function startMonitoring(
+  intervalMs: number = DEFAULT_INTERVAL_MS,
+  connection: Connection | null = null
+): void {
   if (monitorTimer) return;
+  monitorConnection = connection;
   logger.info(`Position monitor started (interval ${intervalMs}ms)`);
 
   const tick = async () => {
@@ -233,7 +265,7 @@ export function startMonitoring(intervalMs: number = DEFAULT_INTERVAL_MS): void 
       const positions = getOpenPositions();
       for (const p of positions) {
         try {
-          await checkPosition(p);
+          await checkPosition(p, undefined, monitorConnection);
         } catch (err) {
           logger.error(`checkPosition ${p.id} failed: ${(err as Error).message}`);
         }
@@ -252,6 +284,7 @@ export function stopMonitoring(): void {
   if (monitorTimer) {
     clearInterval(monitorTimer);
     monitorTimer = null;
+    monitorConnection = null;
     logger.info('Position monitor stopped');
   }
 }
