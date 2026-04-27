@@ -165,6 +165,7 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 | Spent / received | 3.80 SOL / 2.81 SOL |
 | Realized PnL | -0.99 SOL (mostly noise — 39 open + 11 partial still mid-flight at kill time) |
 | **Win rate on finished (closed+stopped)** | **7/26 ≈ 27%** |
+| **API cost** | **$0.01** over 2h 54m (≈ $0.0034/hr — much lower than R6's per-hour rate because position-cap saturation skipped most detections *before* the AI call, so we only paid for the 91 actual analyses) |
 
 **Comparison vs R7 (threshold 70, same code):**
 - Buy volume: 76 in ~hour vs R7's 11 in 32 min → ~7× more buys at threshold 60
@@ -179,23 +180,24 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 
 ---
 
-## Run R9 — *planned* — all-in TP mode (single exit at 2× / 3× / 5×)
+## Run R9 — *planned* — sustained 3-4h at threshold 70 (the missing baseline)
 **Date:** _pending_
-**Code state:** R8 + a new env knob (not built yet).
-**Config:** OpenAI `gpt-5-nano`, winning threshold from R7-R8, pump source. New env: `EXIT_MODE=tiered|all-in` and `EXIT_AT_MULT` for the all-in target.
-**Duration:** 30 min × 3 (one each at 2×, 3×, 5× all-in target) — keep one config per run for clean comparison.
-**Goal:** Settle the strategy debate from `miper-spec.md`: is "compound small profits, exit fully at 2×" actually better than the current tiered 40/30/30? Tiered wins when there's a long-tail outlier (R3's 27× wouldn't have been captured by a 5× exit). All-in 2× wins when most positions don't reach 3×+ before reversing. Empirical question — only data answers.
-**Implementation note for when we build this:** the simplest shape is a config-time switch in `executeTakeProfit` — when `EXIT_MODE=all-in`, the level matching `EXIT_AT_MULT` sells 100% and other levels are no-ops. ~20 lines of code, mostly tests.
+**Code state:** R8 codebase (no further changes needed — concurrency 6, position cap 50 already in place).
+**Config:** OpenAI `gpt-5-nano`, **`MIN_AI_SCORE=70`**, pump source. Default tiered TP (40/30/30 at 2×/3×/5×).
+**Duration:** **3-4 hours**, normal user-stop.
+**Goal:** R8 gave us a 3h sustained dataset at threshold 60 (verdict: too lenient). We still don't have a sustained dataset at threshold 70 — R7 was 32 min with N=1 closed. R9 is that missing dataset. Should produce ~10-20 closed positions at threshold 70's lower buy rate, enough for a real win-rate confidence interval to compare against R8's 27%.
+**What this answers:** is threshold 70's win rate clearly better than threshold 60's, or just looks-better-on-tiny-N? Also: does sustained 3-4h running surface any leaks, RPC drift, or other infrastructure issues we haven't seen in shorter runs?
+**Cost estimate:** ~$0.05-0.10 (threshold 70 = fewer buys = position cap rarely hits = more analyses reach the AI = higher per-hour cost than R8 despite same model).
 
 ---
 
-## Run R10 — *planned* — sustained 4h run at the winning config
+## Run R10 — *planned* — all-in TP mode A/B (2× / 3× / 5×)
 **Date:** _pending_
-**Code state:** post-R9.
-**Config:** Best of R7-R9, pump source.
-**Duration:** **4 hours**.
-**Goal:** First run with statistical power. 30-min runs produce 5-10 closed positions; variance on N=10 is too high to draw real conclusions. A 4h run should produce ~30-60 closed positions, giving real win-rate confidence intervals. After this, the cost of being wrong about config is much lower.
-**Cost estimate:** ~$0.16 OpenAI + RPC traffic. Trivial.
+**Code state:** R9 + new `EXIT_MODE` / `EXIT_AT_MULT` env switches (not built yet).
+**Config:** OpenAI `gpt-5-nano`, threshold from R9 (likely 70), pump source. New env: `EXIT_MODE=tiered|all-in` and `EXIT_AT_MULT` for the all-in target.
+**Duration:** ~1h × 3 (one each at 2×, 3×, 5× all-in target) — keep one variable per run for clean comparison against R9's tiered baseline.
+**Goal:** Settle the strategy debate from `miper-spec.md`: is "compound small profits, exit fully at 2×" actually better than the current tiered 40/30/30? Tiered wins when there's a long-tail outlier (R3's 27× wouldn't have been captured by a 5× exit). All-in 2× wins when most positions don't reach 3×+ before reversing. Empirical question — only the data on real exits answers.
+**Implementation note for when we build this:** simplest shape is a config-time switch in `executeTakeProfit` — when `EXIT_MODE=all-in`, the level matching `EXIT_AT_MULT` sells 100% and other levels are no-ops. ~20 lines of code, mostly tests.
 
 ---
 
