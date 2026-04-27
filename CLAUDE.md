@@ -38,6 +38,22 @@ The model ID is the only knob: `AI_MODEL=gpt-5-nano` (default) → OpenAI; `AI_M
 
 Defaults: `gpt-5-nano` is the cheapest model with structured-JSON output (~$0.0001/call at our prompt sizes — roughly 50× cheaper than Sonnet 4).
 
+## Exit strategy
+
+Two modes, controlled by `EXIT_MODE`:
+
+- **`tiered`** *(default)* — sells the bag in three tranches at `TAKE_PROFIT_1/2/3` (default 2× / 3× / 5×) using the `SELL_PCT_TP1/2/3` weights (default 40 / 30 / 30). Captures long-tail outliers (a 27× run keeps the last 30% riding); pays the tax of holding the bag through drawdowns when most positions don't reach 5×.
+- **`all-in`** — sells 100% at `EXIT_AT_MULT` (must be > 1, default 2). Tests the "compound small profits" thesis from `miper-spec.md` §1: frequent fast exits over rare large outliers. TP1/TP2/TP3 are ignored under this mode.
+
+`STOP_LOSS` (default 0.4× entry) applies in both modes.
+
+## Run-control knobs
+
+- `MAX_RUN_HOURS=N` triggers a graceful shutdown after N wall-clock hours. `0` (default) disables — the bot runs until SIGINT.
+- `CLOSE_ON_SHUTDOWN=true` makes the shutdown handler sell every open/partial position at last-known price before exiting. Default `false`. Flip on for live trading and bounded paper sessions.
+
+Both compose: `MAX_RUN_HOURS=4 CLOSE_ON_SHUTDOWN=true` runs for 4h and ends with no open exposure.
+
 ## Running
 
 ```

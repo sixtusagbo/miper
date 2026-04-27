@@ -45,7 +45,7 @@ npm run build                   # optional; ts-node is used by all npm scripts
 | `WALLET_PRIVATE_KEY` | Base58-encoded Solana private key (required for live mode; optional in simulation — an ephemeral key is generated if missing) |
 | `SOLANA_RPC_URL` / `SOLANA_WS_URL` | Dedicated RPC. The public `api.mainnet-beta.solana.com` endpoint will 429 on almost every call. Helius free tier (1M credits/month, 10 req/s) is enough for paper trading. |
 
-miper caps concurrent analyses at 3 and each makes ~3 RPC calls, so it stays comfortably under the 10 req/s ceiling.
+miper caps concurrent analyses at 6 and each makes ~3 RPC calls, so it stays comfortably under the 10 req/s ceiling.
 
 ### Optional env
 
@@ -54,15 +54,19 @@ Strategy knobs (all have defaults — see `.env.example`):
 | Var | What it does |
 |---|---|
 | `BUY_AMOUNT_SOL` | SOL spent per snipe. Default `0.05`. |
-| `TAKE_PROFIT_1/2/3` | Multipliers for the three tiered sells. Must be strictly increasing. Default `2 / 3 / 5`. |
-| `SELL_PCT_TP1/2/3` | Fraction of the original bag sold at each TP. Must sum to 100. Default `40 / 30 / 30`. |
-| `STOP_LOSS` | Fraction of entry price that triggers a full exit. Default `0.4` (exit at -60%). |
-| `MIN_AI_SCORE` | Score threshold Claude must clear to trigger a buy (0-100). Default `70`. |
+| `EXIT_MODE` | `tiered` (default) sells in three tranches at TP1/TP2/TP3 — the original "compound profits" ladder. `all-in` sells the entire bag at `EXIT_AT_MULT` and ignores TP1/TP2/TP3. |
+| `EXIT_AT_MULT` | Multiplier at which `all-in` mode fully exits. Must be > 1. Ignored in tiered mode. Default `2`. |
+| `TAKE_PROFIT_1/2/3` | Tiered-mode only. Multipliers for the three sells. Must be strictly increasing. Default `2 / 3 / 5`. |
+| `SELL_PCT_TP1/2/3` | Tiered-mode only. Fraction of the original bag sold at each TP. Must sum to 100. Default `40 / 30 / 30`. |
+| `STOP_LOSS` | Fraction of entry price that triggers a full exit. Applies in both exit modes. Default `0.4` (exit at -60%). |
+| `MIN_AI_SCORE` | Score threshold the LLM must clear to trigger a buy (0-100). Default `70`. |
 | `MAX_SLIPPAGE_BPS` | Slippage tolerance in basis points. Default `300` (3%). |
 | `MIN_LIQUIDITY_USD` | Reject if pool liquidity below this. Raydium only. Default `5000`. |
 | `MAX_TOP_HOLDER_PCT` | Reject if the largest holder owns more than this. Raydium only. Default `30`. |
 | `REQUIRE_MINT_REVOKED` / `REQUIRE_FREEZE_REVOKED` | Treat tokens with live mint/freeze authority as unsafe. Default `true`. |
 | `MAX_OPEN_POSITIONS` | Cap on concurrent positions. Default `10`. |
+| `MAX_RUN_HOURS` | Auto-shutdown the snipe loop after N hours. `0` (default) disables — runs until SIGINT. Useful for unattended paper sessions. |
+| `CLOSE_ON_SHUTDOWN` | When `true`, the graceful shutdown handler sells every open/partial position at last-known price before exiting. Default `false`. Recommended `true` for live trading and bounded paper sessions. |
 | `SIMULATED_STARTING_SOL` | Virtual starting balance for paper-mode PnL display. Default `1.0`. |
 | `DB_PATH` / `LOG_FILE` | Override per-source defaults if you need custom paths. Leave unset to let source drive them. |
 | `MIPER_SAFETY_PRE_READ_DELAY_MS` | How long to sleep before the first on-chain read (ms). Default `1500`. |
