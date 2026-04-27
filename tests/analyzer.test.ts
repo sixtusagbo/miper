@@ -430,7 +430,9 @@ describe('analyzeToken', () => {
       fakePool({ tokenMint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' })
     );
     expect(analysis.shouldBuy).toBe(false);
-    expect(analysis.rejectionReason).toMatch(/ai score 50/);
+    // Log line shows the score in its own (score X) prefix; rejection reason
+    // states the threshold + reasoning without redundantly repeating the score.
+    expect(analysis.rejectionReason).toMatch(/below threshold 70/);
   });
 
   it('rejects on safety failure and skips the AI call', async () => {

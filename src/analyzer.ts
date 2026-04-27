@@ -639,6 +639,6 @@ export async function analyzeToken(
     shouldBuy: passesAi,
     rejectionReason: passesAi
       ? null
-      : `ai score ${ai.score} below threshold ${cfg.minAiScore}${ai.reasoning ? `: ${ai.reasoning}` : ''}`,
+      : `below threshold ${cfg.minAiScore}${ai.reasoning ? ` — ${ai.reasoning}` : ''}`,
   };
 }
