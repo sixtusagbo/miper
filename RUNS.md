@@ -120,13 +120,32 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 
 ---
 
-## Run R7 — *in progress* — saturation fix, threshold 70
+## Run R7 — saturation fix, threshold 70
 **Date:** 2026-04-27
 **Code state:** post creator-history saturation fix (`f9f4db6`).
 **Config:** OpenAI `gpt-5-nano`, `MIN_AI_SCORE=70`, pump source.
-**Goal:** Compare against R6 — does honestly reporting saturated wallets shift the score distribution upward and produce more / better-quality buys at the same threshold?
+**Duration:** ~32 min.
 
-(Append metrics here once the run completes.)
+| Metric | Value |
+|---|---|
+| Detected | 615 |
+| Analyzed | **87** (busy-gate dropping most — see below) |
+| BUYS | 11 |
+| Exits | 9 (8 TP1 partials, 1 TP2, 1 STOPLOSS-after-TP1) |
+| Closed (full) | 0 |
+| Realized "PnL so far" | -0.15 SOL on 0.55 spent — **mostly unrealized**: 4 still-open at -0.05 each + 7 partials still holding 60% of original bag |
+| Score distribution | 54× 62, 11× 72, 4× 65, 4× 63, 3× 60, 2× 68, 2× 48 |
+| Saturated-creator prompts | 26 emitted (the new "1000+ recent txs ... true wallet age unknown" phrasing) |
+
+**Comparison vs R6 (pre-saturation-fix, same threshold):**
+- **Buy density at threshold 70: 11/87 (13%) vs R6's 11/320 (3.4%)** — saturation fix roughly 4× more tokens cleared the bar at the same threshold. The fix is working: tokens with strong dev signals + saturated wallets are no longer being misread as "fresh disposable".
+- Score-72 cluster grew (11 vs 9 in R6) — the bulk of the lift came from former 60-65 saturated-wallet tokens moving up.
+
+**Caveats:**
+1. **Analyzed count dropped 4× (320 → 87)** — the busy gate is dropping most detections. Reason: per-analysis latency is now ~3s (1.5s safety pre-read + getMint retry + metadata + creator history + AI call), and at 3 concurrent the queue can't drain fast enough on pump's ~20 tokens/min stream. Worth investigating; bumping `MAX_CONCURRENT_ANALYSES` from 3 to 5-6 or trimming the safety pre-read for already-aged mints could recover a lot.
+2. **Realized PnL is mostly noise at this sample.** 1 fully-closed position is not a verdict. The 7 partials are mid-flight — they've taken TP1 profits but still hold 60% of bag exposed to drawdown. Real PnL depends on what those partials do over the next hours.
+
+**Learning:** Saturation fix is doing what it should — more aged-but-active wallets clear the threshold. Whether their picks are better than R6's is genuinely unknown until R10 (4h sustained, N≥30 closed). Today's snapshot is a coin flip in either direction.
 
 ---
 
