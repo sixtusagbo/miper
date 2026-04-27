@@ -138,6 +138,35 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 
 ---
 
+## Run R9 — *planned* — all-in TP mode (single exit at 2× / 3× / 5×)
+**Date:** _pending_
+**Code state:** R8 + a new env knob (not built yet).
+**Config:** OpenAI `gpt-5-nano`, winning threshold from R7-R8, pump source. New env: `EXIT_MODE=tiered|all-in` and `EXIT_AT_MULT` for the all-in target.
+**Duration:** 30 min × 3 (one each at 2×, 3×, 5× all-in target) — keep one config per run for clean comparison.
+**Goal:** Settle the strategy debate from `miper-spec.md`: is "compound small profits, exit fully at 2×" actually better than the current tiered 40/30/30? Tiered wins when there's a long-tail outlier (R3's 27× wouldn't have been captured by a 5× exit). All-in 2× wins when most positions don't reach 3×+ before reversing. Empirical question — only data answers.
+**Implementation note for when we build this:** the simplest shape is a config-time switch in `executeTakeProfit` — when `EXIT_MODE=all-in`, the level matching `EXIT_AT_MULT` sells 100% and other levels are no-ops. ~20 lines of code, mostly tests.
+
+---
+
+## Run R10 — *planned* — sustained 4h run at the winning config
+**Date:** _pending_
+**Code state:** post-R9.
+**Config:** Best of R7-R9, pump source.
+**Duration:** **4 hours**.
+**Goal:** First run with statistical power. 30-min runs produce 5-10 closed positions; variance on N=10 is too high to draw real conclusions. A 4h run should produce ~30-60 closed positions, giving real win-rate confidence intervals. After this, the cost of being wrong about config is much lower.
+**Cost estimate:** ~$0.16 OpenAI + RPC traffic. Trivial.
+
+---
+
+## Run R11 — *planned* — 24h continuous, last paper-trade gate before live
+**Date:** _pending_
+**Code state:** post-R10.
+**Config:** R10's winning config, no changes between R10 and R11.
+**Duration:** **24 hours**.
+**Goal:** Spec section 6 calls for 3-7 days continuous before live. R11 is day 1 — also tests pump.fun activity variation across the full UTC day (US peak around 13:00-04:00 UTC matters; quieter hours might produce different score distributions). After R11, the live-readiness checklist in `npm run review:pump` is the gate: ≥20 finished positions, positive realized PnL, no recurring crashes.
+
+---
+
 ## Process
 
 Before nuking `pump.db` / `pump.log` after a meaningful run:
