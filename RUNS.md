@@ -180,14 +180,39 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 
 ---
 
-## Run R9 — *planned* — sustained 3-4h at threshold 70 (the missing baseline)
-**Date:** _pending_
-**Code state:** R8 codebase (no further changes needed — concurrency 6, position cap 50 already in place).
-**Config:** OpenAI `gpt-5-nano`, **`MIN_AI_SCORE=70`**, pump source. Default tiered TP (40/30/30 at 2×/3×/5×).
-**Duration:** **3-4 hours**, normal user-stop.
-**Goal:** R8 gave us a 3h sustained dataset at threshold 60 (verdict: too lenient). We still don't have a sustained dataset at threshold 70 — R7 was 32 min with N=1 closed. R9 is that missing dataset. Should produce ~10-20 closed positions at threshold 70's lower buy rate, enough for a real win-rate confidence interval to compare against R8's 27%.
-**What this answers:** is threshold 70's win rate clearly better than threshold 60's, or just looks-better-on-tiny-N? Also: does sustained 3-4h running surface any leaks, RPC drift, or other infrastructure issues we haven't seen in shorter runs?
-**Cost estimate:** ~$0.05-0.10 (threshold 70 = fewer buys = position cap rarely hits = more analyses reach the AI = higher per-hour cost than R8 despite same model).
+## Run R9 — sustained threshold-70 baseline
+**Date:** 2026-04-27
+**Code state:** R8 codebase (saturation fix + concurrency 6 + position cap 50). No further changes during the run.
+**Config:** OpenAI `gpt-5-nano`, `MIN_AI_SCORE=70`, pump source, default tiered TP.
+**Duration:** **7h 1m** (10:56 → 17:57 UTC, normal user-stop).
+
+| Metric | Value |
+|---|---|
+| Detected | 6,588 |
+| Analyzed | 606 |
+| BUYS | 66 |
+| **Status breakdown** | **10 closed, 5 stopped, 8 partial, 43 open** |
+| Spent / received | 3.30 SOL / 4.69 SOL |
+| **Realized PnL** | **+1.39 SOL on 3.30 deployed (+42%)** |
+| **Win rate on finished (closed+stopped)** | **10/15 ≈ 67%** |
+| Score distribution | 374× 62, 60× 72, 21× 68, 13× 45, 12× 58, 11× 63, 11× 52, 8× 65 |
+| **API cost** | **$0.05** over 7h ≈ $0.007/hr |
+
+**Key comparisons:**
+
+| | R8 (threshold 60) | R9 (threshold 70) |
+|---|---|---|
+| Buys per hour | ~25 | ~9 |
+| Analyzed per buy | 1.2 | 9.2 |
+| **Win rate on finished** | **27%** (7/26) | **67%** (10/15) |
+| Realized PnL | -0.99 SOL (mostly noise — 39 unresolved) | **+1.39 SOL** |
+| Saturation flagged in prompts | many | many |
+
+**Learning:** Threshold 70 produces ~3× fewer buys than threshold 60 but **2.5× the win rate on finished positions**. Realized PnL flips from -0.99 (R8) to +1.39 (R9). At N=15 finished the confidence interval on 67% is still wide (~38%-88%) but the gap to 27% is large enough that the threshold-70 advantage is unlikely to be variance — particularly when paired with the +42% realized return. Confirms threshold 70 as the floor for live trading. Also no signs of memory leak or RPC drift over 7h sustained.
+
+**Caveats:**
+1. 43 open positions at stop time is a lot of mid-flight capital — outcomes there will move realized PnL one way or the other, but the 15 finished positions are already enough for a directional read.
+2. The 60× score-72 cluster (vs R6's 9×) confirms the saturation fix is steadily lifting more aged-active wallets into the buy zone.
 
 ---
 
