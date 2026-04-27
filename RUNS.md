@@ -149,11 +149,34 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 
 ---
 
-## Run R8 — *planned* — threshold 60 experiment
-**Date:** _pending_
-**Code state:** same as R7.
+## Run R8 — threshold 60 experiment (incomplete)
+**Date:** 2026-04-27
+**Code state:** post saturation fix (`f9f4db6`); concurrency bumped 3→6 mid-run (`cc8217f`); `MAX_OPEN_POSITIONS=50` set in `.env` mid-run.
 **Config:** OpenAI `gpt-5-nano`, `MIN_AI_SCORE=60`, pump source.
-**Goal:** Compare against R7 — does dropping the threshold to 60 unlock alpha (more wins) or just more losers? Look at win rate on closed positions, not just absolute PnL — small samples lie.
+**Duration:** ~30 min initial (killed when `MAX_OPEN_POSITIONS=10` filled and analyses stalled), then ~30+ min restart with bumped caps. Killed by user before completion.
+
+| Metric | Value |
+|---|---|
+| Detected | 2,366 |
+| Analyzed | 91 (busy-gate dropping the rest — even at concurrency 6 the stream is faster than we drain) |
+| BUYS | 76 |
+| Exits | 74 |
+| **Status breakdown** | **7 closed, 19 stopped, 11 partial, 39 open** |
+| Spent / received | 3.80 SOL / 2.81 SOL |
+| Realized PnL | -0.99 SOL (mostly noise — 39 open + 11 partial still mid-flight at kill time) |
+| **Win rate on finished (closed+stopped)** | **7/26 ≈ 27%** |
+
+**Comparison vs R7 (threshold 70, same code):**
+- Buy volume: 76 in ~hour vs R7's 11 in 32 min → ~7× more buys at threshold 60
+- Win rate on finished: **27% (R8) vs ~67% (R6 baseline at threshold 70 with N=3)**
+- Direction is the predicted one — the marginal 60-65 picks have noticeably lower win rate. Tokens with one strong signal but missing other signals (the bulk that scored 60-65 in R6) lose more than they win.
+
+**Caveats:**
+1. Run was killed twice — first when position cap hit, then again at user's discretion before all opens/partials resolved. The 39 open positions never had a chance to exit, so realized PnL is artificially negative.
+2. Caps changed mid-run (`MAX_OPEN_POSITIONS=10→50`, concurrency 3→6) so the dataset isn't homogeneous. Treat as directional, not precise.
+3. 26 finished positions is *better* sample than R7's 1, but win rate at N=26 still has wide confidence interval (~95% CI ≈ 12%-46%).
+
+**Learning:** Threshold 60 is too lenient. The 4× lift in buy density from R7→R8 came overwhelmingly from tokens that turned into stop-losses. **Recommend: stay at threshold 70 for R9-R11 unless a future experiment shows otherwise.** Also confirms two infrastructure bottlenecks at higher buy volume: the analyzer busy gate and the position cap. Both are now bumped (concurrency 6, position cap 50) ready for sustained R10.
 
 ---
 
@@ -183,6 +206,23 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 **Config:** R10's winning config, no changes between R10 and R11.
 **Duration:** **24 hours**.
 **Goal:** Spec section 6 calls for 3-7 days continuous before live. R11 is day 1 — also tests pump.fun activity variation across the full UTC day (US peak around 13:00-04:00 UTC matters; quieter hours might produce different score distributions). After R11, the live-readiness checklist in `npm run review:pump` is the gate: ≥20 finished positions, positive realized PnL, no recurring crashes.
+
+---
+
+## Future ideas — non-priority experiments
+
+Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
+
+### Rollover mode (casino, not income)
+
+**Idea:** start with 1 SOL, take the FULL stack (capital + every prior win) into each next trade, exit fully at a target multiple, repeat until total pot reaches a stop target (e.g. 10 SOL) or a single trade SLs and the run ends.
+
+**Why it's parking-lot, not roadmap:**
+- Mathematically a casino bet — one stop-loss anywhere in the chain ends the entire run with most of the stack lost.
+- At R8's measured 27% win rate: P(3 consecutive wins to 8×) ≈ 2%. Even at R6's 67%, P(3 consecutive) ≈ 30%, so 70%+ chance of going to ~zero.
+- Bounded gain, near-total loss. That is fundamentally different from income generation, which is the user's stated goal for this project.
+
+**If we ever do build it:** env switches `EXIT_MODE=rollover`, `ROLLOVER_TARGET_SOL=10`, single-position-at-a-time guard so the bot doesn't run multiple parallel rollover chains. ~50 lines of code. Worth it only as a one-off "for fun" run after the income strategy is validated and live, never as the primary mode.
 
 ---
 
