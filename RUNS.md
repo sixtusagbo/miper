@@ -216,13 +216,41 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 
 ---
 
-## Run R10 — *planned* — all-in TP mode A/B (2× / 3× / 5×)
-**Date:** _pending_
-**Code state:** R9 + new `EXIT_MODE` / `EXIT_AT_MULT` env switches (not built yet).
-**Config:** OpenAI `gpt-5-nano`, threshold from R9 (likely 70), pump source. New env: `EXIT_MODE=tiered|all-in` and `EXIT_AT_MULT` for the all-in target.
-**Duration:** ~1h × 3 (one each at 2×, 3×, 5× all-in target) — keep one variable per run for clean comparison against R9's tiered baseline.
-**Goal:** Settle the strategy debate from `miper-spec.md`: is "compound small profits, exit fully at 2×" actually better than the current tiered 40/30/30? Tiered wins when there's a long-tail outlier (R3's 27× wouldn't have been captured by a 5× exit). All-in 2× wins when most positions don't reach 3×+ before reversing. Empirical question — only the data on real exits answers.
-**Implementation note for when we build this:** simplest shape is a config-time switch in `executeTakeProfit` — when `EXIT_MODE=all-in`, the level matching `EXIT_AT_MULT` sells 100% and other levels are no-ops. ~20 lines of code, mostly tests.
+## Run R10 — all-in TP mode A/B/C (2× / 3× / 5×)
+
+R10 is three sequential 2h sub-runs at threshold 70, varying only `EXIT_AT_MULT`. `MAX_RUN_HOURS=2` and `CLOSE_ON_SHUTDOWN=true` are set so each session auto-stops cleanly with no open exposure carried.
+
+### R10a — `EXIT_AT_MULT=2`
+**Date:** 2026-04-27
+**Code state:** post `EXIT_MODE` switch (`211e0a5`) + auto-shutdown (`ecaa54f`).
+**Config:** OpenAI `gpt-5-nano`, `MIN_AI_SCORE=70`, `EXIT_MODE=all-in`, `EXIT_AT_MULT=2`, `MAX_RUN_HOURS=2`, `CLOSE_ON_SHUTDOWN=true`.
+**Duration:** **2h** exact (18:47 → 20:47 UTC, MAX_RUN_HOURS auto-stopped at the boundary).
+
+| Metric | Value |
+|---|---|
+| Detected | 2,450 |
+| Analyzed | 482 |
+| BUYS | 70 |
+| Real TP/SL exits during run | **15 TP3 (2× wins) + 4 STOPLOSS = 19 finished naturally** |
+| Shutdown-sweep closes | 50 (CLOSE_ON_SHUTDOWN closed remaining at last-observed price) |
+| **Win rate on real exits** | **15/19 ≈ 79%** |
+| DB realized PnL | +1.23 SOL on 3.50 spent (heavily caveated — see below) |
+
+**Critical caveat — internet outage:**
+The home internet dropped around 19:55 UTC and was still flaky at the 20:47 auto-shutdown — ~52 min of the 2h ran with degraded fresh-price observations. Bonding-curve fetches and DexScreener calls hit `getaddrinfo ENOTFOUND` and `TypeError: fetch failed` (46k+ such error lines in the log). The bot survived without crashing — RPC websocket reconnected automatically; sell helpers fell back to last-observed price; CLOSE_ON_SHUTDOWN swept all 50 remaining positions cleanly even with DNS still down. **But:** most of the 50 shutdown-sweep closes happened at stale prices, so the +1.23 SOL realized PnL is not a fair number to compare against R9's tiered baseline. The clean signal is the 19 naturally-finished trades' 79% win rate.
+
+**Working hypothesis (preliminary, N=19):** all-in 2× has a *higher* win rate than tiered (R9's 67% on N=15). This would track with intuition — 2× is reachable on more pump tokens than 5×, and the tiered ladder needs all three thresholds for the bag to fully exit profitably.
+
+**Two infrastructure wins from this run:**
+1. `MAX_RUN_HOURS` triggered exactly at the 2h boundary — the auto-shutdown feature works in production.
+2. `CLOSE_ON_SHUTDOWN` survived degraded network conditions — every remaining position got recorded with a sell, no leaked open exposure.
+
+### R10b — `EXIT_AT_MULT=3` *(pending)*
+
+### R10c — `EXIT_AT_MULT=5` *(pending)*
+
+### R10 summary *(pending — append after all three sub-runs)*
+Comparison row across `tiered (R9)` / `all-in 2× (R10a)` / `all-in 3× (R10b)` / `all-in 5× (R10c)`: buy volume per hour, naturally-finished win rate, realized PnL on naturally-finished positions, average multiplier per win.
 
 ---
 
