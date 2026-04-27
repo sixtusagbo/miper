@@ -25,9 +25,12 @@ import { startMonitoring, stopMonitoring } from './positions';
 import { InflightGate, withTimeout } from './concurrency';
 import { reviewCommand } from './review';
 
-// Cap concurrent analyses. Free-tier RPCs (Helius: 10 req/s) survive easily
-// with this limit since each analysis makes ~3 RPC calls.
-const MAX_CONCURRENT_ANALYSES = 3;
+// Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
+// metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
+// on RPC, comfortably under Helius free tier's 10 req/s ceiling. Bumped
+// from 3 because pump.fun streams faster than 3-concurrent could drain
+// (R7 dropped 528/615 detections at the busy gate).
+const MAX_CONCURRENT_ANALYSES = 6;
 // Hard cap on a single pool's analyze pipeline (DexScreener + RPC + Claude).
 // If Claude is slow or DexScreener hangs, we give up rather than stall.
 const ANALYSIS_TIMEOUT_MS = 20_000;
