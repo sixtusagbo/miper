@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   mockCreate: vi.fn(),
+  mockOpenAICreate: vi.fn(),
   mockFetch: vi.fn(),
   mockGetMint: vi.fn(),
   mockGetTokenLargestAccounts: vi.fn(),
@@ -17,6 +18,14 @@ vi.mock('@anthropic-ai/sdk', () => {
     constructor(_opts?: unknown) {}
   }
   return { default: MockAnthropic };
+});
+
+vi.mock('openai', () => {
+  class MockOpenAI {
+    chat = { completions: { create: mocks.mockOpenAICreate } };
+    constructor(_opts?: unknown) {}
+  }
+  return { default: MockOpenAI };
 });
 
 vi.mock('@solana/spl-token', async () => {
@@ -37,6 +46,7 @@ import {
   analyzeToken,
   fetchMarketData,
   pumpMarketData,
+  resetAiClientCache,
   runSafetyChecks,
   scoreWithAi,
 } from '../src/analyzer';
@@ -45,6 +55,9 @@ import { clearCreatorHistoryCache } from '../src/creatorHistory';
 
 beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
+  process.env.OPENAI_API_KEY = 'sk-openai-test';
+  process.env.AI_PROVIDER = 'anthropic'; // existing tests stay on the anthropic path
+  delete process.env.AI_MODEL;
   process.env.WALLET_PRIVATE_KEY = '';
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
@@ -56,7 +69,9 @@ beforeEach(() => {
   process.env.MIPER_SAFETY_PRE_READ_DELAY_MS = '0';
   delete process.env.SOURCE;
   resetConfigCache();
+  resetAiClientCache();
   mocks.mockCreate.mockReset();
+  mocks.mockOpenAICreate.mockReset();
   mocks.mockFetch.mockReset();
   mocks.mockGetMint.mockReset();
   mocks.mockGetTokenLargestAccounts.mockReset();
@@ -570,5 +585,108 @@ describe('pump source', () => {
     expect(call.system[0].text).toContain('pump.fun launches');
     expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
     expect(call.model).toBe('claude-haiku-4-5');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OpenAI provider dispatch
+// ---------------------------------------------------------------------------
+
+describe('scoreWithAi (openai provider)', () => {
+  beforeEach(() => {
+    process.env.AI_PROVIDER = 'openai';
+    delete process.env.AI_MODEL;
+    resetConfigCache();
+    resetAiClientCache();
+  });
+
+  const fixturePool = (): NewPool => ({
+    poolAddress: 'POOL',
+    tokenMint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    baseMint: 'So11111111111111111111111111111111111111112',
+    quoteMint: 'MINT',
+    initialLiquiditySol: 1.5,
+    txSignature: 'SIG',
+    timestamp: Math.floor(Date.now() / 1000),
+    creator: null,
+  });
+
+  const fixtureMarket = {
+    symbol: null,
+    name: null,
+    priceUsd: null,
+    priceSol: null,
+    liquidityUsd: null,
+    liquiditySol: 1.5,
+    marketCapUsd: null,
+    volume24hUsd: null,
+    supply: null,
+    source: 'pool-fallback' as const,
+  };
+
+  const fixtureSafety = {
+    mintRevoked: true,
+    freezeRevoked: true,
+    topHolderPct: 10,
+    holderCount: 20,
+    passed: true,
+    failures: [],
+  };
+
+  it('dispatches to the OpenAI client and parses chat-completion JSON output', async () => {
+    mocks.mockOpenAICreate.mockResolvedValueOnce({
+      choices: [
+        { message: { content: '{"score": 78, "reasoning": "decent dev buy"}' } },
+      ],
+      usage: { prompt_tokens: 800, completion_tokens: 60 },
+    });
+    const out = await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    expect(out.score).toBe(78);
+    expect(out.reasoning).toBe('decent dev buy');
+    expect(mocks.mockCreate).not.toHaveBeenCalled();
+    expect(mocks.mockOpenAICreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the gpt-5-nano default and forces minimal reasoning effort', async () => {
+    mocks.mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: '{"score": 50, "reasoning": "neutral"}' } }],
+      usage: { prompt_tokens: 800, completion_tokens: 30 },
+    });
+    await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    const call = mocks.mockOpenAICreate.mock.calls[0][0];
+    expect(call.model).toBe('gpt-5-nano');
+    expect(call.response_format).toEqual({ type: 'json_object' });
+    expect(call.reasoning_effort).toBe('minimal');
+  });
+
+  it('honors AI_MODEL and skips reasoning_effort on non-reasoning models', async () => {
+    process.env.AI_MODEL = 'gpt-4o-mini';
+    resetConfigCache();
+    resetAiClientCache();
+    mocks.mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: '{"score": 33, "reasoning": "ok"}' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+    });
+    await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    const call = mocks.mockOpenAICreate.mock.calls[0][0];
+    expect(call.model).toBe('gpt-4o-mini');
+    expect(call.reasoning_effort).toBeUndefined();
+  });
+
+  it('returns parse-error fallback when the OpenAI response is non-JSON', async () => {
+    mocks.mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: 'I refuse to answer' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+    });
+    const out = await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    expect(out.score).toBe(0);
+    expect(out.error).toBe('parse error');
+  });
+
+  it('returns API-error fallback when the OpenAI call rejects', async () => {
+    mocks.mockOpenAICreate.mockRejectedValueOnce(new Error('rate limited'));
+    const out = await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    expect(out.score).toBe(0);
+    expect(out.error).toBe('rate limited');
   });
 });

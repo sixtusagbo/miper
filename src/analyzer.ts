@@ -5,6 +5,7 @@ import {
   TokenInvalidAccountOwnerError,
 } from '@solana/spl-token';
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import fetch from 'node-fetch';
 import { Config, loadConfig, SOL_MINT_ADDRESS } from './config';
 import { NewPool } from './listener';
@@ -414,12 +415,137 @@ function clampScore(n: number): number {
 }
 
 let anthropicClient: Anthropic | null = null;
+let openaiClient: OpenAI | null = null;
 
 function getAnthropic(cfg: Config): Anthropic {
   if (!anthropicClient) {
     anthropicClient = new Anthropic({ apiKey: cfg.anthropicApiKey });
   }
   return anthropicClient;
+}
+
+function getOpenAI(cfg: Config): OpenAI {
+  if (!openaiClient) {
+    openaiClient = new OpenAI({ apiKey: cfg.openaiApiKey });
+  }
+  return openaiClient;
+}
+
+// Test seam: vitest's vi.mock loads our mock for the OpenAI module before
+// this module imports it, but the cached client survives across tests because
+// it's module-level state. Reset it explicitly when the mock is reset so each
+// test gets a fresh constructor call.
+export function resetAiClientCache(): void {
+  anthropicClient = null;
+  openaiClient = null;
+}
+
+// GPT-5 family models default to higher reasoning effort which silently
+// inflates output tokens (a 150-token JSON response can balloon to 1500+).
+// For structured scoring we want minimal reasoning — this saves both cost
+// and latency. Older models (4o, 4.1) ignore the parameter cleanly.
+function isReasoningModel(model: string): boolean {
+  return /^(gpt-5|o1|o3)/i.test(model);
+}
+
+interface ParsedScore {
+  score: number;
+  reasoning: string;
+}
+
+function parseScoreJson(raw: string): ParsedScore | null {
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as { score?: number; reasoning?: string };
+    return {
+      score: clampScore(Number(parsed.score ?? 0)),
+      reasoning: String(parsed.reasoning ?? '').slice(0, 400),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function scoreWithAnthropic(
+  cfg: Config,
+  systemPrompt: string,
+  userPrompt: string,
+  tokenMint: string
+): Promise<AiScore> {
+  const client = getAnthropic(cfg);
+  // cache_control is set on the system prompt so identical-prefix requests
+  // within the 5-min TTL pay 0.1x for the cached portion. Note: Haiku 4.5's
+  // minimum cacheable prefix is 4096 tokens; our prompts are ~450-700, so
+  // the marker silently no-ops today. Kept here so caching activates if/when
+  // the system prompt is later expanded with examples.
+  const response = await client.messages.create({
+    model: cfg.aiModel,
+    max_tokens: 600,
+    system: [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+    messages: [{ role: 'user', content: userPrompt }],
+  });
+  const usage = (response.usage ?? {}) as {
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+    input_tokens?: number;
+  };
+  logger.debug(
+    `anthropic usage ${tokenMint}: input=${usage.input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0} cache_read=${usage.cache_read_input_tokens ?? 0}`
+  );
+
+  const textBlock = response.content.find((b) => b.type === 'text');
+  const raw = textBlock && textBlock.type === 'text' ? textBlock.text.trim() : '';
+  const parsed = parseScoreJson(raw);
+  if (!parsed) return { score: 0, reasoning: 'no JSON in response', error: 'parse error' };
+  return parsed;
+}
+
+async function scoreWithOpenAI(
+  cfg: Config,
+  systemPrompt: string,
+  userPrompt: string,
+  tokenMint: string
+): Promise<AiScore> {
+  const client = getOpenAI(cfg);
+  // response_format json_object guarantees the output parses as JSON.
+  // For reasoning models (gpt-5*), pin reasoning_effort=minimal so we don't
+  // silently pay 5-10x in output tokens for hidden chain-of-thought we
+  // don't read.
+  const params: Parameters<typeof client.chat.completions.create>[0] = {
+    model: cfg.aiModel,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    response_format: { type: 'json_object' },
+    max_completion_tokens: 600,
+  };
+  if (isReasoningModel(cfg.aiModel)) {
+    (params as unknown as Record<string, unknown>).reasoning_effort = 'minimal';
+  }
+  const response = await client.chat.completions.create(params);
+
+  // Stream events would land in delta.content; we use non-streaming so
+  // the full text is on choices[0].message.content.
+  const completion = response as OpenAI.Chat.ChatCompletion;
+  const usage = completion.usage as
+    | { prompt_tokens?: number; completion_tokens?: number }
+    | undefined;
+  logger.debug(
+    `openai usage ${tokenMint}: input=${usage?.prompt_tokens ?? 0} output=${usage?.completion_tokens ?? 0}`
+  );
+
+  const raw = completion.choices?.[0]?.message?.content?.trim() ?? '';
+  const parsed = parseScoreJson(raw);
+  if (!parsed) return { score: 0, reasoning: 'no JSON in response', error: 'parse error' };
+  return parsed;
 }
 
 export async function scoreWithAi(
@@ -430,53 +556,19 @@ export async function scoreWithAi(
   pumpCtx: PumpSignalContext | null = null
 ): Promise<AiScore> {
   try {
-    const client = getAnthropic(cfg);
-    logger.debug(`claude: scoring ${pool.tokenMint}`);
+    logger.debug(`${cfg.aiProvider}/${cfg.aiModel}: scoring ${pool.tokenMint}`);
     const isPump = cfg.source === 'pump' && pumpCtx !== null;
     const systemPrompt = isPump ? PUMP_AI_SYSTEM_PROMPT : RAYDIUM_AI_SYSTEM_PROMPT;
     const userPrompt = isPump
       ? buildPumpUserPrompt(pool, pumpCtx)
       : buildRaydiumUserPrompt(pool, market, safety);
-    // Haiku 4.5 is ~3x cheaper than Sonnet 4 ($1/$5 vs $3/$15 per 1M tokens)
-    // and the relative-scoring task is structured signal interpretation, not
-    // multi-step reasoning — Haiku handles it well. cache_control is set on
-    // the system prompt so identical-prefix requests within the 5-min TTL
-    // pay 0.1x for the cached portion. Note: Haiku 4.5's minimum cacheable
-    // prefix is 4096 tokens; our prompts sit ~450-700 tokens so the marker
-    // silently no-ops today. Kept here so caching activates automatically
-    // if/when the system prompt is expanded with examples.
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 600,
-      system: [
-        {
-          type: 'text',
-          text: systemPrompt,
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      messages: [{ role: 'user', content: userPrompt }],
-    });
-    const usage = (response.usage ?? {}) as {
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-      input_tokens?: number;
-    };
-    logger.debug(
-      `claude usage ${pool.tokenMint}: input=${usage.input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0} cache_read=${usage.cache_read_input_tokens ?? 0}`
-    );
-
-    const textBlock = response.content.find((b) => b.type === 'text');
-    const raw = textBlock && textBlock.type === 'text' ? textBlock.text.trim() : '';
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return { score: 0, reasoning: 'no JSON in response', error: 'parse error' };
-    }
-    const parsed = JSON.parse(jsonMatch[0]) as { score?: number; reasoning?: string };
-    const score = clampScore(Number(parsed.score ?? 0));
-    const reasoning = String(parsed.reasoning ?? '').slice(0, 400);
-    logger.info(`AI scored ${pool.tokenMint}: ${score}/100 — ${reasoning}`);
-    return { score, reasoning };
+    const result =
+      cfg.aiProvider === 'anthropic'
+        ? await scoreWithAnthropic(cfg, systemPrompt, userPrompt, pool.tokenMint)
+        : await scoreWithOpenAI(cfg, systemPrompt, userPrompt, pool.tokenMint);
+    if (result.error) return result;
+    logger.info(`AI scored ${pool.tokenMint}: ${result.score}/100 — ${result.reasoning}`);
+    return result;
   } catch (err) {
     const message = (err as Error).message;
     logger.warn(`AI scoring failed for ${pool.tokenMint}: ${message}`);
