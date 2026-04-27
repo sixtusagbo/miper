@@ -149,11 +149,11 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 
 ---
 
-## Run R8 — threshold 60 experiment (incomplete)
+## Run R8 — threshold 60 experiment
 **Date:** 2026-04-27
-**Code state:** post saturation fix (`f9f4db6`); concurrency bumped 3→6 mid-run (`cc8217f`); `MAX_OPEN_POSITIONS=50` set in `.env` mid-run.
+**Code state:** post saturation fix (`f9f4db6`) + concurrency bump 3→6 (`cc8217f`) + `MAX_OPEN_POSITIONS=50`. (An earlier 30-min attempt at the un-bumped caps was discarded — caps stalled the run on the position limit before the bumps landed. R8 here is the post-bump run only.)
 **Config:** OpenAI `gpt-5-nano`, `MIN_AI_SCORE=60`, pump source.
-**Duration:** ~30 min initial (killed when `MAX_OPEN_POSITIONS=10` filled and analyses stalled), then ~30+ min restart with bumped caps. Killed by user before completion.
+**Duration:** **2h 54m** (07:38 → 10:32 UTC, normal user-stop after the gym session). Effectively crosses into R10 territory — much more substantive sample than originally planned.
 
 | Metric | Value |
 |---|---|
@@ -172,9 +172,8 @@ For each run record: date, code state, config, pipeline metrics, score distribut
 - Direction is the predicted one — the marginal 60-65 picks have noticeably lower win rate. Tokens with one strong signal but missing other signals (the bulk that scored 60-65 in R6) lose more than they win.
 
 **Caveats:**
-1. Run was killed twice — first when position cap hit, then again at user's discretion before all opens/partials resolved. The 39 open positions never had a chance to exit, so realized PnL is artificially negative.
-2. Caps changed mid-run (`MAX_OPEN_POSITIONS=10→50`, concurrency 3→6) so the dataset isn't homogeneous. Treat as directional, not precise.
-3. 26 finished positions is *better* sample than R7's 1, but win rate at N=26 still has wide confidence interval (~95% CI ≈ 12%-46%).
+1. Run ended via normal user-stop (back from gym), not error. The 39 open + 11 partial positions are mid-flight at stop time — that's the snapshot, not a "killed early" artifact. Their final outcomes would shift realized PnL meaningfully but don't affect the win-rate-on-finished metric.
+2. 26 finished positions is real sample (vs R7's 1) but at N=26 the 95% CI on win rate is still wide (~12%-46%). Treat as directional, not surgical.
 
 **Learning:** Threshold 60 is too lenient. The 4× lift in buy density from R7→R8 came overwhelmingly from tokens that turned into stop-losses. **Recommend: stay at threshold 70 for R9-R11 unless a future experiment shows otherwise.** Also confirms two infrastructure bottlenecks at higher buy volume: the analyzer busy gate and the position cap. Both are now bumped (concurrency 6, position cap 50) ready for sustained R10.
 
