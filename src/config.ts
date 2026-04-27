@@ -17,12 +17,26 @@ export const SOL_MINT_ADDRESS = PROGRAM_IDS.SOL_MINT.toBase58();
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'trade';
 export type Source = 'raydium' | 'pump';
+export type AiProvider = 'anthropic' | 'openai';
+
+// Per-provider model defaults. Picked for cost: gpt-5-nano is currently the
+// cheapest OpenAI model that supports structured JSON output ($0.05 / $0.40
+// per 1M tokens, ~50x cheaper than Claude Sonnet 4); claude-haiku-4-5 is the
+// cheapest Anthropic option ($1 / $5 per 1M tokens, ~3x cheaper than Sonnet).
+// Override either via AI_MODEL.
+export const DEFAULT_AI_MODEL: Record<AiProvider, string> = {
+  anthropic: 'claude-haiku-4-5',
+  openai: 'gpt-5-nano',
+};
 
 export interface Config {
   solanaRpcUrl: string;
   solanaWsUrl: string;
   walletPrivateKey: string;
   anthropicApiKey: string;
+  openaiApiKey: string;
+  aiProvider: AiProvider;
+  aiModel: string;
   buyAmountSol: number;
   takeProfit1: number;
   takeProfit2: number;
@@ -87,6 +101,12 @@ function parseSource(value: string | undefined): Source {
   throw new Error(`Invalid SOURCE: ${value} (expected 'raydium' or 'pump')`);
 }
 
+function parseAiProvider(value: string | undefined): AiProvider {
+  const normalized = (value ?? 'openai').trim().toLowerCase();
+  if (normalized === 'anthropic' || normalized === 'openai') return normalized;
+  throw new Error(`Invalid AI_PROVIDER: ${value} (expected 'anthropic' or 'openai')`);
+}
+
 let cached: Config | null = null;
 
 // Clears the cached Config so the next loadConfig() re-reads process.env.
@@ -100,16 +120,25 @@ export function loadConfig(): Config {
 
   const simulate = boolFromEnv('SIMULATE', true);
   const source = parseSource(process.env.SOURCE);
+  const aiProvider = parseAiProvider(process.env.AI_PROVIDER);
+  const aiModel = process.env.AI_MODEL?.trim() || DEFAULT_AI_MODEL[aiProvider];
   const walletKey = process.env.WALLET_PRIVATE_KEY?.trim() ?? '';
   const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() ?? '';
+  const openaiKey = process.env.OPENAI_API_KEY?.trim() ?? '';
 
   // In simulation mode we can tolerate a missing wallet key since swaps are mocked,
   // but we still need one to derive an address. Fail fast in live mode.
   if (!simulate && !walletKey) {
     throw new Error('WALLET_PRIVATE_KEY is required when SIMULATE=false');
   }
-  if (!anthropicKey) {
-    throw new Error('ANTHROPIC_API_KEY is required');
+  // Only the active provider's key is required. Switching providers via
+  // AI_PROVIDER shouldn't force the user to also have a key for the one
+  // they're not using.
+  if (aiProvider === 'anthropic' && !anthropicKey) {
+    throw new Error('ANTHROPIC_API_KEY is required when AI_PROVIDER=anthropic');
+  }
+  if (aiProvider === 'openai' && !openaiKey) {
+    throw new Error('OPENAI_API_KEY is required when AI_PROVIDER=openai');
   }
 
   const config: Config = {
@@ -117,6 +146,9 @@ export function loadConfig(): Config {
     solanaWsUrl: process.env.SOLANA_WS_URL?.trim() || 'wss://api.mainnet-beta.solana.com',
     walletPrivateKey: walletKey,
     anthropicApiKey: anthropicKey,
+    openaiApiKey: openaiKey,
+    aiProvider,
+    aiModel,
     buyAmountSol: numberFromEnv('BUY_AMOUNT_SOL', 0.05),
     takeProfit1: numberFromEnv('TAKE_PROFIT_1', 2.0),
     takeProfit2: numberFromEnv('TAKE_PROFIT_2', 3.0),

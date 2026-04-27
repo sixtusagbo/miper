@@ -3,6 +3,7 @@ import { loadConfig, resetConfigCache } from '../src/config';
 
 const BASE_ENV: Record<string, string> = {
   ANTHROPIC_API_KEY: 'sk-test',
+  OPENAI_API_KEY: 'sk-openai-test',
   WALLET_PRIVATE_KEY: 'ignored-in-simulate',
   SIMULATE: 'true',
   LOG_LEVEL: 'info',
@@ -10,7 +11,12 @@ const BASE_ENV: Record<string, string> = {
 
 function setEnv(overrides: Record<string, string | undefined> = {}): void {
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith('SOLANA_') || key === 'WALLET_PRIVATE_KEY' || key === 'ANTHROPIC_API_KEY') {
+    if (
+      key.startsWith('SOLANA_') ||
+      key === 'WALLET_PRIVATE_KEY' ||
+      key === 'ANTHROPIC_API_KEY' ||
+      key === 'OPENAI_API_KEY'
+    ) {
       delete process.env[key];
     }
     if (
@@ -30,7 +36,9 @@ function setEnv(overrides: Record<string, string | undefined> = {}): void {
       key === 'MAX_OPEN_POSITIONS' ||
       key === 'DB_PATH' ||
       key === 'LOG_FILE' ||
-      key === 'SOURCE'
+      key === 'SOURCE' ||
+      key === 'AI_PROVIDER' ||
+      key === 'AI_MODEL'
     ) {
       delete process.env[key];
     }
@@ -81,9 +89,45 @@ describe('loadConfig', () => {
     expect(loadConfig().buyAmountSol).toBe(0.1);
   });
 
-  it('throws if ANTHROPIC_API_KEY is missing', () => {
-    setEnv({ ANTHROPIC_API_KEY: '' });
+  it('throws if ANTHROPIC_API_KEY is missing while AI_PROVIDER=anthropic', () => {
+    setEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: '' });
     expect(() => loadConfig()).toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  it('throws if OPENAI_API_KEY is missing while AI_PROVIDER=openai', () => {
+    setEnv({ AI_PROVIDER: 'openai', OPENAI_API_KEY: '' });
+    expect(() => loadConfig()).toThrow(/OPENAI_API_KEY/);
+  });
+
+  it('does not require the unused provider key (anthropic active, openai blank)', () => {
+    setEnv({ AI_PROVIDER: 'anthropic', OPENAI_API_KEY: '' });
+    expect(() => loadConfig()).not.toThrow();
+  });
+
+  it('does not require the unused provider key (openai active, anthropic blank)', () => {
+    setEnv({ AI_PROVIDER: 'openai', ANTHROPIC_API_KEY: '' });
+    expect(() => loadConfig()).not.toThrow();
+  });
+
+  it("defaults AI_PROVIDER to 'openai' and AI_MODEL to gpt-5-nano", () => {
+    const cfg = loadConfig();
+    expect(cfg.aiProvider).toBe('openai');
+    expect(cfg.aiModel).toBe('gpt-5-nano');
+  });
+
+  it('uses claude-haiku-4-5 as the anthropic default', () => {
+    setEnv({ AI_PROVIDER: 'anthropic' });
+    expect(loadConfig().aiModel).toBe('claude-haiku-4-5');
+  });
+
+  it('honors AI_MODEL override regardless of provider', () => {
+    setEnv({ AI_PROVIDER: 'openai', AI_MODEL: 'gpt-4.1-nano' });
+    expect(loadConfig().aiModel).toBe('gpt-4.1-nano');
+  });
+
+  it('throws on unknown AI_PROVIDER', () => {
+    setEnv({ AI_PROVIDER: 'gemini' });
+    expect(() => loadConfig()).toThrow(/AI_PROVIDER/);
   });
 
   it('requires WALLET_PRIVATE_KEY in live mode', () => {
