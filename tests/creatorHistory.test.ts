@@ -19,6 +19,7 @@ describe('fetchCreatorHistory', () => {
     const h = await fetchCreatorHistory(conn, CREATOR);
     expect(h.totalRecentTxs).toBe(0);
     expect(h.oldestActivityDaysAgo).toBeNull();
+    expect(h.txCountSaturated).toBe(false);
   });
 
   it('computes total count and wallet age from the signature window', async () => {
@@ -34,6 +35,28 @@ describe('fetchCreatorHistory', () => {
     const h = await fetchCreatorHistory(conn, CREATOR);
     expect(h.totalRecentTxs).toBe(3);
     expect(h.oldestActivityDaysAgo).toBeCloseTo(30, 0);
+    expect(h.txCountSaturated).toBe(false);
+  });
+
+  it('flags txCountSaturated=true when the window returns the API max', async () => {
+    // Simulate a high-volume wallet where 1000 recent txs all happened in
+    // the past hour. Without the saturation flag, the caller would think
+    // the wallet is 0.04 days old (fresh) when it's actually ancient.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const oneHourAgo = nowSec - 3600;
+    const sigs = Array.from({ length: 1000 }, (_, i) => ({
+      signature: `sig-${i}`,
+      blockTime: nowSec - Math.floor((i / 1000) * 3600),
+    }));
+    // Newest-first: first element is most recent.
+    sigs[sigs.length - 1].blockTime = oneHourAgo;
+    const conn = fakeConnection(sigs);
+    const h = await fetchCreatorHistory(conn, CREATOR);
+    expect(h.totalRecentTxs).toBe(1000);
+    expect(h.txCountSaturated).toBe(true);
+    // Reported in-window age is still computed (lower bound) — but caller
+    // is responsible for treating it as "age unknown".
+    expect(h.oldestActivityDaysAgo).toBeLessThan(0.1);
   });
 
   it('caches results so the RPC is only hit once per TTL window', async () => {

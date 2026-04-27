@@ -3,22 +3,30 @@ import { logger } from './logger';
 import { retry } from './concurrency';
 
 export interface CreatorHistory {
-  // Number of signatures returned by getSignaturesForAddress, capped at
-  // SIGNATURE_LIMIT. Rough proxy for "how active is this wallet" — a fresh
-  // disposable wallet will have 0-2, a seasoned trader will hit the cap.
+  // Number of signatures returned by getSignaturesForAddress in the window.
+  // Capped at SIGNATURE_LIMIT — see txCountSaturated for whether the cap
+  // was hit.
   totalRecentTxs: number;
-  // Days since the oldest signature we can see. A brand-new wallet signals
-  // likely-rug; an aged wallet is marginally reassuring (sophisticated
-  // ruggers can still age wallets, so treat this as lower-bound signal).
+  // Days since the oldest signature in the window. When `txCountSaturated`
+  // is true this is a LOWER BOUND on wallet age — a wallet doing thousands
+  // of txs per hour will report ~0.04 days even if it's months old. When
+  // saturated AND oldest-in-window is recent, callers should treat true age
+  // as unknown rather than concluding "fresh disposable wallet".
   oldestActivityDaysAgo: number | null;
+  // True when getSignaturesForAddress returned the maximum (>= SIGNATURE_LIMIT)
+  // entries, meaning the wallet has more recent activity than fits in one
+  // page. The wallet is high-volume; we cannot determine whether it's also
+  // long-lived without paginating further.
+  txCountSaturated: boolean;
   // Timestamp this record was computed, used by the cache.
   fetchedAt: number;
 }
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
-// Large enough to distinguish "new wallet" from "experienced one" but small
-// enough to keep a single RPC call under a few hundred ms on a decent RPC.
-const SIGNATURE_LIMIT = 200;
+// API max for getSignaturesForAddress in a single call. Bumped from 200 so
+// active wallets that previously saturated at 200 now resolve cleanly,
+// reducing the false "0 days old" reading on traders/MEV/active devs.
+const SIGNATURE_LIMIT = 1000;
 
 const cache = new Map<string, CreatorHistory>();
 
@@ -56,6 +64,7 @@ export async function fetchCreatorHistory(
     history = {
       totalRecentTxs: sigs.length,
       oldestActivityDaysAgo: daysAgo,
+      txCountSaturated: sigs.length >= SIGNATURE_LIMIT,
       fetchedAt: Date.now(),
     };
   } catch (err) {
@@ -65,6 +74,7 @@ export async function fetchCreatorHistory(
     history = {
       totalRecentTxs: 0,
       oldestActivityDaysAgo: null,
+      txCountSaturated: false,
       fetchedAt: Date.now(),
     };
   }

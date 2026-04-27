@@ -330,7 +330,10 @@ DO NOT penalize these baseline facts — they are the same for every launch and 
 
 SIGNALS THAT MATTER (in descending order of importance):
 1. Dev commitment — how much SOL did the creator co-deposit in the create tx? Minimum launch is ~0.03 SOL. A 2+ SOL initial buy signals skin in the game.
-2. Creator track record — is this a fresh disposable wallet (<1 day old, <5 prior txs) or an aged active wallet? Brand-new wallets are the overwhelming signature of rug-launchers. Aged wallets are marginally reassuring.
+2. Creator track record — three regimes you must distinguish:
+   (a) Fresh disposable wallet (<1 day old, <50 prior txs, NOT saturated): overwhelming rug-launcher signature. Penalize hard.
+   (b) Aged active wallet (>7 days old in window, hundreds of txs): mildly reassuring. Aging is gameable but easier to detect than dev commitment fraud.
+   (c) Saturated wallet ("1000+ recent txs ... true age unknown"): the wallet is high-volume — could be a sophisticated rug-farmer running automated launches OR a legitimate trader/MEV bot/active dev. NEUTRAL signal — do NOT call this "fresh" or treat as 0-day-old. Look at the OTHER signals (dev commitment, metadata) to tiebreak.
 3. Metadata effort — does the token have a real name/symbol, or placeholder trash? Does the URI look like a real hosted JSON vs garbage?
 4. Mint address vanity — addresses ending in "pump" are vanity-ground (takes some compute); raw random addresses suggest less effort.
 
@@ -349,6 +352,10 @@ export interface PumpSignalContext {
     address: string | null;
     totalRecentTxs: number;
     oldestActivityDaysAgo: number | null;
+    // True when the signature window is full (1000 txs) — caller must
+    // describe the wallet as high-volume with unknown true age, not as
+    // "fresh" even if the in-window oldest signature is recent.
+    txCountSaturated: boolean;
   };
 }
 
@@ -383,9 +390,21 @@ Score this token 0-100 for a quick 2-5x snipe trade. Consider rug risk, liquidit
 
 function buildPumpUserPrompt(pool: NewPool, ctx: PumpSignalContext): string {
   const md = ctx.metadata;
-  const creatorLine = ctx.creator.address
-    ? `${ctx.creator.address} (${ctx.creator.totalRecentTxs} recent txs, ${ctx.creator.oldestActivityDaysAgo !== null ? `oldest activity ${ctx.creator.oldestActivityDaysAgo.toFixed(1)} days ago` : 'no visible history'})`
-    : 'unknown';
+  const creatorLine = (() => {
+    const c = ctx.creator;
+    if (!c.address) return 'unknown';
+    const txCount = `${c.totalRecentTxs}${c.txCountSaturated ? '+' : ''} recent txs`;
+    if (c.oldestActivityDaysAgo === null) {
+      return `${c.address} (${txCount}, no visible history)`;
+    }
+    // When saturated, the oldest-in-window time is a lower bound on age, not
+    // the actual age — say so explicitly so the model doesn't read a recent
+    // window-edge as "fresh disposable wallet".
+    const ageDescriptor = c.txCountSaturated
+      ? `${c.oldestActivityDaysAgo.toFixed(2)} days within full 1000-tx window — true wallet age unknown, treat as high-volume`
+      : `oldest activity ${c.oldestActivityDaysAgo.toFixed(1)} days ago`;
+    return `${c.address} (${txCount}, ${ageDescriptor})`;
+  })();
   const mintVanity = pool.tokenMint.toLowerCase().endsWith('pump')
     ? "yes (ends in 'pump')"
     : 'no (raw random address)';
@@ -595,6 +614,7 @@ async function buildPumpContext(
       : Promise.resolve({
           totalRecentTxs: 0,
           oldestActivityDaysAgo: null,
+          txCountSaturated: false,
           fetchedAt: Date.now(),
         }),
   ]);
@@ -604,6 +624,7 @@ async function buildPumpContext(
       address: pool.creator,
       totalRecentTxs: creatorHistory.totalRecentTxs,
       oldestActivityDaysAgo: creatorHistory.oldestActivityDaysAgo,
+      txCountSaturated: creatorHistory.txCountSaturated,
     },
   };
 }

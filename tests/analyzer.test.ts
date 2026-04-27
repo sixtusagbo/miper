@@ -588,6 +588,45 @@ describe('pump source', () => {
     expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
     expect(call.model).toBe('claude-haiku-4-5');
   });
+
+  it('describes saturated creator wallets as high-volume rather than fresh', async () => {
+    // Regression: when getSignaturesForAddress returns the API max (1000),
+    // the in-window oldest is recent — without the saturation flag in the
+    // prompt, the LLM reads "0.04 days old" as "fresh disposable wallet"
+    // and tanks the score on tokens that are actually launched by aged,
+    // high-volume traders.
+    mocks.mockGetMint.mockResolvedValue({
+      mintAuthority: null,
+      freezeAuthority: null,
+      supply: 1_000_000n * 1_000_000n,
+      decimals: 6,
+    });
+    const nowSec = Math.floor(Date.now() / 1000);
+    const oneHourAgo = nowSec - 3600;
+    const sigs = Array.from({ length: 1000 }, (_, i) => ({
+      signature: `s-${i}`,
+      blockTime: nowSec - Math.floor((i / 1000) * 3600),
+    }));
+    sigs[sigs.length - 1].blockTime = oneHourAgo;
+    mocks.mockGetSignaturesForAddress.mockResolvedValue(sigs);
+    mocks.mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"score": 70, "reasoning": "high-volume creator + dev buy"}' }],
+    });
+
+    await analyzeToken(
+      fakeConnection(),
+      fakePool({
+        tokenMint: VALID_MINT,
+        creator: 'So11111111111111111111111111111111111111112',
+        initialLiquiditySol: 2.5,
+      })
+    );
+
+    const userPrompt = mocks.mockCreate.mock.calls[0][0].messages[0].content as string;
+    expect(userPrompt).toContain('1000+ recent txs');
+    expect(userPrompt).toContain('true wallet age unknown');
+    expect(userPrompt).not.toMatch(/oldest activity 0\.0 days ago/);
+  });
 });
 
 // ---------------------------------------------------------------------------
