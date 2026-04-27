@@ -315,6 +315,54 @@ export function startMonitoring(
   }, intervalMs);
 }
 
+// Sells every open/partial position at its last-known price. Called from
+// the snipe-command shutdown handler when CLOSE_ON_SHUTDOWN=true so we
+// don't leak open exposure across sessions. Best-effort: a single failed
+// sell logs an error but doesn't block the rest.
+export async function closeAllOpenPositions(
+  cfg: Config = loadConfig(),
+  connection: Connection | null = null
+): Promise<{ closed: number; failed: number }> {
+  let closed = 0;
+  let failed = 0;
+  const positions = getOpenPositions();
+  if (positions.length === 0) return { closed, failed };
+  logger.info(`closing ${positions.length} open/partial positions for shutdown...`);
+  for (const p of positions) {
+    if (p.amount_tokens <= 0) continue;
+    try {
+      // Refresh price one last time so the close uses live state, not the
+      // tick-stale snapshot.
+      const livePrice = await fetchPositionPriceSol(p, cfg, connection);
+      if (livePrice !== null) {
+        updatePosition(p.id, { currentPriceSol: livePrice });
+        p.current_price_sol = livePrice;
+      }
+      const sold = await executePartialSell(p, p.amount_tokens, cfg);
+      if (!sold) {
+        failed++;
+        continue;
+      }
+      const finalReceived = p.amount_sol_received + recentSolReceived(p.id);
+      updatePosition(p.id, {
+        amountTokens: 0,
+        amountSolReceived: finalReceived,
+        status: 'closed',
+      });
+      logger.position(
+        'SELL',
+        p.token_mint,
+        `shutdown close: ${p.amount_tokens.toFixed(2)} tokens at last price`
+      );
+      closed++;
+    } catch (err) {
+      logger.error(`shutdown close failed for ${p.id}: ${(err as Error).message}`);
+      failed++;
+    }
+  }
+  return { closed, failed };
+}
+
 export function stopMonitoring(): void {
   if (monitorTimer) {
     clearInterval(monitorTimer);

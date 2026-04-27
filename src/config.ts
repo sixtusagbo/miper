@@ -57,6 +57,14 @@ export interface Config {
   exitMode: ExitMode;
   // Multiplier at which all-in mode fully exits. Ignored under tiered mode.
   exitAtMult: number;
+  // Max wall-clock hours before snipe runs auto-shutdown. 0 disables (run
+  // forever until SIGINT). Useful for unattended paper-trading sessions.
+  maxRunHours: number;
+  // When true, the graceful shutdown handler sells every open/partial
+  // position at its current price before closing the DB and exiting. Off
+  // by default to preserve current behavior; flip on for live trading and
+  // bounded paper sessions where you want a clean PnL at session end.
+  closeOnShutdown: boolean;
 }
 
 function required(name: string): string {
@@ -188,6 +196,8 @@ export function loadConfig(): Config {
     source,
     exitMode: parseExitMode(process.env.EXIT_MODE),
     exitAtMult: numberFromEnv('EXIT_AT_MULT', 2),
+    maxRunHours: numberFromEnv('MAX_RUN_HOURS', 0),
+    closeOnShutdown: boolFromEnv('CLOSE_ON_SHUTDOWN', false),
   };
 
   validateConfig(config);
@@ -219,6 +229,9 @@ function validateConfig(c: Config): void {
     throw new Error(
       `EXIT_AT_MULT must be > 1 when EXIT_MODE=all-in (an exit at <=1x is just a stop-loss); got ${c.exitAtMult}`
     );
+  }
+  if (c.maxRunHours < 0) {
+    throw new Error(`MAX_RUN_HOURS must be >= 0 (0 disables auto-shutdown), got ${c.maxRunHours}`);
   }
 }
 

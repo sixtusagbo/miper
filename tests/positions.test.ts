@@ -21,9 +21,11 @@ import {
   getPosition,
   getTradesForPosition,
   recordTrade,
+  updatePosition,
 } from '../src/db';
 import {
   checkPosition,
+  closeAllOpenPositions,
   executeStopLoss,
   executeTakeProfit,
   fetchPriceSol,
@@ -501,5 +503,56 @@ describe('trade recording', () => {
     const sells = trades.filter((t) => t.type === 'sell');
     expect(sells).toHaveLength(1);
     expect(sells[0].amount_sol).toBeCloseTo(0.04);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// closeAllOpenPositions — graceful shutdown
+// ---------------------------------------------------------------------------
+
+describe('closeAllOpenPositions', () => {
+  it('returns zeros and is a no-op when nothing is open', async () => {
+    const result = await closeAllOpenPositions();
+    expect(result).toEqual({ closed: 0, failed: 0 });
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+  });
+
+  it('sells every open and partial position and marks them closed', async () => {
+    const a = mkPosition({ tokenMint: 'AAA' });
+    const b = mkPosition({ tokenMint: 'BBB' });
+    const c = mkPosition({ tokenMint: 'CCC' });
+    // Mark one partial; should still be closed by the shutdown sweep.
+    updatePosition(b.id, { status: 'partial' });
+    // Each call to closeAllOpenPositions does a price refresh per position;
+    // mock the priceFetch + sell for all three.
+    for (let i = 0; i < 3; i++) mockPriceFetch(0.0002, [a, b, c][i].token_mint);
+    mockSellSuccess(0.05, 0.0002);
+    mockSellSuccess(0.05, 0.0002);
+    mockSellSuccess(0.05, 0.0002);
+
+    const result = await closeAllOpenPositions();
+    expect(result.closed).toBe(3);
+    expect(result.failed).toBe(0);
+    for (const p of [a, b, c]) {
+      const updated = getPosition(p.id)!;
+      expect(updated.status).toBe('closed');
+      expect(updated.amount_tokens).toBe(0);
+    }
+  });
+
+  it('counts failures separately and continues on a single sell error', async () => {
+    const a = mkPosition({ tokenMint: 'AAA' });
+    const b = mkPosition({ tokenMint: 'BBB' });
+    mockPriceFetch(0.0002, 'AAA');
+    mockPriceFetch(0.0002, 'BBB');
+    mockSellSuccess(0.05, 0.0002);
+    mockSellFailure('liquidity drained');
+
+    const result = await closeAllOpenPositions();
+    expect(result.closed).toBe(1);
+    expect(result.failed).toBe(1);
+    // The successful one is closed; the failed one stays open for review.
+    expect(getPosition(a.id)!.status).toBe('closed');
+    expect(getPosition(b.id)!.status).toBe('open');
   });
 });

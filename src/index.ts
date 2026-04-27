@@ -21,7 +21,7 @@ import {
 import { PoolListener, PumpListener, LogListener } from './listener';
 import { analyzeToken } from './analyzer';
 import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } from './trader';
-import { startMonitoring, stopMonitoring } from './positions';
+import { closeAllOpenPositions, startMonitoring, stopMonitoring } from './positions';
 import { InflightGate, withTimeout } from './concurrency';
 import { reviewCommand } from './review';
 
@@ -205,17 +205,40 @@ async function snipeCommand(options: {
     }
   }, STATUS_PRINT_INTERVAL_MS);
 
-  const shutdown = async () => {
-    logger.info('shutting down...');
+  // Idempotent — multiple SIGINTs (or SIGINT during MAX_RUN_HOURS auto-stop)
+  // won't kick off two parallel close-positions loops.
+  let shuttingDown = false;
+  const shutdown = async (reason: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`shutting down (${reason})...`);
     clearInterval(statusTimer);
+    if (autoStopTimer) clearTimeout(autoStopTimer);
     await listener.stop();
     stopMonitoring();
+    if (cfg.closeOnShutdown) {
+      const result = await closeAllOpenPositions(cfg, connection);
+      logger.info(
+        `shutdown close: ${result.closed} closed, ${result.failed} failed`
+      );
+    }
     printStatus();
     closeDb();
     process.exit(0);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  // Auto-shutdown after MAX_RUN_HOURS (0 disables). For unattended runs so
+  // the bot stops itself instead of churning indefinitely.
+  let autoStopTimer: NodeJS.Timeout | null = null;
+  if (cfg.maxRunHours > 0) {
+    const ms = cfg.maxRunHours * 60 * 60 * 1000;
+    autoStopTimer = setTimeout(() => {
+      logger.info(`MAX_RUN_HOURS=${cfg.maxRunHours} reached`);
+      void shutdown(`MAX_RUN_HOURS=${cfg.maxRunHours}`);
+    }, ms);
+  }
 
   logger.info(
     `sniper running. Rolling status every ${STATUS_PRINT_INTERVAL_MS / 60_000} min. Press Ctrl+C to stop.`

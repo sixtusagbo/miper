@@ -40,7 +40,9 @@ function setEnv(overrides: Record<string, string | undefined> = {}): void {
       key === 'AI_PROVIDER' ||
       key === 'AI_MODEL' ||
       key === 'EXIT_MODE' ||
-      key === 'EXIT_AT_MULT'
+      key === 'EXIT_AT_MULT' ||
+      key === 'MAX_RUN_HOURS' ||
+      key === 'CLOSE_ON_SHUTDOWN'
     ) {
       delete process.env[key];
     }
@@ -152,6 +154,24 @@ describe('loadConfig', () => {
   it('rejects EXIT_AT_MULT <= 1 in all-in mode (would be a stop-loss, not a take-profit)', () => {
     setEnv({ EXIT_MODE: 'all-in', EXIT_AT_MULT: '1' });
     expect(() => loadConfig()).toThrow(/EXIT_AT_MULT/);
+  });
+
+  it('defaults MAX_RUN_HOURS to 0 (disabled) and CLOSE_ON_SHUTDOWN to false', () => {
+    const cfg = loadConfig();
+    expect(cfg.maxRunHours).toBe(0);
+    expect(cfg.closeOnShutdown).toBe(false);
+  });
+
+  it('parses MAX_RUN_HOURS and CLOSE_ON_SHUTDOWN from env', () => {
+    setEnv({ MAX_RUN_HOURS: '4', CLOSE_ON_SHUTDOWN: 'true' });
+    const cfg = loadConfig();
+    expect(cfg.maxRunHours).toBe(4);
+    expect(cfg.closeOnShutdown).toBe(true);
+  });
+
+  it('rejects negative MAX_RUN_HOURS', () => {
+    setEnv({ MAX_RUN_HOURS: '-1' });
+    expect(() => loadConfig()).toThrow(/MAX_RUN_HOURS/);
   });
 
   it('requires WALLET_PRIVATE_KEY in live mode', () => {
