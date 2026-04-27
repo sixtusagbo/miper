@@ -89,45 +89,46 @@ describe('loadConfig', () => {
     expect(loadConfig().buyAmountSol).toBe(0.1);
   });
 
-  it('throws if ANTHROPIC_API_KEY is missing while AI_PROVIDER=anthropic', () => {
-    setEnv({ AI_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: '' });
+  it("defaults AI_MODEL to gpt-5-nano (provider inferred as 'openai')", () => {
+    const cfg = loadConfig();
+    expect(cfg.aiModel).toBe('gpt-5-nano');
+    expect(cfg.aiProvider).toBe('openai');
+  });
+
+  it('infers anthropic when AI_MODEL starts with claude-', () => {
+    setEnv({ AI_MODEL: 'claude-haiku-4-5' });
+    const cfg = loadConfig();
+    expect(cfg.aiProvider).toBe('anthropic');
+    expect(cfg.aiModel).toBe('claude-haiku-4-5');
+  });
+
+  it('infers openai for gpt-, o1, o3, and chatgpt- prefixes', () => {
+    for (const id of ['gpt-4.1-nano', 'gpt-5-mini', 'o1-mini', 'o3-mini', 'chatgpt-4o-latest']) {
+      setEnv({ AI_MODEL: id });
+      expect(loadConfig().aiProvider).toBe('openai');
+    }
+  });
+
+  it('throws on an AI_MODEL with no recognized provider prefix', () => {
+    setEnv({ AI_MODEL: 'gemini-2.0-flash' });
+    expect(() => loadConfig()).toThrow(/Cannot infer AI provider/);
+  });
+
+  it('throws if the inferred-provider key is missing (anthropic)', () => {
+    setEnv({ AI_MODEL: 'claude-haiku-4-5', ANTHROPIC_API_KEY: '' });
     expect(() => loadConfig()).toThrow(/ANTHROPIC_API_KEY/);
   });
 
-  it('throws if OPENAI_API_KEY is missing while AI_PROVIDER=openai', () => {
-    setEnv({ AI_PROVIDER: 'openai', OPENAI_API_KEY: '' });
+  it('throws if the inferred-provider key is missing (openai)', () => {
+    setEnv({ AI_MODEL: 'gpt-5-nano', OPENAI_API_KEY: '' });
     expect(() => loadConfig()).toThrow(/OPENAI_API_KEY/);
   });
 
-  it('does not require the unused provider key (anthropic active, openai blank)', () => {
-    setEnv({ AI_PROVIDER: 'anthropic', OPENAI_API_KEY: '' });
+  it('does not require the unused provider key', () => {
+    setEnv({ AI_MODEL: 'claude-haiku-4-5', OPENAI_API_KEY: '' });
     expect(() => loadConfig()).not.toThrow();
-  });
-
-  it('does not require the unused provider key (openai active, anthropic blank)', () => {
-    setEnv({ AI_PROVIDER: 'openai', ANTHROPIC_API_KEY: '' });
+    setEnv({ AI_MODEL: 'gpt-5-nano', ANTHROPIC_API_KEY: '' });
     expect(() => loadConfig()).not.toThrow();
-  });
-
-  it("defaults AI_PROVIDER to 'openai' and AI_MODEL to gpt-5-nano", () => {
-    const cfg = loadConfig();
-    expect(cfg.aiProvider).toBe('openai');
-    expect(cfg.aiModel).toBe('gpt-5-nano');
-  });
-
-  it('uses claude-haiku-4-5 as the anthropic default', () => {
-    setEnv({ AI_PROVIDER: 'anthropic' });
-    expect(loadConfig().aiModel).toBe('claude-haiku-4-5');
-  });
-
-  it('honors AI_MODEL override regardless of provider', () => {
-    setEnv({ AI_PROVIDER: 'openai', AI_MODEL: 'gpt-4.1-nano' });
-    expect(loadConfig().aiModel).toBe('gpt-4.1-nano');
-  });
-
-  it('throws on unknown AI_PROVIDER', () => {
-    setEnv({ AI_PROVIDER: 'gemini' });
-    expect(() => loadConfig()).toThrow(/AI_PROVIDER/);
   });
 
   it('requires WALLET_PRIVATE_KEY in live mode', () => {

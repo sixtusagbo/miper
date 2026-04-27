@@ -56,8 +56,8 @@ import { clearCreatorHistoryCache } from '../src/creatorHistory';
 beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
   process.env.OPENAI_API_KEY = 'sk-openai-test';
-  process.env.AI_PROVIDER = 'anthropic'; // existing tests stay on the anthropic path
-  delete process.env.AI_MODEL;
+  // Existing tests stay on the anthropic path; the OpenAI path has its own block.
+  process.env.AI_MODEL = 'claude-haiku-4-5';
   process.env.WALLET_PRIVATE_KEY = '';
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
@@ -594,8 +594,7 @@ describe('pump source', () => {
 
 describe('scoreWithAi (openai provider)', () => {
   beforeEach(() => {
-    process.env.AI_PROVIDER = 'openai';
-    delete process.env.AI_MODEL;
+    process.env.AI_MODEL = 'gpt-5-nano';
     resetConfigCache();
     resetAiClientCache();
   });

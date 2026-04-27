@@ -19,15 +19,10 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'trade';
 export type Source = 'raydium' | 'pump';
 export type AiProvider = 'anthropic' | 'openai';
 
-// Per-provider model defaults. Picked for cost: gpt-5-nano is currently the
-// cheapest OpenAI model that supports structured JSON output ($0.05 / $0.40
-// per 1M tokens, ~50x cheaper than Claude Sonnet 4); claude-haiku-4-5 is the
-// cheapest Anthropic option ($1 / $5 per 1M tokens, ~3x cheaper than Sonnet).
-// Override either via AI_MODEL.
-export const DEFAULT_AI_MODEL: Record<AiProvider, string> = {
-  anthropic: 'claude-haiku-4-5',
-  openai: 'gpt-5-nano',
-};
+// Default AI model. gpt-5-nano is the cheapest OpenAI model with structured
+// JSON support ($0.05 / $0.40 per 1M tokens — ~50x cheaper than Claude
+// Sonnet 4 at our prompt sizes). Override via AI_MODEL in .env.
+export const DEFAULT_AI_MODEL = 'gpt-5-nano';
 
 export interface Config {
   solanaRpcUrl: string;
@@ -101,10 +96,19 @@ function parseSource(value: string | undefined): Source {
   throw new Error(`Invalid SOURCE: ${value} (expected 'raydium' or 'pump')`);
 }
 
-function parseAiProvider(value: string | undefined): AiProvider {
-  const normalized = (value ?? 'openai').trim().toLowerCase();
-  if (normalized === 'anthropic' || normalized === 'openai') return normalized;
-  throw new Error(`Invalid AI_PROVIDER: ${value} (expected 'anthropic' or 'openai')`);
+// Derive the provider from the model ID. Every Claude model starts with
+// 'claude-'; every current OpenAI text model starts with 'gpt-', 'o1', 'o3',
+// or 'chatgpt-'. Unknown prefixes throw rather than silently routing wrong.
+export function inferAiProvider(model: string): AiProvider {
+  const m = model.trim().toLowerCase();
+  if (m.startsWith('claude-')) return 'anthropic';
+  if (m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('chatgpt-')) {
+    return 'openai';
+  }
+  throw new Error(
+    `Cannot infer AI provider from AI_MODEL='${model}'. ` +
+      `Expected an ID starting with 'claude-' (Anthropic) or 'gpt-' / 'o1' / 'o3' / 'chatgpt-' (OpenAI).`
+  );
 }
 
 let cached: Config | null = null;
@@ -120,8 +124,8 @@ export function loadConfig(): Config {
 
   const simulate = boolFromEnv('SIMULATE', true);
   const source = parseSource(process.env.SOURCE);
-  const aiProvider = parseAiProvider(process.env.AI_PROVIDER);
-  const aiModel = process.env.AI_MODEL?.trim() || DEFAULT_AI_MODEL[aiProvider];
+  const aiModel = process.env.AI_MODEL?.trim() || DEFAULT_AI_MODEL;
+  const aiProvider = inferAiProvider(aiModel);
   const walletKey = process.env.WALLET_PRIVATE_KEY?.trim() ?? '';
   const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() ?? '';
   const openaiKey = process.env.OPENAI_API_KEY?.trim() ?? '';

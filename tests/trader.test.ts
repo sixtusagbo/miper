@@ -40,9 +40,7 @@ const VALID_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 
 beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
-  process.env.OPENAI_API_KEY = 'sk-openai-test';
-  process.env.AI_PROVIDER = 'anthropic';
-  process.env.WALLET_PRIVATE_KEY = '';
+  process.env.OPENAI_API_KEY = 'sk-openai-test';  process.env.WALLET_PRIVATE_KEY = '';
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
   process.env.MAX_SLIPPAGE_BPS = '300';

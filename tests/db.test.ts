@@ -27,9 +27,7 @@ beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miper-db-'));
   process.env.DB_PATH = path.join(tempDir, 'test.db');
   process.env.ANTHROPIC_API_KEY = 'sk-test';
-  process.env.OPENAI_API_KEY = 'sk-openai-test';
-  process.env.AI_PROVIDER = 'anthropic';
-  process.env.WALLET_PRIVATE_KEY = '';
+  process.env.OPENAI_API_KEY = 'sk-openai-test';  process.env.WALLET_PRIVATE_KEY = '';
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
   resetConfigCache();

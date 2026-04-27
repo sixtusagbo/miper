@@ -13,9 +13,7 @@ import { PROGRAM_IDS, SOL_MINT_ADDRESS } from '../src/config';
 
 beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
-  process.env.OPENAI_API_KEY = 'sk-openai-test';
-  process.env.AI_PROVIDER = 'anthropic';
-  process.env.WALLET_PRIVATE_KEY = '';
+  process.env.OPENAI_API_KEY = 'sk-openai-test';  process.env.WALLET_PRIVATE_KEY = '';
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
 });
@@ -98,9 +96,7 @@ describe('PoolListener', () => {
 
   it('emits newPool when a matching log comes through', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-test';
-  process.env.OPENAI_API_KEY = 'sk-openai-test';
-  process.env.AI_PROVIDER = 'anthropic';
-    process.env.WALLET_PRIVATE_KEY = '';
+  process.env.OPENAI_API_KEY = 'sk-openai-test';    process.env.WALLET_PRIVATE_KEY = '';
     process.env.SIMULATE = 'true';
     process.env.LOG_LEVEL = 'error';
     const { resetConfigCache } = await import('../src/config');
