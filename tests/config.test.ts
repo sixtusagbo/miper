@@ -38,7 +38,9 @@ function setEnv(overrides: Record<string, string | undefined> = {}): void {
       key === 'LOG_FILE' ||
       key === 'SOURCE' ||
       key === 'AI_PROVIDER' ||
-      key === 'AI_MODEL'
+      key === 'AI_MODEL' ||
+      key === 'EXIT_MODE' ||
+      key === 'EXIT_AT_MULT'
     ) {
       delete process.env[key];
     }
@@ -129,6 +131,27 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).not.toThrow();
     setEnv({ AI_MODEL: 'gpt-5-nano', ANTHROPIC_API_KEY: '' });
     expect(() => loadConfig()).not.toThrow();
+  });
+
+  it("defaults EXIT_MODE to 'tiered'", () => {
+    expect(loadConfig().exitMode).toBe('tiered');
+  });
+
+  it("accepts EXIT_MODE='all-in' and exposes exitAtMult", () => {
+    setEnv({ EXIT_MODE: 'all-in', EXIT_AT_MULT: '3' });
+    const cfg = loadConfig();
+    expect(cfg.exitMode).toBe('all-in');
+    expect(cfg.exitAtMult).toBe(3);
+  });
+
+  it('throws on unknown EXIT_MODE', () => {
+    setEnv({ EXIT_MODE: 'rollover' });
+    expect(() => loadConfig()).toThrow(/EXIT_MODE/);
+  });
+
+  it('rejects EXIT_AT_MULT <= 1 in all-in mode (would be a stop-loss, not a take-profit)', () => {
+    setEnv({ EXIT_MODE: 'all-in', EXIT_AT_MULT: '1' });
+    expect(() => loadConfig()).toThrow(/EXIT_AT_MULT/);
   });
 
   it('requires WALLET_PRIVATE_KEY in live mode', () => {

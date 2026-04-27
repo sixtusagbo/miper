@@ -48,6 +48,8 @@ beforeEach(() => {
   process.env.SELL_PCT_TP3 = '30';
   process.env.STOP_LOSS = '0.4';
   delete process.env.SOURCE;
+  delete process.env.EXIT_MODE;
+  delete process.env.EXIT_AT_MULT;
   resetConfigCache();
   mocks.mockFetch.mockReset();
   mocks.mockSellToken.mockReset();
@@ -388,6 +390,50 @@ describe('checkPosition', () => {
     await checkPosition(p);
 
     expect(getPosition(p.id)!.tp_level).toBe(1);
+  });
+
+  it('all-in mode: full exit at EXIT_AT_MULT, ignores tiered TP levels', async () => {
+    process.env.EXIT_MODE = 'all-in';
+    process.env.EXIT_AT_MULT = '2';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00021); // 2.1x — clears all-in target
+    mockSellSuccess(0.105, 0.00021);
+    await checkPosition(p);
+
+    // All-in fires once and closes the position fully — not partial.
+    const updated = getPosition(p.id)!;
+    expect(updated.status).toBe('closed');
+    expect(updated.amount_tokens).toBe(0);
+    expect(updated.tp_level).toBe(3);
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+    // Should sell the full bag, not the 40% TP1 tranche.
+    const sellArgs = mocks.mockSellToken.mock.calls[0];
+    expect(sellArgs[1]).toBeCloseTo(1_000_000);
+  });
+
+  it('all-in mode: holds when multiplier is below EXIT_AT_MULT', async () => {
+    process.env.EXIT_MODE = 'all-in';
+    process.env.EXIT_AT_MULT = '5';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00025); // 2.5x — well above tiered TP1 but under all-in 5x target
+    await checkPosition(p);
+
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('all-in mode: stop-loss still fires independently of EXIT_AT_MULT', async () => {
+    process.env.EXIT_MODE = 'all-in';
+    process.env.EXIT_AT_MULT = '5';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00003); // 0.3x → SL
+    mockSellSuccess(0.015, 0.00003);
+    await checkPosition(p);
+
+    expect(getPosition(p.id)!.status).toBe('stopped');
   });
 
   it('skips TP triggers when current price is null', async () => {

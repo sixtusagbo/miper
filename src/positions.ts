@@ -233,6 +233,16 @@ export async function checkPosition(
     return;
   }
 
+  // All-in mode collapses the three-tier TP into a single full-bag exit at
+  // EXIT_AT_MULT. The 'compound small profits' thesis from miper-spec.md §1
+  // — frequent 2x exits beat rare 5x outliers — is what this mode tests.
+  if (cfg.exitMode === 'all-in') {
+    if (multiplier >= cfg.exitAtMult) {
+      await executeAllInExit(position, cfg);
+    }
+    return;
+  }
+
   const currentLevel = position.tp_level;
   if (currentLevel < 3 && multiplier >= cfg.takeProfit3) {
     await executeTakeProfit(position, 3, cfg);
@@ -241,6 +251,31 @@ export async function checkPosition(
   } else if (currentLevel < 1 && multiplier >= cfg.takeProfit1) {
     await executeTakeProfit(position, 1, cfg);
   }
+}
+
+// Sells the entire remaining bag at the all-in target. Distinct from
+// executeStopLoss (which marks 'stopped' for review.ts to count as a loss)
+// and executeTakeProfit (which handles the partial 40/30/30 ladder).
+export async function executeAllInExit(
+  position: Position,
+  cfg: Config = loadConfig()
+): Promise<void> {
+  const sold = await executePartialSell(position, position.amount_tokens, cfg);
+  if (!sold) return;
+
+  logger.position(
+    'TP3', // Re-using the TP3 label for parity with tiered logs; renaming
+           // would force a log-format break. The DB tp_level=3 below makes
+           // intent explicit.
+    position.token_mint,
+    `all-in exit: sold ${position.amount_tokens.toFixed(2)} at ${cfg.exitAtMult}x`
+  );
+  updatePosition(position.id, {
+    amountTokens: 0,
+    amountSolReceived: position.amount_sol_received + recentSolReceived(position.id),
+    status: 'closed',
+    tpLevel: 3,
+  });
 }
 
 let monitorTimer: NodeJS.Timeout | null = null;

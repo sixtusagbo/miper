@@ -18,6 +18,7 @@ export const SOL_MINT_ADDRESS = PROGRAM_IDS.SOL_MINT.toBase58();
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'trade';
 export type Source = 'raydium' | 'pump';
 export type AiProvider = 'anthropic' | 'openai';
+export type ExitMode = 'tiered' | 'all-in';
 
 // Default AI model. gpt-5-nano is the cheapest OpenAI model with structured
 // JSON support ($0.05 / $0.40 per 1M tokens — ~50x cheaper than Claude
@@ -53,6 +54,9 @@ export interface Config {
   dbPath: string;
   logFile: string | null;
   source: Source;
+  exitMode: ExitMode;
+  // Multiplier at which all-in mode fully exits. Ignored under tiered mode.
+  exitAtMult: number;
 }
 
 function required(name: string): string {
@@ -94,6 +98,12 @@ function parseSource(value: string | undefined): Source {
   const normalized = (value ?? 'raydium').trim().toLowerCase();
   if (normalized === 'raydium' || normalized === 'pump') return normalized;
   throw new Error(`Invalid SOURCE: ${value} (expected 'raydium' or 'pump')`);
+}
+
+function parseExitMode(value: string | undefined): ExitMode {
+  const normalized = (value ?? 'tiered').trim().toLowerCase();
+  if (normalized === 'tiered' || normalized === 'all-in') return normalized;
+  throw new Error(`Invalid EXIT_MODE: ${value} (expected 'tiered' or 'all-in')`);
 }
 
 // Derive the provider from the model ID. Every Claude model starts with
@@ -176,6 +186,8 @@ export function loadConfig(): Config {
     dbPath: process.env.DB_PATH?.trim() || (source === 'pump' ? './pump.db' : './sniper.db'),
     logFile: process.env.LOG_FILE?.trim() || (source === 'pump' ? './pump.log' : null),
     source,
+    exitMode: parseExitMode(process.env.EXIT_MODE),
+    exitAtMult: numberFromEnv('EXIT_AT_MULT', 2),
   };
 
   validateConfig(config);
@@ -202,6 +214,11 @@ function validateConfig(c: Config): void {
   }
   if (c.simulatedStartingSol <= 0) {
     throw new Error(`SIMULATED_STARTING_SOL must be > 0, got ${c.simulatedStartingSol}`);
+  }
+  if (c.exitMode === 'all-in' && c.exitAtMult <= 1) {
+    throw new Error(
+      `EXIT_AT_MULT must be > 1 when EXIT_MODE=all-in (an exit at <=1x is just a stop-loss); got ${c.exitAtMult}`
+    );
   }
 }
 
