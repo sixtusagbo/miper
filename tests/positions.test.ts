@@ -555,4 +555,38 @@ describe('closeAllOpenPositions', () => {
     expect(getPosition(a.id)!.status).toBe('closed');
     expect(getPosition(b.id)!.status).toBe('open');
   });
+
+  it('falls back to last-known DB price when refresh hangs, then closes the position', async () => {
+    const a = mkPosition({ tokenMint: 'AAA' });
+    // Seed a last-known price on the position so the sell has something to use.
+    updatePosition(a.id, { currentPriceSol: 0.0003 });
+    // Price fetch never resolves — simulates DNS down / hung TCP.
+    mocks.mockFetch.mockImplementationOnce(() => new Promise(() => {}));
+    mockSellSuccess(0.05, 0.0003);
+
+    const result = await closeAllOpenPositions(undefined, null, 30);
+
+    expect(result.closed).toBe(1);
+    expect(result.failed).toBe(0);
+    const updated = getPosition(a.id)!;
+    expect(updated.status).toBe('closed');
+    expect(updated.amount_tokens).toBe(0);
+    // Refresh failed, so the DB price stays at the seeded last-known value.
+    expect(updated.current_price_sol).toBe(0.0003);
+    // Sell still happened with the last-known price as the hint.
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks position as failed when the sell itself hangs past the timeout', async () => {
+    const a = mkPosition({ tokenMint: 'AAA' });
+    mockPriceFetch(0.0002, 'AAA');
+    // The sell promise never resolves — e.g. live RPC blocked.
+    mocks.mockSellToken.mockImplementationOnce(() => new Promise(() => {}));
+
+    const result = await closeAllOpenPositions(undefined, null, 30);
+
+    expect(result.closed).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(getPosition(a.id)!.status).toBe('open');
+  });
 });

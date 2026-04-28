@@ -11,12 +11,17 @@ import {
 import { logger } from './logger';
 import { sellToken } from './trader';
 import { fetchBondingCurvePrice } from './bondingCurve';
+import { withTimeout, TimeoutError } from './concurrency';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const DEFAULT_INTERVAL_MS = 7000;
 const MIN_FETCH_SPACING_MS = 1000;
 const DUST_SOL_THRESHOLD = 1e-8;
 const MAX_SELL_RETRIES = 3;
+// Per-position cap on the close-on-shutdown price refresh and sell. Protects
+// the sweep from hanging indefinitely when DNS or RPC stops responding mid-
+// outage (R10b had 50 positions stuck for hours behind unbounded waits).
+const SHUTDOWN_PER_POSITION_TIMEOUT_MS = 5000;
 
 const sellFailureCount = new Map<number, number>();
 const lastFetchAt = new Map<string, number>();
@@ -318,10 +323,14 @@ export function startMonitoring(
 // Sells every open/partial position at its last-known price. Called from
 // the snipe-command shutdown handler when CLOSE_ON_SHUTDOWN=true so we
 // don't leak open exposure across sessions. Best-effort: a single failed
-// sell logs an error but doesn't block the rest.
+// sell logs an error but doesn't block the rest. Each price refresh and
+// sell is wrapped in a per-position timeout so a network outage can't
+// stall the whole sweep — on timeout we fall back to the DB-stored
+// last-known price and proceed with the close.
 export async function closeAllOpenPositions(
   cfg: Config = loadConfig(),
-  connection: Connection | null = null
+  connection: Connection | null = null,
+  perPositionTimeoutMs: number = SHUTDOWN_PER_POSITION_TIMEOUT_MS
 ): Promise<{ closed: number; failed: number }> {
   let closed = 0;
   let failed = 0;
@@ -331,14 +340,22 @@ export async function closeAllOpenPositions(
   for (const p of positions) {
     if (p.amount_tokens <= 0) continue;
     try {
-      // Refresh price one last time so the close uses live state, not the
-      // tick-stale snapshot.
-      const livePrice = await fetchPositionPriceSol(p, cfg, connection);
+      const livePrice = await tryRefreshPriceWithTimeout(
+        p,
+        cfg,
+        connection,
+        perPositionTimeoutMs
+      );
       if (livePrice !== null) {
         updatePosition(p.id, { currentPriceSol: livePrice });
         p.current_price_sol = livePrice;
       }
-      const sold = await executePartialSell(p, p.amount_tokens, cfg);
+      const sold = await tryPartialSellWithTimeout(
+        p,
+        p.amount_tokens,
+        cfg,
+        perPositionTimeoutMs
+      );
       if (!sold) {
         failed++;
         continue;
@@ -361,6 +378,52 @@ export async function closeAllOpenPositions(
     }
   }
   return { closed, failed };
+}
+
+async function tryRefreshPriceWithTimeout(
+  p: Position,
+  cfg: Config,
+  connection: Connection | null,
+  timeoutMs: number
+): Promise<number | null> {
+  try {
+    return await withTimeout(
+      fetchPositionPriceSol(p, cfg, connection),
+      timeoutMs,
+      `shutdown price refresh ${p.token_mint}`
+    );
+  } catch (err) {
+    if (err instanceof TimeoutError) {
+      logger.debug(
+        `shutdown price refresh timed out for ${p.token_mint}; using last-known ${p.current_price_sol}`
+      );
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function tryPartialSellWithTimeout(
+  p: Position,
+  tokensToSell: number,
+  cfg: Config,
+  timeoutMs: number
+): Promise<boolean> {
+  try {
+    return await withTimeout(
+      executePartialSell(p, tokensToSell, cfg),
+      timeoutMs,
+      `shutdown sell ${p.token_mint}`
+    );
+  } catch (err) {
+    if (err instanceof TimeoutError) {
+      logger.warn(
+        `shutdown sell timed out for ${p.token_mint}; leaving position open for review`
+      );
+      return false;
+    }
+    throw err;
+  }
 }
 
 export function stopMonitoring(): void {
