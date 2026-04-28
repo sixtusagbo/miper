@@ -268,10 +268,62 @@ DNS started failing at 01:24:22 — 8 minutes before the 2h auto-shutdown fired 
 
 **Working hypothesis (preliminary, N=16):** at threshold 70, all-in 3× has a *lower* win rate than all-in 2× (R10a's 79% on N=19) but a *higher* per-win profit (3× vs 2× entry). EV per finished trade in R10b: ≈ +0.068 SOL (1.087 / 16). Per-trade EV doesn't tell us much yet because R10a's number was contaminated by the outage stale-price marks. Compare cleanly after R10c.
 
-### R10c — `EXIT_AT_MULT=5` *(pending)*
+### R10c — `EXIT_AT_MULT=5`
+**Date:** 2026-04-28
+**Code state:** same as R10a/b (`c00f1ca`).
+**Config:** OpenAI `gpt-5-nano`, `MIN_AI_SCORE=70`, `EXIT_MODE=all-in`, `EXIT_AT_MULT=5`, `MAX_RUN_HOURS=2`, `CLOSE_ON_SHUTDOWN=true`.
+**Duration:** **2h** exact (15:31 → 17:31 local, MAX_RUN_HOURS auto-stopped at the boundary).
 
-### R10 summary *(pending — append after all three sub-runs)*
-Comparison row across `tiered (R9)` / `all-in 2× (R10a)` / `all-in 3× (R10b)` / `all-in 5× (R10c)`: buy volume per hour, naturally-finished win rate, realized PnL on naturally-finished positions, average multiplier per win.
+| Metric | Value |
+|---|---|
+| Detected | 2,949 |
+| Analyzed | 537 |
+| BUYS | 55 |
+| Real TP/SL exits during run | **2 TP3 (5× wins) + 3 STOPLOSS = 5 finished naturally** |
+| Shutdown-sweep closes | **50** (sweep ran cleanly in ~16s — no outage this run) |
+| **Win rate on real exits** | **2/5 = 40%** |
+| Realized PnL on naturally-finished | **+0.425 SOL** on 0.25 spent (5 × 0.05) |
+| Realized PnL incl. swept | +0.471 SOL on 2.75 spent (swept 50 positions netted ≈+0.046 SOL — basically flat) |
+| Avg win | +0.265 SOL (5× entry, slightly inflated by bonding-curve gradient) |
+| Avg loss | -0.035 SOL |
+
+**Infrastructure wins this run:**
+1. No internet outage — clean comparison data, unlike R10a/b.
+2. `CLOSE_ON_SHUTDOWN` swept all 50 remaining positions in ~16 seconds (vs R10b where it hung). Confirms the bug from R10b is specifically a network-down failure mode, not a general flaw — the sweep works fine when at least last-known prices are reachable in memory. Still worth fixing before live.
+
+**Working observation (N=5):** sample is too small for any standalone read on 5×. Two clean wins at 5× returned +0.265 SOL each — those are the kind of payoffs the tiered ladder was designed to capture. But only ~2.5 finished trades/hour vs 9.5/hr at 2× and 8/hr at 3× — the 5× target dramatically slows position turnover.
+
+### R10 summary — comparing tiered vs all-in 2× / 3× / 5×
+
+All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in at increasing exit multiples. Each R10 sub-run is 2h with the same nuke-and-restart protocol.
+
+| | R9 tiered | R10a all-in 2× | R10b all-in 3× | R10c all-in 5× |
+|---|---|---|---|---|
+| Buys (in 2h-equivalent) | ~18 | 70 | 66 | 55 |
+| Naturally finished | 15 | 19 | 16 | 5 |
+| **Win rate on natural** | **67%** | **79%** | **56%** | **40%** |
+| Avg win (SOL) | n/a | +0.05 | +0.150 | +0.265 |
+| Avg loss (SOL) | n/a | -0.038 | -0.038 | -0.035 |
+| **EV per finished trade** | n/a | **+0.032** | **+0.067** | **+0.085** |
+| Finished trades / hour | ~2 | 9.5 | 8 | 2.5 |
+| **Throughput-weighted EV (SOL/hr)** | n/a | **+0.30** | **+0.54** | **+0.21** |
+| Realized PnL on natural | +1.39 | (caveated by outage) | +1.087 | +0.425 |
+
+**Reading the table:**
+
+- **Per-trade EV climbs as the exit target rises** (+0.032 → +0.067 → +0.085). The bigger the win when you hit, the more it dwarfs the small losses — even at lower hit rates.
+- **But finished-trades-per-hour collapses as the exit target rises** (9.5 → 8 → 2.5). At 5×, most positions never resolve in a 2h window, so the headline EV barely matters — you're stuck waiting.
+- **Throughput-weighted (EV × finished/hr) suggests 3× is the sweet spot** at +0.54 SOL/hr, beating 2× (+0.30) and 5× (+0.21). The 3× target is high enough to make wins meaningful but low enough that pump tokens regularly hit it inside a 2h window.
+
+**Caveats — these numbers are NOT statistically robust:**
+- R10c's 40% win rate is N=5 (~50% noise band).
+- R10b's 56% is N=16 (still wide CI ~30-78%).
+- R10a's per-win average is contaminated by the internet outage marking shutdown-sweep closes at stale prices.
+- Two hours per run isn't enough to see the long tail (a single 27× run like R6 saw could flip any of these).
+
+**Provisional pick for R11 (the 24h gate):** **all-in 3×.** Reasoning: best throughput-weighted EV in the tiny sample, 56% win rate is plausible to hold over 24h, 3× exits compound nicely (+200% per win every ~7 min), and unlike 5× we won't be left with most of the bag in unresolved limbo at session-end. If R11 disagrees, we'll have the actual signal.
+
+**Pre-R11 must-fix:** the `closeAllOpenPositions` hang seen in R10b. For a 24h unattended run where DNS could blip at any point, the sweep must time out per position and fall back to last-known price. Tracked as the first phase-2 prereq.
 
 ---
 
