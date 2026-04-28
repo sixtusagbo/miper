@@ -245,7 +245,28 @@ The home internet dropped around 19:55 UTC and was still flaky at the 20:47 auto
 1. `MAX_RUN_HOURS` triggered exactly at the 2h boundary — the auto-shutdown feature works in production.
 2. `CLOSE_ON_SHUTDOWN` survived degraded network conditions — every remaining position got recorded with a sell, no leaked open exposure.
 
-### R10b — `EXIT_AT_MULT=3` *(pending)*
+### R10b — `EXIT_AT_MULT=3`
+**Date:** 2026-04-27 → 2026-04-28
+**Code state:** same as R10a (`6a760fb`).
+**Config:** OpenAI `gpt-5-nano`, `MIN_AI_SCORE=70`, `EXIT_MODE=all-in`, `EXIT_AT_MULT=3`, `MAX_RUN_HOURS=2`, `CLOSE_ON_SHUTDOWN=true`.
+**Duration:** **2h** exact (23:33 → 01:33 local, MAX_RUN_HOURS auto-stopped at the boundary).
+
+| Metric | Value |
+|---|---|
+| Detected | 2,373 |
+| Analyzed | 707 |
+| BUYS | 66 |
+| Real TP/SL exits during run | **9 TP3 (3× wins) + 7 STOPLOSS = 16 finished naturally** |
+| Shutdown-sweep closes | **0** (sweep hung — see caveat below; 50 positions left in `open` state) |
+| **Win rate on real exits** | **9/16 ≈ 56%** |
+| Realized PnL on naturally-finished | **+1.087 SOL** on 0.80 spent (16 × 0.05) |
+| Avg win | +0.150 SOL (3× entry as expected for all-in 3×) |
+| Avg loss | -0.038 SOL (≈0.4× stop-loss boundary) |
+
+**Critical caveat — internet outage + shutdown bug:**
+DNS started failing at 01:24:22 — 8 minutes before the 2h auto-shutdown fired at 01:33:04. When the shutdown handler invoked `closeAllOpenPositions`, every per-position price refresh hit `getaddrinfo ENOTFOUND` (88k+ such errors logged). Unlike R10a, the sweep never completed — no `shutdown close: N closed` log line ever printed, the process kept retrying for hours, and was eventually killed manually. Result: 50 positions remained `status='open'` in `pump.db` with stale `current_price_sol` from before the outage. **Bug to fix before live:** `closeAllOpenPositions` needs a per-position timeout and a give-up-after-N-failures fallback that marks positions closed at last-known price even when the network is down. R10a got lucky — the network came back briefly during its sweep.
+
+**Working hypothesis (preliminary, N=16):** at threshold 70, all-in 3× has a *lower* win rate than all-in 2× (R10a's 79% on N=19) but a *higher* per-win profit (3× vs 2× entry). EV per finished trade in R10b: ≈ +0.068 SOL (1.087 / 16). Per-trade EV doesn't tell us much yet because R10a's number was contaminated by the outage stale-price marks. Compare cleanly after R10c.
 
 ### R10c — `EXIT_AT_MULT=5` *(pending)*
 
