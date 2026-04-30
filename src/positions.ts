@@ -14,7 +14,11 @@ import { fetchBondingCurvePrice } from './bondingCurve';
 import { withTimeout, TimeoutError } from './concurrency';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
-const DEFAULT_INTERVAL_MS = 7000;
+// 10s tick is ~70% of the credits a 7s tick burned: each open position
+// reads its bonding curve via getAccountInfo, so the interval directly
+// scales the dominant RPC cost. Pump price doesn't move fast enough that
+// 3 extra seconds materially worsens TP/SL fills in paper-trade mode.
+const DEFAULT_INTERVAL_MS = 10_000;
 const MIN_FETCH_SPACING_MS = 1000;
 const DUST_SOL_THRESHOLD = 1e-8;
 const MAX_SELL_RETRIES = 3;
