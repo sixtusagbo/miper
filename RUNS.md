@@ -323,7 +323,7 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 **Provisional pick for R11 (the 24h gate):** **all-in 3×.** Reasoning: best throughput-weighted EV in the tiny sample, 56% win rate is plausible to hold over 24h, 3× exits compound nicely (+200% per win every ~7 min), and unlike 5× we won't be left with most of the bag in unresolved limbo at session-end. If R11 disagrees, we'll have the actual signal.
 
-**Pre-R11 must-fix:** the `closeAllOpenPositions` hang seen in R10b. For a 24h unattended run where DNS could blip at any point, the sweep must time out per position and fall back to last-known price. Tracked as the first phase-2 prereq.
+**Pre-R11 fix landed (`5503955`):** `closeAllOpenPositions` now bounds each position's price refresh and sell with a 5s `withTimeout`. On timeout we keep the DB-stored last-known price and proceed with the close, so a DNS blip during the 24h R11 window can't stall the sweep the way it stalled R10b. Covered by two new tests in `tests/positions.test.ts` (hung refresh, hung sell).
 
 ---
 
