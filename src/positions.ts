@@ -29,6 +29,17 @@ const SHUTDOWN_PER_POSITION_TIMEOUT_MS = 5000;
 
 const sellFailureCount = new Map<number, number>();
 const lastFetchAt = new Map<string, number>();
+// Bonding curves that have graduated (complete=true) — once we observe
+// `fetchBondingCurvePrice` return null for a pool, the curve will never
+// come back, so further getAccountInfo polls every 10s for the rest of
+// the position's life are pure waste. Once marked, skip straight to
+// DexScreener. In-process only; resets on restart, which is fine since
+// graduated state is monotonic.
+const graduatedCurves = new Set<string>();
+
+export function clearGraduatedCurves(): void {
+  graduatedCurves.clear();
+}
 
 interface DexScreenerPair {
   priceNative?: string;
@@ -69,9 +80,15 @@ export async function fetchPositionPriceSol(
   cfg: Config,
   connection: Connection | null
 ): Promise<number | null> {
-  if (cfg.source === 'pump' && connection && position.pool_address) {
+  if (
+    cfg.source === 'pump' &&
+    connection &&
+    position.pool_address &&
+    !graduatedCurves.has(position.pool_address)
+  ) {
     const curvePrice = await fetchBondingCurvePrice(connection, position.pool_address);
     if (curvePrice !== null) return curvePrice;
+    graduatedCurves.add(position.pool_address);
     logger.debug(
       `bonding-curve price unavailable for ${position.token_mint} (graduated?), falling back to DexScreener`
     );

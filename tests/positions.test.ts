@@ -25,6 +25,7 @@ import {
 } from '../src/db';
 import {
   checkPosition,
+  clearGraduatedCurves,
   closeAllOpenPositions,
   executeStopLoss,
   executeTakeProfit,
@@ -53,6 +54,7 @@ beforeEach(() => {
   delete process.env.EXIT_MODE;
   delete process.env.EXIT_AT_MULT;
   resetConfigCache();
+  clearGraduatedCurves();
   mocks.mockFetch.mockReset();
   mocks.mockSellToken.mockReset();
 });
@@ -209,6 +211,31 @@ describe('fetchPositionPriceSol', () => {
     expect(price).toBe(0.00099);
     expect(conn.getAccountInfo).toHaveBeenCalledTimes(1);
     expect(mocks.mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the bonding curve RPC after the first graduated reading', async () => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const completedBuf = (() => {
+      const b = buildCurveBuffer(60n * 1_000_000_000n, 1_073_000_000n * 1_000_000n);
+      b[b.length - 1] = 1;
+      return b;
+    })();
+    const conn = {
+      getAccountInfo: vi.fn().mockResolvedValue({ data: completedBuf }),
+    } as any;
+    mockPriceFetch(0.00099, MINT);
+    mockPriceFetch(0.00099, MINT);
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+
+    await fetchPositionPriceSol(p, loadConfig(), conn);
+    await fetchPositionPriceSol(p, loadConfig(), conn);
+
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it('uses DexScreener for raydium positions (no bonding curve)', async () => {
