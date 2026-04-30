@@ -24,6 +24,7 @@ import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } fro
 import { closeAllOpenPositions, startMonitoring, stopMonitoring } from './positions';
 import { InflightGate, withTimeout } from './concurrency';
 import { reviewCommand } from './review';
+import { formatRpcCounts, getRpcCounts, instrumentConnection } from './rpcCounter';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -90,10 +91,12 @@ async function snipeCommand(options: {
 
   getDb(); // init schema
 
-  const connection = new Connection(cfg.solanaRpcUrl, {
-    commitment: 'confirmed',
-    wsEndpoint: cfg.solanaWsUrl,
-  });
+  const connection = instrumentConnection(
+    new Connection(cfg.solanaRpcUrl, {
+      commitment: 'confirmed',
+      wsEndpoint: cfg.solanaWsUrl,
+    })
+  );
   const listener: LogListener =
     cfg.source === 'pump' ? new PumpListener(connection) : new PoolListener(connection);
   const gate = new InflightGate(MAX_CONCURRENT_ANALYSES);
@@ -251,10 +254,12 @@ async function monitorCommand(options: { source?: string } = {}): Promise<void> 
   const cfg = loadConfig();
   getDb();
   logger.banner(`MIPER monitor — source: ${cfg.source} (db: ${cfg.dbPath})`);
-  const connection = new Connection(cfg.solanaRpcUrl, {
-    commitment: 'confirmed',
-    wsEndpoint: cfg.solanaWsUrl,
-  });
+  const connection = instrumentConnection(
+    new Connection(cfg.solanaRpcUrl, {
+      commitment: 'confirmed',
+      wsEndpoint: cfg.solanaWsUrl,
+    })
+  );
   startMonitoring(undefined, connection);
 
   const shutdown = () => {
@@ -293,6 +298,8 @@ function printStatus(): void {
       `paper bag: ${fmt(current)} SOL (started ${fmt(cfg.simulatedStartingSol)}, ${tinted(`${pctReturn >= 0 ? '+' : ''}${pctReturn.toFixed(2)}%`)})`
     );
   }
+
+  logger.info(formatRpcCounts(getRpcCounts()));
 
   if (positions.length === 0) {
     logger.info('no open positions');
