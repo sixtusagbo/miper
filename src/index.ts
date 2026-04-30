@@ -103,6 +103,12 @@ async function snipeCommand(options: {
   const inflightMints = new Set<string>();
 
   listener.on('newPool', async (pool) => {
+    // Cheapest checks first so a full bag short-circuits before we burn
+    // an analyzer-gate slot or dirty the inflight dedup set.
+    if (countOpenPositions() >= cfg.maxOpenPositions) {
+      logger.debug(`max open positions (${cfg.maxOpenPositions}) reached, skipping`);
+      return;
+    }
     if (inflightMints.has(pool.tokenMint)) {
       logger.debug(`already analyzing ${pool.tokenMint}, skipping duplicate`);
       return;
@@ -119,11 +125,6 @@ async function snipeCommand(options: {
     }
     inflightMints.add(pool.tokenMint);
     try {
-      if (countOpenPositions() >= cfg.maxOpenPositions) {
-        logger.debug(`max open positions (${cfg.maxOpenPositions}) reached, skipping`);
-        return;
-      }
-
       logger.info(`analyzing ${pool.tokenMint}...`);
       const analysis = await withTimeout(
         analyzeToken(connection, pool, cfg),
