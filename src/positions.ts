@@ -10,7 +10,7 @@ import {
 } from './db';
 import { logger } from './logger';
 import { sellToken } from './trader';
-import { fetchBondingCurvePrice } from './bondingCurve';
+import { readBondingCurve } from './bondingCurve';
 import { withTimeout, TimeoutError } from './concurrency';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
@@ -29,12 +29,13 @@ const SHUTDOWN_PER_POSITION_TIMEOUT_MS = 5000;
 
 const sellFailureCount = new Map<number, number>();
 const lastFetchAt = new Map<string, number>();
-// Bonding curves that have graduated (complete=true) — once we observe
-// `fetchBondingCurvePrice` return null for a pool, the curve will never
-// come back, so further getAccountInfo polls every 10s for the rest of
-// the position's life are pure waste. Once marked, skip straight to
-// DexScreener. In-process only; resets on restart, which is fine since
-// graduated state is monotonic.
+// Bonding curves that have graduated (complete=true or reserves drained).
+// Once we observe a definitive 'graduated' reading from readBondingCurve,
+// the curve will never come back, so further getAccountInfo polls every
+// 10s for the rest of the position's life are pure waste. Cache only on
+// `kind: 'graduated'` — never on `kind: 'unavailable'` (transient RPC
+// failures), or one network blip poisons the cache for every open
+// position simultaneously.
 const graduatedCurves = new Set<string>();
 
 export function clearGraduatedCurves(): void {
@@ -72,9 +73,10 @@ export async function fetchPriceSol(tokenMint: string): Promise<number | null> {
 // Picks the right price source for a position. pump.fun positions read the
 // bonding curve directly — DexScreener doesn't index fresh pumps for the
 // first 1-2 minutes, which is exactly the window we need to watch for
-// TP/SL exits. Once a curve graduates (complete=true → bondingCurvePrice
-// returns null) we fall through to DexScreener since the token has moved
-// to PumpSwap and lives on aggregators normally.
+// TP/SL exits. Once a curve graduates we fall through to DexScreener
+// since the token has moved to PumpSwap and lives on aggregators normally.
+// Transient RPC failures fall through to DexScreener for THIS tick only
+// without caching — the next tick re-tries the curve.
 export async function fetchPositionPriceSol(
   position: Position,
   cfg: Config,
@@ -86,12 +88,18 @@ export async function fetchPositionPriceSol(
     position.pool_address &&
     !graduatedCurves.has(position.pool_address)
   ) {
-    const curvePrice = await fetchBondingCurvePrice(connection, position.pool_address);
-    if (curvePrice !== null) return curvePrice;
-    graduatedCurves.add(position.pool_address);
-    logger.debug(
-      `bonding-curve price unavailable for ${position.token_mint} (graduated?), falling back to DexScreener`
-    );
+    const reading = await readBondingCurve(connection, position.pool_address);
+    if (reading.kind === 'price') return reading.priceSol;
+    if (reading.kind === 'graduated') {
+      graduatedCurves.add(position.pool_address);
+      logger.debug(
+        `bonding curve graduated for ${position.token_mint}, falling back to DexScreener`
+      );
+    } else {
+      logger.debug(
+        `bonding curve unavailable for ${position.token_mint} (transient), falling back to DexScreener for this tick`
+      );
+    }
   }
   return fetchPriceSol(position.token_mint);
 }

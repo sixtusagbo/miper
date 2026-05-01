@@ -238,6 +238,67 @@ describe('fetchPositionPriceSol', () => {
     expect(mocks.mockFetch).toHaveBeenCalledTimes(2);
   });
 
+  it('does NOT cache as graduated on transient RPC failure (R11 regression)', async () => {
+    // R11 bug: a single ~600ms RPC blip flipped 48/50 open positions to
+    // "graduated" forever and the bot never exited any of them. A throw
+    // from getAccountInfo must not poison the cache — the next tick has to
+    // hit the curve again and return a real price.
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const liveBuf = buildCurveBuffer(
+      60n * 1_000_000_000n,
+      1_073_000_000n * 1_000_000n
+    );
+    const conn = {
+      getAccountInfo: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('rpc down'))
+        .mockResolvedValueOnce({ data: liveBuf }),
+    } as any;
+    mockPriceFetch(0.00099, MINT);
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+
+    const first = await fetchPositionPriceSol(p, loadConfig(), conn);
+    expect(first).toBe(0.00099);
+
+    const second = await fetchPositionPriceSol(p, loadConfig(), conn);
+    expect(second).toBeCloseTo(2 * (30 / 1_073_000_000), 12);
+
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT cache as graduated when account info is missing', async () => {
+    // Same idea as the R11 regression but for the !info?.data branch —
+    // an RPC that returns null without throwing also means "not right now"
+    // not "permanently graduated".
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const liveBuf = buildCurveBuffer(
+      60n * 1_000_000_000n,
+      1_073_000_000n * 1_000_000n
+    );
+    const conn = {
+      getAccountInfo: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ data: liveBuf }),
+    } as any;
+    mockPriceFetch(0.00099, MINT);
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+
+    await fetchPositionPriceSol(p, loadConfig(), conn);
+    const second = await fetchPositionPriceSol(p, loadConfig(), conn);
+
+    expect(second).toBeCloseTo(2 * (30 / 1_073_000_000), 12);
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(2);
+  });
+
   it('uses DexScreener for raydium positions (no bonding curve)', async () => {
     process.env.SOURCE = 'raydium';
     resetConfigCache();

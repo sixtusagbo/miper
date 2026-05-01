@@ -61,19 +61,34 @@ export function bondingCurvePriceSol(state: BondingCurveState): number | null {
   return sol / tokens;
 }
 
-export async function fetchBondingCurvePrice(
+// Three exclusive outcomes for a single curve read. Callers that cache on
+// "graduated" MUST distinguish this from "unavailable" — collapsing both
+// into null poisons the cache on every transient RPC failure (R11 bug:
+// one ~600ms RPC blip flipped 48/50 positions to "graduated" forever and
+// the bot never exited any of them).
+export type CurveReading =
+  | { kind: 'price'; priceSol: number }
+  | { kind: 'graduated' }
+  | { kind: 'unavailable' };
+
+export async function readBondingCurve(
   connection: Connection,
   bondingCurveAddress: string
-): Promise<number | null> {
+): Promise<CurveReading> {
   try {
     const info = await connection.getAccountInfo(new PublicKey(bondingCurveAddress));
-    if (!info?.data) return null;
+    if (!info?.data) return { kind: 'unavailable' };
     const state = decodeBondingCurve(Buffer.from(info.data));
-    return bondingCurvePriceSol(state);
+    if (state.complete) return { kind: 'graduated' };
+    const priceSol = bondingCurvePriceSol(state);
+    // virtualTokenReserves==0 means the curve is drained / migrated; not
+    // transient, treat as graduated.
+    if (priceSol === null) return { kind: 'graduated' };
+    return { kind: 'price', priceSol };
   } catch (err) {
     logger.debug(
-      `fetchBondingCurvePrice ${bondingCurveAddress}: ${(err as Error).message}`
+      `readBondingCurve ${bondingCurveAddress}: ${(err as Error).message}`
     );
-    return null;
+    return { kind: 'unavailable' };
   }
 }

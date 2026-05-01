@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   bondingCurvePriceSol,
   decodeBondingCurve,
-  fetchBondingCurvePrice,
+  readBondingCurve,
 } from '../src/bondingCurve';
 
 // Builds a bonding curve account buffer matching the Anchor layout we decode:
@@ -97,39 +97,50 @@ describe('bondingCurvePriceSol', () => {
   });
 });
 
-describe('fetchBondingCurvePrice', () => {
+describe('readBondingCurve', () => {
   function fakeConnection(info: { data: Buffer } | null) {
     return { getAccountInfo: vi.fn().mockResolvedValue(info) } as any;
   }
+  const ADDR = 'So11111111111111111111111111111111111111112';
 
-  it('returns the curve price when the account exists and is active', async () => {
+  it('returns kind=price with the curve price when the account is active', async () => {
     const buf = buildCurve({
       virtualSol: INIT_VIRTUAL_SOL,
       virtualTokens: INIT_VIRTUAL_TOKENS,
     });
-    const price = await fetchBondingCurvePrice(
-      fakeConnection({ data: buf }),
-      'So11111111111111111111111111111111111111112'
-    );
-    expect(price).toBeCloseTo(30 / 1_073_000_000, 12);
+    const reading = await readBondingCurve(fakeConnection({ data: buf }), ADDR);
+    expect(reading.kind).toBe('price');
+    if (reading.kind === 'price') {
+      expect(reading.priceSol).toBeCloseTo(30 / 1_073_000_000, 12);
+    }
   });
 
-  it('returns null when the bonding curve account is missing', async () => {
-    const price = await fetchBondingCurvePrice(
-      fakeConnection(null),
-      'So11111111111111111111111111111111111111112'
-    );
-    expect(price).toBeNull();
+  it('returns kind=graduated when complete=true on the decoded state', async () => {
+    const buf = buildCurve({
+      virtualSol: INIT_VIRTUAL_SOL,
+      virtualTokens: INIT_VIRTUAL_TOKENS,
+      complete: true,
+    });
+    const reading = await readBondingCurve(fakeConnection({ data: buf }), ADDR);
+    expect(reading).toEqual({ kind: 'graduated' });
   });
 
-  it('swallows RPC errors and returns null', async () => {
+  it('returns kind=graduated when virtual reserves are drained to zero', async () => {
+    const buf = buildCurve({ virtualSol: INIT_VIRTUAL_SOL, virtualTokens: 0n });
+    const reading = await readBondingCurve(fakeConnection({ data: buf }), ADDR);
+    expect(reading).toEqual({ kind: 'graduated' });
+  });
+
+  it('returns kind=unavailable when the account info is missing', async () => {
+    const reading = await readBondingCurve(fakeConnection(null), ADDR);
+    expect(reading).toEqual({ kind: 'unavailable' });
+  });
+
+  it('returns kind=unavailable on RPC errors (must NOT collapse to graduated)', async () => {
     const conn = {
       getAccountInfo: vi.fn().mockRejectedValue(new Error('rpc down')),
     } as any;
-    const price = await fetchBondingCurvePrice(
-      conn,
-      'So11111111111111111111111111111111111111112'
-    );
-    expect(price).toBeNull();
+    const reading = await readBondingCurve(conn, ADDR);
+    expect(reading).toEqual({ kind: 'unavailable' });
   });
 });
