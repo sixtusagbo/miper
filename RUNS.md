@@ -327,12 +327,32 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
-## Run R11 — *planned* — 24h continuous, last paper-trade gate before live
-**Date:** _pending_
-**Code state:** post-R10.
-**Config:** R10's winning config, no changes between R10 and R11.
+## Run R11a — *aborted at ~17h* — graduated-curve cache poisoning bug
+**Date:** 2026-04-30 14:30 WAT → stopped 2026-05-01 ~07:45 WAT
+**Code state:** post-R10 with the four pre-R11 commits (interval bump, max-positions short-circuit, **graduated-curve cache** in `ea7e0ac`, RPC counter).
+**Config:** EXIT_MODE=all-in, EXIT_AT_MULT=3, MAX_RUN_HOURS=24, CLOSE_ON_SHUTDOWN=true.
+**Outcome:** Aborted. Data invalid for PnL evaluation.
+
+**Bug.** A single ~600 ms RPC blip at log time 17:12:46 (3h after launch) caused `getAccountInfo` to throw or return null for nearly every open position in one monitor tick. The graduated-curve cache from `ea7e0ac` collapsed three different null sources (RPC throw, missing account info, actually-graduated curve) into one signal and **permanently** marked **48 of 50 open positions** as graduated in ~600 ms. From then on every tick fell back to DexScreener, which doesn't index fresh pump tokens reliably, so prices froze and not a single position exited via TP3 or SL for the next 14 hours. New buys still came in (max=50 cap correctly short-circuited) but the bag never drained.
+
+**Symptom that surfaced it.** User noticed multiple positions with the chart showing +189% on pump.fun while our DB price hadn't moved. DB confirmed: 42/50 open positions below entry, 8 above, none exiting; log confirmed the cascade — 48 "graduated?" messages within 600 ms.
+
+**Fix shipped: `0452ab8` Distinguish graduated curves from transient RPC failures.** `fetchBondingCurvePrice` replaced with `readBondingCurve` returning a discriminated union (`'price'` / `'graduated'` / `'unavailable'`). Cache adds only on `'graduated'`. Two regression tests cover the two transient-null sources.
+
+**Lessons.**
+- Three different null sources collapsed into one signal is the canonical "any blip poisons the cache" footgun. Always distinguish "permanently absent" from "not right now" at the boundary of any cache.
+- The new RPC counter from `c2e27dc` would have caught this earlier had we plotted `getAccountInfo` over time — its growth rate effectively went to zero after the cascade. Watch for this in R11b.
+
+---
+
+## Run R11b — *planned* — 24h continuous, last paper-trade gate before live
+**Date:** _pending — relaunch after R11a abort_
+**Code state:** post-R11a fix (`0452ab8`).
+**Config:** identical to R11a (EXIT_MODE=all-in, EXIT_AT_MULT=3, MAX_RUN_HOURS=24, CLOSE_ON_SHUTDOWN=true). No knobs changed; only the bug.
 **Duration:** **24 hours**.
-**Goal:** Spec section 6 calls for 3-7 days continuous before live. R11 is day 1 — also tests pump.fun activity variation across the full UTC day (US peak around 13:00-04:00 UTC matters; quieter hours might produce different score distributions). After R11, the live-readiness checklist in `npm run review:pump` is the gate: ≥20 finished positions, positive realized PnL, no recurring crashes.
+**Goal:** Spec section 6 calls for 3-7 days continuous before live. R11b is day 1 — also tests pump.fun activity variation across the full UTC day (US peak around 13:00-04:00 UTC matters; quieter hours might produce different score distributions). After R11b, the live-readiness checklist in `npm run review:pump` is the gate: ≥20 finished positions, positive realized PnL, no recurring crashes.
+
+**Watch during the run.** The `rpc:` line in the 15-min status heartbeat. `getAccountInfo` should grow roughly proportional to `open_positions × ticks_elapsed`; if the growth rate flatlines while positions stay open, the graduated-curve cache is over-firing again and we abort.
 
 ---
 
