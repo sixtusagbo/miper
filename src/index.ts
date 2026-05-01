@@ -25,6 +25,7 @@ import { closeAllOpenPositions, startMonitoring, stopMonitoring } from './positi
 import { InflightGate, withTimeout } from './concurrency';
 import { reviewCommand } from './review';
 import { formatRpcCounts, getRpcCounts, instrumentConnection } from './rpcCounter';
+import { bannerHeadline, bannerLines } from './banner';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -40,14 +41,10 @@ const STATUS_PRINT_INTERVAL_MS = 15 * 60 * 1000;
 
 function printBanner(): void {
   const cfg = loadConfig();
-  logger.banner(`MIPER ${cfg.simulate ? '(SIMULATION)' : '(LIVE)'} — source: ${cfg.source}`);
-  logger.info(
-    `buy ${cfg.buyAmountSol} SOL | TPs ${cfg.takeProfit1}x/${cfg.takeProfit2}x/${cfg.takeProfit3}x | SL ${cfg.stopLoss}x | min AI score ${cfg.minAiScore}`
-  );
-  logger.info(
-    `min liq $${cfg.minLiquidityUsd} | max top holder ${cfg.maxTopHolderPct}% | slippage ${cfg.maxSlippageBps}bps`
-  );
-  logger.info(`db: ${cfg.dbPath}${cfg.logFile ? ` | log file: ${cfg.logFile}` : ''}`);
+  logger.banner(bannerHeadline(cfg));
+  for (const line of bannerLines(cfg)) {
+    logger.info(line);
+  }
 }
 
 function applyCliFlags(options: { simulate?: boolean; source?: string }): void {
