@@ -8,4 +8,5 @@ coverage/
 *.db-journal
 *.db-wal
 *.db-shm
+runs/
 .DS_Store

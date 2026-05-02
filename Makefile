@@ -6,13 +6,19 @@
 	sim sim-pump sim-pump-fresh \
 	monitor-pump status-pump review-pump balance-pump \
 	stats-pump scores-pump exits-pump tail-pump \
+	archive-pump archive-raydium archive-all \
 	nuke-pump nuke-raydium nuke-all clean
+
+# Optional label for archive targets. `make sim-pump-fresh LABEL=R12` puts
+# the prior run's DB+log under runs/<UTC-timestamp>_R12/ before launching.
+LABEL ?= unlabeled
 
 help:
 	@echo "miper — common targets (default goal)"
 	@echo ""
 	@echo "  Run"
-	@echo "    sim-pump-fresh   nuke pump state, then start simulate:pump"
+	@echo "    sim-pump-fresh   archive pump state under runs/, then start simulate:pump"
+	@echo "                     (pass LABEL=Rxx to tag the archived dir)"
 	@echo "    sim-pump         start simulate:pump (keeps existing state)"
 	@echo "    sim              start simulate (raydium source)"
 	@echo ""
@@ -34,7 +40,12 @@ help:
 	@echo "    build            tsc"
 	@echo "    install          npm install"
 	@echo ""
-	@echo "  Clean"
+	@echo "  Archive (preserves data — preferred between runs)"
+	@echo "    archive-pump     mv pump.db* pump.log* into runs/<stamp>_\$$LABEL/"
+	@echo "    archive-raydium  same for sniper.db* / miper.log"
+	@echo "    archive-all      both"
+	@echo ""
+	@echo "  Clean (destructive — only when you really want to delete)"
 	@echo "    nuke-pump        rm pump.db* pump.log* (covers WAL sidecars)"
 	@echo "    nuke-raydium     rm sniper.db* miper.log"
 	@echo "    nuke-all         both"
@@ -48,8 +59,10 @@ sim:
 sim-pump:
 	npm run simulate:pump
 
-# Fresh-start: clean state then simulate. The most common pre-run flow.
-sim-pump-fresh: nuke-pump
+# Fresh-start: archive the prior run's state, then simulate. Archive (not
+# nuke) so the per-run DB and log stay queryable later via SQLite ATTACH
+# DATABASE — losing R10a/b/c data after R11 was the lesson here.
+sim-pump-fresh: archive-pump
 	npm run simulate:pump
 
 # ---- inspect -------------------------------------------------------------
@@ -104,9 +117,48 @@ typecheck:
 
 check: typecheck test
 
+# ---- archive -------------------------------------------------------------
+
+# Move the current run's DB + log into runs/<UTC-stamp>_<LABEL>/ instead of
+# deleting them. Preserves raw per-position timing so future analysis can
+# query across runs via SQLite's ATTACH DATABASE. Idempotent: if there's
+# nothing to archive (first-ever run or already nuked), just prints a
+# notice and exits 0 so dependent targets keep going.
+archive-pump:
+	@if [ -f pump.db ] || [ -n "$$(ls pump.log* 2>/dev/null)" ]; then \
+		stamp=$$(date -u +%Y-%m-%dT%H-%M-%SZ); \
+		dir="runs/$${stamp}_$(LABEL)"; \
+		mkdir -p "$$dir"; \
+		for f in pump.db pump.db-shm pump.db-wal pump.db-journal pump.log; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		for f in pump.log.*; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		echo "archived pump state to $$dir"; \
+	else \
+		echo "no pump state to archive"; \
+	fi
+
+archive-raydium:
+	@if [ -f sniper.db ] || [ -f miper.log ]; then \
+		stamp=$$(date -u +%Y-%m-%dT%H-%M-%SZ); \
+		dir="runs/$${stamp}_$(LABEL)"; \
+		mkdir -p "$$dir"; \
+		for f in sniper.db sniper.db-shm sniper.db-wal sniper.db-journal miper.log; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		echo "archived raydium state to $$dir"; \
+	else \
+		echo "no raydium state to archive"; \
+	fi
+
+archive-all: archive-pump archive-raydium
+
 # ---- clean ---------------------------------------------------------------
 
 # `*` covers the WAL/SHM sidecars left when SQLite is killed mid-run.
+# Prefer archive-pump — these targets exist for when you really mean delete.
 nuke-pump:
 	rm -f pump.db* pump.log*
 
