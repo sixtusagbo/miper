@@ -345,14 +345,45 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
-## Run R11b — *planned* — 24h continuous, last paper-trade gate before live
-**Date:** _pending — relaunch after R11a abort_
-**Code state:** post-R11a fix (`0452ab8`).
-**Config:** identical to R11a (EXIT_MODE=all-in, EXIT_AT_MULT=3, MAX_RUN_HOURS=24, CLOSE_ON_SHUTDOWN=true). No knobs changed; only the bug.
-**Duration:** **24 hours**.
-**Goal:** Spec section 6 calls for 3-7 days continuous before live. R11b is day 1 — also tests pump.fun activity variation across the full UTC day (US peak around 13:00-04:00 UTC matters; quieter hours might produce different score distributions). After R11b, the live-readiness checklist in `npm run review:pump` is the gate: ≥20 finished positions, positive realized PnL, no recurring crashes.
+## Run R11b — 24h, completed — 2026-05-01 → 2026-05-02
+**Date:** 2026-05-01 08:06 WAT → 2026-05-02 08:06 WAT (auto-stop on MAX_RUN_HOURS=24).
+**Code state:** post-R11a fix (`0452ab8`) + banner enhancement (`223e5f3`).
+**Config:** EXIT_MODE=all-in, EXIT_AT_MULT=3, MAX_RUN_HOURS=24, CLOSE_ON_SHUTDOWN=true, MAX_OPEN_POSITIONS=50.
 
-**Watch during the run.** The `rpc:` line in the 15-min status heartbeat. `getAccountInfo` should grow roughly proportional to `open_positions × ticks_elapsed`; if the growth rate flatlines while positions stay open, the graduated-curve cache is over-firing again and we abort.
+**Headline numbers**
+- 62 buys total, all in the first ~63 minutes (07:07-08:10 UTC).
+- 11 naturally finished — 6 TP3 + 5 SL = **54.5% win rate** on natural exits.
+- Realized PnL on natural exits: **+0.86 SOL** on 0.55 SOL spent (~+156%).
+- Sweep-closed at shutdown: 51 positions, avg final mult **1.02× entry**, range 0.94-2.12×.
+- Total realized PnL: **+0.92 SOL** on 3.10 SOL spent (+29.7%).
+- ~273K Helius RPC calls.
+
+**The graduated-curve fix held.** `graduated: 0`, `unavailable: 4914` — every transient null fell through to DexScreener for that single tick without poisoning the cache. The R11a regression test passed in production.
+
+**Two new issues surfaced.**
+
+**1. The bag became a graveyard after the first hour.** All 11 natural exits happened between 07:13 and 07:57 UTC (first ~45 min). For the next 23h: zero natural exits. The 50-position cap filled by 08:10 and stayed pegged. The 51 stuck positions averaged 1.02× entry — they never moved enough to hit TP3 (3×) or SL (0.4×). The all-in 3× strategy implicitly assumes every position eventually resolves; it doesn't. Tokens spike in the first 5-10 minutes then flatline. **Capital was idle for 23 of 24 hours.** Fixed in `850f93f` — new `MAX_HOLD_MINUTES` env forces a time-based exit at last price for any position past the threshold, draining the corpse bag and recycling capital.
+
+**2. WebSocket died at T+15.5h and reconnect hung.** At 23:42 the listener stopped receiving events. The empty-window detector logged "RPC WebSocket may be dead" 96 consecutive times. The auto-reconnect fired exactly once at 00:00:00.215 ("Tearing down dead WebSocket subscription...") but never logged "re-subscribed", "reconnect failed", or any further attempt. Diagnosis: `await connection.removeOnLogsListener(subscriptionId)` hung indefinitely on the dead WebSocket; the `try/finally` never returned; `reconnecting` stayed pinned to `true`; every subsequent heartbeat skipped the reconnect path. 8.5 hours of zombie listener until auto-stop. Fixed in `6a6c694` — `removeOnLogsListener` is now wrapped in `withTimeout`, mirroring the close-on-shutdown sweep pattern.
+
+**Lessons.**
+- TP/SL alone is not sufficient exit logic for a memecoin sniper. A meaningful fraction of pumps die in flat ranges that never trigger either side. Time-based forced exit is the missing third leg.
+- Any unbounded `await` against an external resource is a footgun. R10b had it for shutdown sweep, R11b had it for WS teardown. The remediation pattern is the same: `withTimeout`.
+- The new `rpc:` heartbeat correctly showed the symptom — `getAccountInfo` growth flatlined to ~80/min over the dead-bag period (down from ~6000/min during the active first hour). Worth flagging in future runs.
+
+---
+
+## Run R12 — *planned* — 24h with time-exit and reconnect fixes
+**Date:** _pending_
+**Code state:** post-R11b fixes (time-exit + reconnect timeout).
+**Config:** EXIT_MODE=all-in, EXIT_AT_MULT=3, MAX_RUN_HOURS=24, CLOSE_ON_SHUTDOWN=true, MAX_OPEN_POSITIONS=50, **MAX_HOLD_MINUTES=30** (new — drains stale positions so the bag doesn't fossilize).
+**Duration:** 24 hours.
+**Goal:** validate that time-exit recycles the bag at a reasonable cadence (target: ≥20 buys/hour sustained throughout the run, not just the first hour) and that the WebSocket reconnect actually re-establishes after a death. Live-readiness gate stays the same: ≥20 finished positions, positive realized PnL, no recurring crashes.
+
+**Watch during the run.**
+- `STATUS` heartbeat every 15 min: `closed` and `stopped` counts should grow continuously, not stall after hour 1.
+- `listener heartbeat`: events should stay non-zero. If a "WebSocket may be dead" appears, look for "Listener re-subscribed" within the next 5 min — its absence is the bug recurring.
+- `rpc:` line: `getAccountInfo` growth rate reflects open-bag size × tick rate; should NOT flatline.
 
 ---
 
