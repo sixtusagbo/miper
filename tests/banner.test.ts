@@ -36,6 +36,7 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     exitAtMult: 3,
     maxRunHours: 24,
     closeOnShutdown: true,
+    maxHoldMinutes: 0,
     ...overrides,
   } as Config;
 }
@@ -89,6 +90,18 @@ describe('bannerLines', () => {
     expect(exit).toContain('3x×30%');
     expect(exit).toContain('5x×30%');
     expect(exit).not.toContain('ALL-IN');
+  });
+
+  it('appends time-exit segment when MAX_HOLD_MINUTES > 0', () => {
+    const lines = bannerLines(mkCfg({ maxHoldMinutes: 30 }), FIXED_NOW);
+    const exit = lines.find((l) => l.startsWith('exit strategy:'));
+    expect(exit).toContain('time-exit after 30min');
+  });
+
+  it('omits the time-exit segment when MAX_HOLD_MINUTES=0 (disabled)', () => {
+    const lines = bannerLines(mkCfg({ maxHoldMinutes: 0 }), FIXED_NOW);
+    const exit = lines.find((l) => l.startsWith('exit strategy:'));
+    expect(exit).not.toContain('time-exit');
   });
 
   it('includes the AI model name and min score on the strategy line', () => {

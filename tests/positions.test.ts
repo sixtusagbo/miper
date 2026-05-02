@@ -18,18 +18,22 @@ import { resetConfigCache } from '../src/config';
 import {
   closeDb,
   createPosition,
+  getDb,
   getPosition,
   getTradesForPosition,
   recordTrade,
   updatePosition,
 } from '../src/db';
 import {
+  TIME_EXIT_TP_LEVEL,
   checkPosition,
   clearGraduatedCurves,
   closeAllOpenPositions,
   executeStopLoss,
   executeTakeProfit,
+  executeTimeExit,
   fetchPriceSol,
+  isPastHoldLimit,
 } from '../src/positions';
 
 let tempDir: string;
@@ -557,6 +561,137 @@ describe('checkPosition', () => {
     await checkPosition(p);
     expect(mocks.mockSellToken).not.toHaveBeenCalled();
     expect(getPosition(p.id)!.status).toBe('closed');
+  });
+
+  // Backdates a position's created_at by `minutes`. SQLite stores
+  // datetime('now') as UTC text; we write the same format.
+  function agePositionByMinutes(positionId: number, minutes: number): void {
+    const past = new Date(Date.now() - minutes * 60_000);
+    const iso = past.toISOString().replace('T', ' ').slice(0, 19);
+    getDb().prepare('UPDATE positions SET created_at = ? WHERE id = ?').run(iso, positionId);
+  }
+
+  it('time-exit fires when MAX_HOLD_MINUTES has elapsed and TP/SL did not trigger', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    agePositionByMinutes(p.id, 31);
+    const aged = getPosition(p.id)!;
+    mockPriceFetch(0.00012); // 1.2x — between SL (0.4x) and TP1 (2x)
+    mockSellSuccess(0.06, 0.00012);
+    await checkPosition(aged);
+
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.tp_level).toBe(TIME_EXIT_TP_LEVEL);
+    expect(closed.amount_tokens).toBe(0);
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT time-exit when MAX_HOLD_MINUTES=0 (default disabled)', async () => {
+    delete process.env.MAX_HOLD_MINUTES;
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    agePositionByMinutes(p.id, 60 * 24); // a day old
+    const aged = getPosition(p.id)!;
+    mockPriceFetch(0.00012);
+    await checkPosition(aged);
+
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('does NOT time-exit when position is younger than MAX_HOLD_MINUTES', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    // Fresh position — its default created_at is "now". Don't age it.
+    mockPriceFetch(0.00012);
+    await checkPosition(p);
+
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('TP3 takes precedence over time-exit when both conditions hold', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    agePositionByMinutes(p.id, 60); // past the limit
+    const aged = getPosition(p.id)!;
+    mockPriceFetch(0.001); // 10x — TP3 territory
+    mockSellSuccess(0.5, 0.001);
+    await checkPosition(aged);
+
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.tp_level).toBe(3); // real TP3, not time-exit sentinel
+  });
+
+  it('SL takes precedence over time-exit when both conditions hold', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    agePositionByMinutes(p.id, 60);
+    const aged = getPosition(p.id)!;
+    mockPriceFetch(0.00003); // 0.3x — SL territory
+    mockSellSuccess(0.015, 0.00003);
+    await checkPosition(aged);
+
+    const updated = getPosition(p.id)!;
+    expect(updated.status).toBe('stopped');
+  });
+});
+
+describe('isPastHoldLimit', () => {
+  it('returns false when MAX_HOLD_MINUTES is 0 (disabled)', async () => {
+    delete process.env.MAX_HOLD_MINUTES;
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition();
+    expect(isPastHoldLimit(p, loadConfig())).toBe(false);
+  });
+
+  it('returns true when the position is older than the limit', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition();
+    // Backdate created_at to 31 minutes ago (UTC text format).
+    const past = new Date(Date.now() - 31 * 60_000)
+      .toISOString()
+      .replace('T', ' ')
+      .slice(0, 19);
+    expect(isPastHoldLimit({ ...p, created_at: past }, loadConfig())).toBe(true);
+  });
+
+  it('returns false when the position is younger than the limit', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition();
+    expect(isPastHoldLimit(p, loadConfig())).toBe(false);
+  });
+});
+
+describe('executeTimeExit', () => {
+  it('sells the full bag at last-known price and marks tp_level=4', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition({ entryPriceSol: 0.0001, amountTokens: 1_000_000 });
+    updatePosition(p.id, { currentPriceSol: 0.00015 });
+    const updated = getPosition(p.id)!;
+    mockSellSuccess(0.15, 0.00015);
+    await executeTimeExit(updated, loadConfig());
+
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.tp_level).toBe(TIME_EXIT_TP_LEVEL);
+    expect(closed.amount_tokens).toBe(0);
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+    // Full bag, not a partial.
+    expect(mocks.mockSellToken.mock.calls[0][1]).toBeCloseTo(1_000_000);
   });
 });
 

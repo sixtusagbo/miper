@@ -22,13 +22,15 @@ export function bannerLines(cfg: Config, now: Date = new Date()): string[] {
     );
   }
 
+  const holdSuffix =
+    cfg.maxHoldMinutes > 0 ? ` | time-exit after ${cfg.maxHoldMinutes}min` : '';
   if (cfg.exitMode === 'all-in') {
     lines.push(
-      `exit strategy: ALL-IN at ${cfg.exitAtMult}x | stop-loss ${cfg.stopLoss}x`
+      `exit strategy: ALL-IN at ${cfg.exitAtMult}x | stop-loss ${cfg.stopLoss}x${holdSuffix}`
     );
   } else {
     lines.push(
-      `exit strategy: TIERED ${cfg.takeProfit1}x×${cfg.sellPctTp1}% / ${cfg.takeProfit2}x×${cfg.sellPctTp2}% / ${cfg.takeProfit3}x×${cfg.sellPctTp3}% | stop-loss ${cfg.stopLoss}x`
+      `exit strategy: TIERED ${cfg.takeProfit1}x×${cfg.sellPctTp1}% / ${cfg.takeProfit2}x×${cfg.sellPctTp2}% / ${cfg.takeProfit3}x×${cfg.sellPctTp3}% | stop-loss ${cfg.stopLoss}x${holdSuffix}`
     );
   }
 

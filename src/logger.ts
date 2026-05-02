@@ -117,12 +117,18 @@ export const logger = {
       stream.write(`\n${plainBar}\n  ${text}\n${plainBar}\n\n`);
     }
   },
-  position(action: 'BUY' | 'SELL' | 'STOPLOSS' | 'TP1' | 'TP2' | 'TP3', token: string, details: string): void {
+  position(
+    action: 'BUY' | 'SELL' | 'STOPLOSS' | 'TIMEOUT' | 'TP1' | 'TP2' | 'TP3',
+    token: string,
+    details: string
+  ): void {
     const painter =
       action === 'BUY'
         ? chalk.green.bold
         : action === 'STOPLOSS'
         ? chalk.red.bold
+        : action === 'TIMEOUT'
+        ? chalk.yellow.bold
         : chalk.blue.bold;
     write('trade', painter, action, `${chalk.white(token)} ${chalk.gray(details)}`);
   },

@@ -26,6 +26,11 @@ const MAX_SELL_RETRIES = 3;
 // the sweep from hanging indefinitely when DNS or RPC stops responding mid-
 // outage (R10b had 50 positions stuck for hours behind unbounded waits).
 const SHUTDOWN_PER_POSITION_TIMEOUT_MS = 5000;
+// Sentinel value for tp_level on positions force-exited by the time-based
+// hold cap (MAX_HOLD_MINUTES). Distinguishable from tp_level=3 (real TP3
+// hit), tp_level=0 (sweep-closed at shutdown), and status='stopped' (SL).
+// Review and analytics queries should bucket TIME_EXIT_TP_LEVEL separately.
+export const TIME_EXIT_TP_LEVEL = 4;
 
 const sellFailureCount = new Map<number, number>();
 const lastFetchAt = new Map<string, number>();
@@ -273,18 +278,69 @@ export async function checkPosition(
   if (cfg.exitMode === 'all-in') {
     if (multiplier >= cfg.exitAtMult) {
       await executeAllInExit(position, cfg);
+      return;
     }
-    return;
+  } else {
+    const currentLevel = position.tp_level;
+    if (currentLevel < 3 && multiplier >= cfg.takeProfit3) {
+      await executeTakeProfit(position, 3, cfg);
+      return;
+    } else if (currentLevel < 2 && multiplier >= cfg.takeProfit2) {
+      await executeTakeProfit(position, 2, cfg);
+      return;
+    } else if (currentLevel < 1 && multiplier >= cfg.takeProfit1) {
+      await executeTakeProfit(position, 1, cfg);
+      return;
+    }
   }
 
-  const currentLevel = position.tp_level;
-  if (currentLevel < 3 && multiplier >= cfg.takeProfit3) {
-    await executeTakeProfit(position, 3, cfg);
-  } else if (currentLevel < 2 && multiplier >= cfg.takeProfit2) {
-    await executeTakeProfit(position, 2, cfg);
-  } else if (currentLevel < 1 && multiplier >= cfg.takeProfit1) {
-    await executeTakeProfit(position, 1, cfg);
+  // No TP/SL fired — last gate is the hold-time cap. Without it, positions
+  // that flatline between SL and TP camp forever and lock capital (R11b
+  // had 51 positions stuck at avg 1.02x entry for 23 hours).
+  if (isPastHoldLimit(position, cfg)) {
+    await executeTimeExit(position, cfg);
   }
+}
+
+// Force-closes a position at last-known price after MAX_HOLD_MINUTES has
+// elapsed without TP or SL firing. Sentinel tp_level=TIME_EXIT_TP_LEVEL
+// keeps these distinguishable from real-TP3 closes (tp_level=3) and from
+// shutdown-sweep closes (tp_level=0).
+export async function executeTimeExit(
+  position: Position,
+  cfg: Config = loadConfig()
+): Promise<void> {
+  const sold = await executePartialSell(position, position.amount_tokens, cfg);
+  if (!sold) return;
+
+  const mult = position.current_price_sol
+    ? position.current_price_sol / position.entry_price_sol
+    : null;
+  logger.position(
+    'TIMEOUT',
+    position.token_mint,
+    `time exit at ${cfg.maxHoldMinutes}min: sold ${position.amount_tokens.toFixed(2)} at ${mult ? mult.toFixed(2) : '?'}x entry`
+  );
+  updatePosition(position.id, {
+    amountTokens: 0,
+    amountSolReceived: position.amount_sol_received + recentSolReceived(position.id),
+    status: 'closed',
+    tpLevel: TIME_EXIT_TP_LEVEL,
+  });
+}
+
+// Returns true if the position has been open longer than cfg.maxHoldMinutes.
+// Reads created_at as UTC (SQLite's datetime('now') stores UTC text).
+export function isPastHoldLimit(
+  position: Position,
+  cfg: Config,
+  now: Date = new Date()
+): boolean {
+  if (cfg.maxHoldMinutes <= 0) return false;
+  const createdMs = Date.parse(position.created_at + 'Z');
+  if (!Number.isFinite(createdMs)) return false;
+  const ageMs = now.getTime() - createdMs;
+  return ageMs >= cfg.maxHoldMinutes * 60_000;
 }
 
 // Sells the entire remaining bag at the all-in target. Distinct from

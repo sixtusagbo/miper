@@ -65,6 +65,12 @@ export interface Config {
   // by default to preserve current behavior; flip on for live trading and
   // bounded paper sessions where you want a clean PnL at session end.
   closeOnShutdown: boolean;
+  // Maximum minutes a position may stay open without hitting TP/SL before
+  // the monitor force-exits at last-known price. 0 disables (the historical
+  // behavior — positions hold forever). Surfaced after R11b showed that
+  // most pump tokens spike in the first 5-10 min then flatline; without a
+  // time exit the bag fills with non-movers and capital is locked.
+  maxHoldMinutes: number;
 }
 
 function required(name: string): string {
@@ -198,6 +204,7 @@ export function loadConfig(): Config {
     exitAtMult: numberFromEnv('EXIT_AT_MULT', 2),
     maxRunHours: numberFromEnv('MAX_RUN_HOURS', 0),
     closeOnShutdown: boolFromEnv('CLOSE_ON_SHUTDOWN', false),
+    maxHoldMinutes: numberFromEnv('MAX_HOLD_MINUTES', 0),
   };
 
   validateConfig(config);
@@ -232,6 +239,9 @@ function validateConfig(c: Config): void {
   }
   if (c.maxRunHours < 0) {
     throw new Error(`MAX_RUN_HOURS must be >= 0 (0 disables auto-shutdown), got ${c.maxRunHours}`);
+  }
+  if (c.maxHoldMinutes < 0) {
+    throw new Error(`MAX_HOLD_MINUTES must be >= 0 (0 disables time-exit), got ${c.maxHoldMinutes}`);
   }
 }
 
