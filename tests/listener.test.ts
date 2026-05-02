@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import {
+  PumpListener,
   SEEN_LIMIT,
   estimateSolLiquidity,
   isInitLog,
@@ -212,6 +213,42 @@ describe('PoolListener', () => {
     expect(factoryCalls).toBe(1);
     expect(connA.removeOnLogsListener).toHaveBeenCalledTimes(1);
     expect(connB.onLogs).toHaveBeenCalledTimes(1);
+    await listener.stop();
+  });
+
+  it('reconnect proceeds even when removeOnLogsListener hangs (R11b regression)', async () => {
+    // R11b: a dead WebSocket made removeOnLogsListener never resolve, so
+    // reconnect() blocked forever, `reconnecting` stayed pinned to true,
+    // and every subsequent heartbeat skipped the reconnect path. The
+    // listener was a zombie for 8.5 hours. The fix wraps the teardown in
+    // withTimeout — on TimeoutError we abandon cleanup and rebuild anyway.
+    const { conn: connA } = setupListenerConnection(null);
+    // Make removeOnLogsListener hang indefinitely.
+    connA.removeOnLogsListener = vi.fn(() => new Promise(() => {}));
+
+    const { conn: connB } = setupListenerConnection(null);
+    let factoryCalls = 0;
+    const factory = () => {
+      factoryCalls++;
+      return connB;
+    };
+
+    const { PoolListener } = await import('../src/listener');
+    const listener = new PoolListener(connA, 100, {
+      reconnectAfterEmptyWindows: 1,
+      reconnectTeardownTimeoutMs: 20,
+      connectionFactory: factory,
+    });
+    await listener.start();
+    expect(connA.onLogs).toHaveBeenCalledTimes(1);
+
+    (listener as any).logHeartbeat(); // empty window 1 — triggers reconnect
+    // Wait long enough for the 20ms teardown timeout to fire.
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(factoryCalls).toBe(1);
+    expect(connB.onLogs).toHaveBeenCalledTimes(1);
+    expect((listener as any).reconnecting).toBe(false);
     await listener.stop();
   });
 

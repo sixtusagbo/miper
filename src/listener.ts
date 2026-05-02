@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { loadConfig, PROGRAM_IDS, SOL_MINT_ADDRESS } from './config';
 import { logger } from './logger';
+import { TimeoutError, withTimeout } from './concurrency';
 
 export interface NewPool {
   poolAddress: string;
@@ -183,6 +184,11 @@ const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 // WebSocket has silently died. Raydium/pump see hundreds of events per minute
 // in normal operation, so genuine stretches of zero activity don't last this long.
 const DEFAULT_RECONNECT_AFTER_EMPTY_WINDOWS = 2;
+// Cap on the removeOnLogsListener teardown await during reconnect. R11b had
+// this hang indefinitely on a dead WebSocket — the reconnect logged "Tearing
+// down..." then never returned, leaving `reconnecting` pinned to true and
+// killing every subsequent reconnect attempt for 8.5 hours.
+const DEFAULT_RECONNECT_TEARDOWN_TIMEOUT_MS = 5000;
 
 interface ListenerCounters {
   events: number;
@@ -194,6 +200,7 @@ interface ListenerCounters {
 export interface PoolListenerOptions {
   reconnectAfterEmptyWindows?: number;
   connectionFactory?: () => Connection;
+  reconnectTeardownTimeoutMs?: number;
 }
 
 export interface LogListenerSpec {
@@ -231,6 +238,7 @@ export class LogListener extends EventEmitter {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private readonly heartbeatMs: number;
   private readonly reconnectAfter: number;
+  private readonly reconnectTeardownTimeoutMs: number;
   private readonly connectionFactory: () => Connection;
   private consecutiveEmptyWindows = 0;
   private reconnecting = false;
@@ -247,6 +255,8 @@ export class LogListener extends EventEmitter {
     this.connection = connection ?? makeConnection();
     this.heartbeatMs = heartbeatMs;
     this.reconnectAfter = options.reconnectAfterEmptyWindows ?? DEFAULT_RECONNECT_AFTER_EMPTY_WINDOWS;
+    this.reconnectTeardownTimeoutMs =
+      options.reconnectTeardownTimeoutMs ?? DEFAULT_RECONNECT_TEARDOWN_TIMEOUT_MS;
     this.connectionFactory = options.connectionFactory ?? makeConnection;
   }
 
@@ -326,9 +336,24 @@ export class LogListener extends EventEmitter {
       logger.warn('Tearing down dead WebSocket subscription and rebuilding...');
       if (this.subscriptionId !== null) {
         try {
-          await this.connection.removeOnLogsListener(this.subscriptionId);
+          // R11b regression: a dead WebSocket made this await never resolve,
+          // pinning `reconnecting=true` for 8.5 hours and disabling every
+          // subsequent reconnect attempt. The timeout abandons the cleanup
+          // and lets us proceed with a fresh Connection — the subscription
+          // ID on the dead socket is dropped on the floor either way.
+          await withTimeout(
+            this.connection.removeOnLogsListener(this.subscriptionId),
+            this.reconnectTeardownTimeoutMs,
+            'removeOnLogsListener'
+          );
         } catch (err) {
-          logger.debug(`removeOnLogsListener on reconnect: ${(err as Error).message}`);
+          if (err instanceof TimeoutError) {
+            logger.warn(
+              `removeOnLogsListener hung past ${this.reconnectTeardownTimeoutMs}ms; abandoning teardown and rebuilding anyway`
+            );
+          } else {
+            logger.debug(`removeOnLogsListener on reconnect: ${(err as Error).message}`);
+          }
         }
         this.subscriptionId = null;
       }
