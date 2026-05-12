@@ -623,6 +623,17 @@ These are planned for later, do NOT build them now:
 - **Webhook/Telegram notifications** -- alerts on buys, sells, PnL milestones
 - **Backtesting engine** -- replay historical pool creations against the AI scorer
 - **Public release / open source**
+- **Miper-as-Telegram-bot product (tentative)** -- a productized fork on a separate
+  branch where strangers use miper's AI-scored sniper via a Telegram bot
+  interface, similar to BONKbot / Trojan / Maestro. Only revisit *after* miper's
+  strategy has proven profitable in live Phase 2 on Sixtus's own capital -- a
+  losing strategy doesn't get better with users on top of it. The lift is much
+  bigger than a branch: key custody (custodial vs Phantom-deeplink trade-offs),
+  per-user infra (wallets, rate limits, abuse, billing/fee accounting, support),
+  and distribution (KOL deals / Telegram channel placement -- the real moat of
+  the existing bots). Must ship with a stern Privacy Policy + Terms of Service
+  disclaiming the AI score: a high score is not a guarantee, rugs scoring 70+
+  are expected, and users accept full responsibility for losses.
 
 ---
 
