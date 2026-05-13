@@ -78,6 +78,15 @@ export interface Config {
   // barely shifts, so a small cache cuts reads by ~5-10x with no material
   // signal loss.
   bondingCurveCacheMs: number;
+  // Rotate the log file when it exceeds this many bytes. The previous file
+  // becomes pump.log.1, pump.log.1 becomes pump.log.2, etc., up to
+  // logMaxFiles. 0 disables rotation (the historical behavior — log grows
+  // unbounded). R12's 24h log hit 54 MB; sustained operation needs a cap.
+  logMaxBytes: number;
+  // How many rotated archive files to keep alongside the active log.
+  // Older archives are dropped when this cap is hit. Ignored when
+  // logMaxBytes=0.
+  logMaxFiles: number;
 }
 
 function required(name: string): string {
@@ -213,6 +222,8 @@ export function loadConfig(): Config {
     closeOnShutdown: boolFromEnv('CLOSE_ON_SHUTDOWN', false),
     maxHoldMinutes: numberFromEnv('MAX_HOLD_MINUTES', 0),
     bondingCurveCacheMs: numberFromEnv('BONDING_CURVE_CACHE_MS', 5000),
+    logMaxBytes: numberFromEnv('LOG_MAX_BYTES', 100 * 1024 * 1024),
+    logMaxFiles: numberFromEnv('LOG_MAX_FILES', 5),
   };
 
   validateConfig(config);
@@ -255,6 +266,12 @@ function validateConfig(c: Config): void {
     throw new Error(
       `BONDING_CURVE_CACHE_MS must be >= 0 (0 disables cache), got ${c.bondingCurveCacheMs}`
     );
+  }
+  if (c.logMaxBytes < 0) {
+    throw new Error(`LOG_MAX_BYTES must be >= 0 (0 disables rotation), got ${c.logMaxBytes}`);
+  }
+  if (c.logMaxFiles < 1) {
+    throw new Error(`LOG_MAX_FILES must be >= 1, got ${c.logMaxFiles}`);
   }
 }
 
