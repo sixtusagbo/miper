@@ -71,10 +71,36 @@ export type CurveReading =
   | { kind: 'graduated' }
   | { kind: 'unavailable' };
 
+// Per-curve last-read cache. R12 burned 185k getAccountInfo calls in 22h
+// (~18% of Helius free-tier per day) reading the same curves on every
+// 10s monitor tick. A few seconds of staleness on a bonding-curve price
+// is fine — buys/sells move it but not violently within ~5s.
+//
+// Only 'price' readings are cached. 'unavailable' is treated as transient
+// so the next tick retries cleanly; 'graduated' is terminal and handled
+// by positions.ts's graduatedCurves Set rather than this cache (that set
+// is permanent for the run; a TTL cache would expire and re-fetch).
+let cacheTtlMs = 5000;
+const priceCache = new Map<string, { reading: CurveReading; fetchedAt: number }>();
+
+export function setBondingCurveCacheTtl(ms: number): void {
+  cacheTtlMs = Math.max(0, ms);
+}
+
+export function clearBondingCurveCache(): void {
+  priceCache.clear();
+}
+
 export async function readBondingCurve(
   connection: Connection,
   bondingCurveAddress: string
 ): Promise<CurveReading> {
+  if (cacheTtlMs > 0) {
+    const entry = priceCache.get(bondingCurveAddress);
+    if (entry && Date.now() - entry.fetchedAt < cacheTtlMs) {
+      return entry.reading;
+    }
+  }
   try {
     const info = await connection.getAccountInfo(new PublicKey(bondingCurveAddress));
     if (!info?.data) return { kind: 'unavailable' };
@@ -84,7 +110,11 @@ export async function readBondingCurve(
     // virtualTokenReserves==0 means the curve is drained / migrated; not
     // transient, treat as graduated.
     if (priceSol === null) return { kind: 'graduated' };
-    return { kind: 'price', priceSol };
+    const reading: CurveReading = { kind: 'price', priceSol };
+    if (cacheTtlMs > 0) {
+      priceCache.set(bondingCurveAddress, { reading, fetchedAt: Date.now() });
+    }
+    return reading;
   } catch (err) {
     logger.debug(
       `readBondingCurve ${bondingCurveAddress}: ${(err as Error).message}`

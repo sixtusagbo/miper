@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   bondingCurvePriceSol,
+  clearBondingCurveCache,
   decodeBondingCurve,
   readBondingCurve,
 } from '../src/bondingCurve';
+
+beforeEach(() => {
+  clearBondingCurveCache();
+});
 
 // Builds a bonding curve account buffer matching the Anchor layout we decode:
 // 8 bytes discriminator, 5 little-endian u64 reserves, 1 byte complete flag.
@@ -142,5 +147,58 @@ describe('readBondingCurve', () => {
     } as any;
     const reading = await readBondingCurve(conn, ADDR);
     expect(reading).toEqual({ kind: 'unavailable' });
+  });
+});
+
+describe('readBondingCurve cache', () => {
+  // Default 5s TTL; addresses are unique per test thanks to the
+  // top-level beforeEach() that calls clearBondingCurveCache().
+  const ADDR = 'So11111111111111111111111111111111111111112';
+  function priceBuf() {
+    return buildCurve({
+      virtualSol: INIT_VIRTUAL_SOL,
+      virtualTokens: INIT_VIRTUAL_TOKENS,
+    });
+  }
+
+  it('returns the cached price on a second call within TTL without re-reading the RPC', async () => {
+    const getAccountInfo = vi.fn().mockResolvedValue({ data: priceBuf() });
+    const conn = { getAccountInfo } as any;
+
+    const first = await readBondingCurve(conn, ADDR);
+    const second = await readBondingCurve(conn, ADDR);
+
+    expect(first).toEqual(second);
+    expect(getAccountInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT cache unavailable readings (transient failures must retry)', async () => {
+    const getAccountInfo = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ data: priceBuf() });
+    const conn = { getAccountInfo } as any;
+
+    const first = await readBondingCurve(conn, ADDR);
+    const second = await readBondingCurve(conn, ADDR);
+
+    expect(first).toEqual({ kind: 'unavailable' });
+    expect(second.kind).toBe('price');
+    expect(getAccountInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT cache graduated readings (graduatedCurves Set is the terminal store)', async () => {
+    const graduated = buildCurve({
+      virtualSol: INIT_VIRTUAL_SOL,
+      virtualTokens: INIT_VIRTUAL_TOKENS,
+      complete: true,
+    });
+    const getAccountInfo = vi.fn().mockResolvedValue({ data: graduated });
+    const conn = { getAccountInfo } as any;
+
+    await readBondingCurve(conn, ADDR);
+    await readBondingCurve(conn, ADDR);
+
+    expect(getAccountInfo).toHaveBeenCalledTimes(2);
   });
 });

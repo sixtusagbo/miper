@@ -71,6 +71,13 @@ export interface Config {
   // most pump tokens spike in the first 5-10 min then flatline; without a
   // time exit the bag fills with non-movers and capital is locked.
   maxHoldMinutes: number;
+  // TTL for the pump.fun bonding-curve account-info cache, in milliseconds.
+  // 0 disables. Added after R12 burned 185k getAccountInfo calls in 22h
+  // (~18% of Helius free-tier credits/day) reading the same curves from
+  // every 10s monitor tick. Within a few seconds the marginal curve price
+  // barely shifts, so a small cache cuts reads by ~5-10x with no material
+  // signal loss.
+  bondingCurveCacheMs: number;
 }
 
 function required(name: string): string {
@@ -205,6 +212,7 @@ export function loadConfig(): Config {
     maxRunHours: numberFromEnv('MAX_RUN_HOURS', 0),
     closeOnShutdown: boolFromEnv('CLOSE_ON_SHUTDOWN', false),
     maxHoldMinutes: numberFromEnv('MAX_HOLD_MINUTES', 0),
+    bondingCurveCacheMs: numberFromEnv('BONDING_CURVE_CACHE_MS', 5000),
   };
 
   validateConfig(config);
@@ -242,6 +250,11 @@ function validateConfig(c: Config): void {
   }
   if (c.maxHoldMinutes < 0) {
     throw new Error(`MAX_HOLD_MINUTES must be >= 0 (0 disables time-exit), got ${c.maxHoldMinutes}`);
+  }
+  if (c.bondingCurveCacheMs < 0) {
+    throw new Error(
+      `BONDING_CURVE_CACHE_MS must be >= 0 (0 disables cache), got ${c.bondingCurveCacheMs}`
+    );
   }
 }
 

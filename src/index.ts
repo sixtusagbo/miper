@@ -26,6 +26,7 @@ import { InflightGate, withTimeout } from './concurrency';
 import { reviewCommand } from './review';
 import { formatRpcCounts, getRpcCounts, instrumentConnection } from './rpcCounter';
 import { bannerHeadline, bannerLines } from './banner';
+import { setBondingCurveCacheTtl } from './bondingCurve';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -71,6 +72,7 @@ async function snipeCommand(options: {
 }): Promise<void> {
   applyCliFlags(options);
   const cfg = loadConfig();
+  setBondingCurveCacheTtl(cfg.bondingCurveCacheMs);
   printBanner();
 
   // Wallet
@@ -249,6 +251,7 @@ async function snipeCommand(options: {
 async function monitorCommand(options: { source?: string } = {}): Promise<void> {
   applyCliFlags(options);
   const cfg = loadConfig();
+  setBondingCurveCacheTtl(cfg.bondingCurveCacheMs);
   getDb();
   logger.banner(`MIPER monitor — source: ${cfg.source} (db: ${cfg.dbPath})`);
   const connection = instrumentConnection(
@@ -296,7 +299,15 @@ function printStatus(): void {
     );
   }
 
-  logger.info(formatRpcCounts(getRpcCounts()));
+  // Skip the rpc line when no calls have been counted: the counter is
+  // process-local, so a standalone `npm run status:pump` from another
+  // terminal would otherwise log "rpc: 0 calls" against the bot's log
+  // file even though the live process has burnt through thousands of
+  // calls. Only the owning process's status prints meaningful counts.
+  const rpcSnapshot = getRpcCounts();
+  if (Object.values(rpcSnapshot).reduce((a, b) => a + b, 0) > 0) {
+    logger.info(formatRpcCounts(rpcSnapshot));
+  }
 
   if (positions.length === 0) {
     logger.info('no open positions');

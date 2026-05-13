@@ -35,6 +35,7 @@ import {
   fetchPriceSol,
   isPastHoldLimit,
 } from '../src/positions';
+import { clearBondingCurveCache } from '../src/bondingCurve';
 
 let tempDir: string;
 
@@ -59,6 +60,7 @@ beforeEach(() => {
   delete process.env.EXIT_AT_MULT;
   resetConfigCache();
   clearGraduatedCurves();
+  clearBondingCurveCache();
   mocks.mockFetch.mockReset();
   mocks.mockSellToken.mockReset();
 });
