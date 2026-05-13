@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { loadConfig, PROGRAM_IDS, SOL_MINT_ADDRESS } from './config';
 import { logger } from './logger';
+import { TimeoutError, withTimeout } from './concurrency';
 
 export interface NewPool {
   poolAddress: string;
@@ -11,6 +12,9 @@ export interface NewPool {
   initialLiquiditySol: number;
   txSignature: string;
   timestamp: number;
+  // The creator/deployer wallet. For pump.fun this is accounts[7] of the
+  // Create instruction; for Raydium it's not meaningful so we leave it null.
+  creator: string | null;
 }
 
 // `ray_log` is intentionally excluded: it appears in every Raydium log (swaps,
@@ -27,6 +31,17 @@ export function isInitLog(messages: readonly string[] | undefined): boolean {
     for (const kw of INIT_KEYWORDS) {
       if (m.includes(kw)) return true;
     }
+  }
+  return false;
+}
+
+// Pump.fun token launches emit `Program log: Instruction: Create` on the
+// pump.fun program. Since we subscribe to that program directly, any log
+// containing this line is a new-mint event.
+export function isPumpCreateLog(messages: readonly string[] | undefined): boolean {
+  if (!messages) return false;
+  for (const m of messages) {
+    if (m.includes('Program log: Instruction: Create')) return true;
   }
   return false;
 }
@@ -98,11 +113,60 @@ export async function parsePoolFromSignature(
         initialLiquiditySol: estimateSolLiquidity(tx.meta ?? null),
         txSignature: signature,
         timestamp: tx.blockTime ?? Math.floor(Date.now() / 1000),
+        creator: null,
       };
     }
     return null;
   } catch (err) {
     logger.debug(`parsePoolFromSignature ${signature}: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+// Pump.fun `create` instruction account layout (from the public IDL):
+//   [0] mint, [1] mint_authority, [2] bonding_curve, [3] associated_bonding_curve,
+//   [4] global, [5] mpl_token_metadata, [6] metadata, [7] user (creator), ...
+// We treat the bonding curve PDA as the pool address so downstream code that
+// keys on poolAddress still has a stable identifier, and surface accounts[7]
+// as the creator so the analyzer can look up their launch history.
+export async function parsePumpMintFromSignature(
+  connection: Connection,
+  signature: string
+): Promise<NewPool | null> {
+  try {
+    const tx = await connection.getParsedTransaction(signature, {
+      maxSupportedTransactionVersion: 0,
+      commitment: 'confirmed',
+    });
+    if (!tx?.transaction) return null;
+
+    const pumpId = PROGRAM_IDS.PUMP_FUN.toBase58();
+    for (const ix of tx.transaction.message.instructions) {
+      const programId = (ix as { programId: PublicKey }).programId?.toBase58?.();
+      if (programId !== pumpId) continue;
+
+      const accounts = (ix as { accounts?: PublicKey[] }).accounts;
+      if (!accounts || accounts.length < 3) continue;
+
+      const mint = accounts[0]?.toBase58();
+      const bondingCurve = accounts[2]?.toBase58();
+      const creator = accounts[7]?.toBase58() ?? null;
+      if (!mint) continue;
+
+      return {
+        poolAddress: bondingCurve ?? mint,
+        tokenMint: mint,
+        baseMint: SOL_MINT_ADDRESS,
+        quoteMint: mint,
+        initialLiquiditySol: estimateSolLiquidity(tx.meta ?? null),
+        txSignature: signature,
+        timestamp: tx.blockTime ?? Math.floor(Date.now() / 1000),
+        creator,
+      };
+    }
+    return null;
+  } catch (err) {
+    logger.debug(`parsePumpMintFromSignature ${signature}: ${(err as Error).message}`);
     return null;
   }
 }
@@ -117,9 +181,14 @@ function makeConnection(): Connection {
 
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 // Two back-to-back empty heartbeat windows (~10 min) is a strong signal the
-// WebSocket has silently died. Raydium sees hundreds of events per minute in
-// normal operation, so genuine stretches of zero activity don't last this long.
+// WebSocket has silently died. Raydium/pump see hundreds of events per minute
+// in normal operation, so genuine stretches of zero activity don't last this long.
 const DEFAULT_RECONNECT_AFTER_EMPTY_WINDOWS = 2;
+// Cap on the removeOnLogsListener teardown await during reconnect. R11b had
+// this hang indefinitely on a dead WebSocket — the reconnect logged "Tearing
+// down..." then never returned, leaving `reconnecting` pinned to true and
+// killing every subsequent reconnect attempt for 8.5 hours.
+const DEFAULT_RECONNECT_TEARDOWN_TIMEOUT_MS = 5000;
 
 interface ListenerCounters {
   events: number;
@@ -131,9 +200,31 @@ interface ListenerCounters {
 export interface PoolListenerOptions {
   reconnectAfterEmptyWindows?: number;
   connectionFactory?: () => Connection;
+  reconnectTeardownTimeoutMs?: number;
 }
 
-export class PoolListener extends EventEmitter {
+export interface LogListenerSpec {
+  programId: PublicKey;
+  isMatchLog: (messages: readonly string[] | undefined) => boolean;
+  parseSignature: (connection: Connection, signature: string) => Promise<NewPool | null>;
+  label: string;
+}
+
+const RAYDIUM_SPEC: LogListenerSpec = {
+  programId: PROGRAM_IDS.RAYDIUM_AMM,
+  isMatchLog: isInitLog,
+  parseSignature: parsePoolFromSignature,
+  label: 'Raydium AMM',
+};
+
+const PUMP_SPEC: LogListenerSpec = {
+  programId: PROGRAM_IDS.PUMP_FUN,
+  isMatchLog: isPumpCreateLog,
+  parseSignature: parsePumpMintFromSignature,
+  label: 'Pump.fun',
+};
+
+export class LogListener extends EventEmitter {
   private connection: Connection;
   private subscriptionId: number | null = null;
   private seen = new Set<string>();
@@ -147,26 +238,32 @@ export class PoolListener extends EventEmitter {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private readonly heartbeatMs: number;
   private readonly reconnectAfter: number;
+  private readonly reconnectTeardownTimeoutMs: number;
   private readonly connectionFactory: () => Connection;
   private consecutiveEmptyWindows = 0;
   private reconnecting = false;
+  private readonly spec: LogListenerSpec;
 
   constructor(
+    spec: LogListenerSpec,
     connection?: Connection,
     heartbeatMs: number = HEARTBEAT_INTERVAL_MS,
     options: PoolListenerOptions = {}
   ) {
     super();
+    this.spec = spec;
     this.connection = connection ?? makeConnection();
     this.heartbeatMs = heartbeatMs;
     this.reconnectAfter = options.reconnectAfterEmptyWindows ?? DEFAULT_RECONNECT_AFTER_EMPTY_WINDOWS;
+    this.reconnectTeardownTimeoutMs =
+      options.reconnectTeardownTimeoutMs ?? DEFAULT_RECONNECT_TEARDOWN_TIMEOUT_MS;
     this.connectionFactory = options.connectionFactory ?? makeConnection;
   }
 
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
-    logger.info('Subscribing to Raydium AMM logs via WebSocket');
+    logger.info(`Subscribing to ${this.spec.label} logs via WebSocket`);
     this.subscribe();
     if (this.heartbeatMs > 0) {
       this.heartbeatTimer = setInterval(() => this.logHeartbeat(), this.heartbeatMs);
@@ -175,7 +272,7 @@ export class PoolListener extends EventEmitter {
 
   private subscribe(): void {
     this.subscriptionId = this.connection.onLogs(
-      PROGRAM_IDS.RAYDIUM_AMM,
+      this.spec.programId,
       (logsResult) => {
         this.handleLogs(logsResult.signature, logsResult.logs, logsResult.err).catch((err) =>
           logger.error(`handleLogs failed: ${(err as Error).message}`)
@@ -210,12 +307,12 @@ export class PoolListener extends EventEmitter {
     const { events, initMatches, poolsEmitted, parseFailures } = this.counters;
     const minutes = this.heartbeatMs / 60_000;
     logger.info(
-      `listener heartbeat (${minutes}min): ${events} Raydium events | ${initMatches} init matches | ${poolsEmitted} pools emitted | ${parseFailures} parse failures`
+      `listener heartbeat (${minutes}min): ${events} ${this.spec.label} events | ${initMatches} init matches | ${poolsEmitted} pools emitted | ${parseFailures} parse failures`
     );
     if (events === 0) {
       this.consecutiveEmptyWindows++;
       logger.warn(
-        `No Raydium events in the last window (${this.consecutiveEmptyWindows} in a row). RPC WebSocket may be dead.`
+        `No ${this.spec.label} events in the last window (${this.consecutiveEmptyWindows} in a row). RPC WebSocket may be dead.`
       );
       if (
         this.reconnectAfter > 0 &&
@@ -239,9 +336,24 @@ export class PoolListener extends EventEmitter {
       logger.warn('Tearing down dead WebSocket subscription and rebuilding...');
       if (this.subscriptionId !== null) {
         try {
-          await this.connection.removeOnLogsListener(this.subscriptionId);
+          // R11b regression: a dead WebSocket made this await never resolve,
+          // pinning `reconnecting=true` for 8.5 hours and disabling every
+          // subsequent reconnect attempt. The timeout abandons the cleanup
+          // and lets us proceed with a fresh Connection — the subscription
+          // ID on the dead socket is dropped on the floor either way.
+          await withTimeout(
+            this.connection.removeOnLogsListener(this.subscriptionId),
+            this.reconnectTeardownTimeoutMs,
+            'removeOnLogsListener'
+          );
         } catch (err) {
-          logger.debug(`removeOnLogsListener on reconnect: ${(err as Error).message}`);
+          if (err instanceof TimeoutError) {
+            logger.warn(
+              `removeOnLogsListener hung past ${this.reconnectTeardownTimeoutMs}ms; abandoning teardown and rebuilding anyway`
+            );
+          } else {
+            logger.debug(`removeOnLogsListener on reconnect: ${(err as Error).message}`);
+          }
         }
         this.subscriptionId = null;
       }
@@ -253,7 +365,7 @@ export class PoolListener extends EventEmitter {
       }
       this.subscribe();
       this.consecutiveEmptyWindows = 0;
-      logger.info('Listener re-subscribed to Raydium AMM logs on a fresh WebSocket');
+      logger.info(`Listener re-subscribed to ${this.spec.label} logs on a fresh WebSocket`);
     } finally {
       this.reconnecting = false;
     }
@@ -267,25 +379,45 @@ export class PoolListener extends EventEmitter {
     this.counters.events++;
     if (err) return;
     if (this.seen.has(signature)) return;
-    if (!isInitLog(logs ?? undefined)) return;
+    if (!this.spec.isMatchLog(logs ?? undefined)) return;
 
     this.counters.initMatches++;
     this.seen.add(signature);
     trimSeen(this.seen);
 
-    logger.debug(`init match: ${signature} (${logs?.length ?? 0} log lines)`);
+    logger.debug(`${this.spec.label} init match: ${signature} (${logs?.length ?? 0} log lines)`);
 
-    const pool = await parsePoolFromSignature(this.connection, signature);
+    const pool = await this.spec.parseSignature(this.connection, signature);
     if (pool) {
       this.counters.poolsEmitted++;
       logger.info(
-        `New pool detected: ${pool.tokenMint} (${pool.initialLiquiditySol.toFixed(3)} SOL)`
+        `New ${this.spec.label} pool detected: ${pool.tokenMint} (${pool.initialLiquiditySol.toFixed(3)} SOL)`
       );
       this.emit('newPool', pool);
     } else {
       this.counters.parseFailures++;
       logger.debug(`parse returned null for ${signature}`);
     }
+  }
+}
+
+export class PoolListener extends LogListener {
+  constructor(
+    connection?: Connection,
+    heartbeatMs: number = HEARTBEAT_INTERVAL_MS,
+    options: PoolListenerOptions = {}
+  ) {
+    super(RAYDIUM_SPEC, connection, heartbeatMs, options);
+  }
+}
+
+export class PumpListener extends LogListener {
+  constructor(
+    connection?: Connection,
+    heartbeatMs: number = HEARTBEAT_INTERVAL_MS,
+    options: PoolListenerOptions = {}
+  ) {
+    super(PUMP_SPEC, connection, heartbeatMs, options);
   }
 }
 

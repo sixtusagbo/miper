@@ -25,6 +25,39 @@ export function withTimeout<T>(
   });
 }
 
+// Retries an async operation with linear backoff. Intended for reads that
+// race with chain propagation — a fresh mint often isn't visible to every
+// RPC node for a few hundred ms after creation, so a single attempt
+// misclassifies real tokens as dead.
+export async function retry<T>(
+  fn: () => Promise<T>,
+  options: { attempts: number; baseDelayMs: number; label?: string } = {
+    attempts: 3,
+    baseDelayMs: 300,
+  }
+): Promise<T> {
+  const { attempts, baseDelayMs, label } = options;
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)));
+    }
+  }
+  if (label) {
+    const e = lastErr as Error;
+    // Error classes like SPL's TokenAccountNotFoundError carry their signal
+    // in `.name` with an empty message, so fall back to that before the
+    // generic placeholder.
+    const detail = e.message || e.name || 'unknown error';
+    e.message = `${label}: ${detail}`;
+  }
+  throw lastErr;
+}
+
 // Simple in-flight counter used to cap how many analyses / fetches run in
 // parallel. Not a fair queue: callers decide to proceed or skip. This is
 // intentional for a sniping bot where a stale pool is worth less than a fresh

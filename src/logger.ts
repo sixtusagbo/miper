@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { createWriteStream, WriteStream } from 'fs';
+import { appendFileSync, renameSync, statSync, unlinkSync } from 'fs';
 import { LogLevel, loadConfig } from './config';
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
@@ -31,38 +31,105 @@ function consoleEnabled(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[currentLevel()];
 }
 
-let logStream: WriteStream | null = null;
-let logStreamPath: string | undefined = undefined;
+// Cached path for the active log file so rotation can rename it without
+// re-resolving from config on every write. `null` means logging is
+// disabled (no LOG_FILE configured).
+let activeLogPath: string | null = null;
+// In-memory mirror of the file's byte size, kept in sync with appendFileSync
+// calls. We track it instead of statting on every write because rotation
+// fires off this counter; seeded from disk size on first use after open.
+let bytesWritten = 0;
+let pathSeeded = false;
 
-function getLogStream(): WriteStream | null {
-  const path = process.env.LOG_FILE?.trim();
-  if (!path) {
-    if (logStream) closeLogFile();
-    return null;
+function resolveLogFilePath(): string | undefined {
+  try {
+    const fromConfig = loadConfig().logFile?.trim();
+    if (fromConfig) return fromConfig;
+  } catch {
+    // loadConfig may throw before env is set up (e.g. during early CLI bootstrap);
+    // fall through to reading process.env directly.
   }
-  if (path !== logStreamPath) {
-    if (logStream) logStream.end();
-    logStream = createWriteStream(path, { flags: 'a' });
-    logStreamPath = path;
-  }
-  return logStream;
+  return process.env.LOG_FILE?.trim() || undefined;
 }
 
-// When LOG_FILE is set, the file receives every log line (including debug)
-// regardless of LOG_LEVEL, so the terminal stays calibrated while the file
-// becomes a full audit trail.
-export function closeLogFile(): void {
-  if (logStream) {
-    logStream.end();
-    logStream = null;
-    logStreamPath = undefined;
+interface RotationConfig {
+  maxBytes: number;
+  maxFiles: number;
+}
+
+function resolveRotationConfig(): RotationConfig {
+  try {
+    const cfg = loadConfig();
+    return { maxBytes: cfg.logMaxBytes, maxFiles: cfg.logMaxFiles };
+  } catch {
+    return { maxBytes: 100 * 1024 * 1024, maxFiles: 5 };
   }
+}
+
+function ensureLogPath(): string | null {
+  const path = resolveLogFilePath();
+  if (!path) {
+    activeLogPath = null;
+    pathSeeded = false;
+    return null;
+  }
+  if (path !== activeLogPath) {
+    activeLogPath = path;
+    pathSeeded = false;
+  }
+  if (!pathSeeded) {
+    // Seed the byte counter from existing on-disk size so rotation
+    // triggers correctly when a process restarts against a part-full log.
+    try {
+      bytesWritten = statSync(path).size;
+    } catch {
+      bytesWritten = 0;
+    }
+    pathSeeded = true;
+  }
+  return path;
+}
+
+// Roll pump.log -> pump.log.1, pump.log.1 -> pump.log.2, ... up to
+// maxFiles archives. Older archives are dropped. Best-effort: each rename
+// is wrapped in try/catch so a missing intermediate doesn't abort the
+// chain (e.g. on the first ever rotation only pump.log exists).
+function rotateLog(path: string, maxFiles: number): void {
+  try { unlinkSync(`${path}.${maxFiles}`); } catch { /* missing is fine */ }
+  for (let i = maxFiles - 1; i >= 1; i--) {
+    try { renameSync(`${path}.${i}`, `${path}.${i + 1}`); } catch { /* missing is fine */ }
+  }
+  try { renameSync(path, `${path}.1`); } catch { /* nothing to rotate */ }
+  bytesWritten = 0;
+}
+
+// closeLogFile is now a no-op for the synchronous append path — there's
+// no stream handle to close. Kept as an exported function so callers
+// (notably the test harness) can still reset module state between runs.
+export function closeLogFile(): void {
+  activeLogPath = null;
+  pathSeeded = false;
+  bytesWritten = 0;
+}
+
+function writeToFile(path: string, content: string): void {
+  // Rotate BEFORE the write that would exceed the limit, so the just-
+  // written line lands in the new active log instead of being the final
+  // entry of the rotated archive. Keeps the current log file present at
+  // all times instead of disappearing after the last rotation.
+  const len = Buffer.byteLength(content);
+  const { maxBytes, maxFiles } = resolveRotationConfig();
+  if (maxBytes > 0 && bytesWritten + len > maxBytes) {
+    rotateLog(path, maxFiles);
+  }
+  appendFileSync(path, content);
+  bytesWritten += len;
 }
 
 function write(level: LogLevel, color: (s: string) => string, tag: string, msg: string, data?: unknown): void {
   const ts = timestamp();
   const inConsole = consoleEnabled(level);
-  const stream = getLogStream();
+  const path = ensureLogPath();
 
   if (inConsole) {
     // eslint-disable-next-line no-console
@@ -72,10 +139,10 @@ function write(level: LogLevel, color: (s: string) => string, tag: string, msg: 
       console.log(chalk.gray(typeof data === 'string' ? data : JSON.stringify(data, null, 2)));
     }
   }
-  if (stream) {
-    stream.write(`${ts} [${tag}] ${msg}\n`);
+  if (path) {
+    writeToFile(path, `${ts} [${tag}] ${msg}\n`);
     if (data !== undefined) {
-      stream.write((typeof data === 'string' ? data : JSON.stringify(data)) + '\n');
+      writeToFile(path, (typeof data === 'string' ? data : JSON.stringify(data)) + '\n');
     }
   }
 }
@@ -100,18 +167,24 @@ export const logger = {
     const bar = chalk.magenta('='.repeat(Math.max(text.length + 4, 40)));
     // eslint-disable-next-line no-console
     console.log(`\n${bar}\n${chalk.magenta.bold('  ' + text)}\n${bar}\n`);
-    const stream = getLogStream();
-    if (stream) {
+    const path = ensureLogPath();
+    if (path) {
       const plainBar = '='.repeat(Math.max(text.length + 4, 40));
-      stream.write(`\n${plainBar}\n  ${text}\n${plainBar}\n\n`);
+      writeToFile(path, `\n${plainBar}\n  ${text}\n${plainBar}\n\n`);
     }
   },
-  position(action: 'BUY' | 'SELL' | 'STOPLOSS' | 'TP1' | 'TP2' | 'TP3', token: string, details: string): void {
+  position(
+    action: 'BUY' | 'SELL' | 'STOPLOSS' | 'TIMEOUT' | 'TP1' | 'TP2' | 'TP3',
+    token: string,
+    details: string
+  ): void {
     const painter =
       action === 'BUY'
         ? chalk.green.bold
         : action === 'STOPLOSS'
         ? chalk.red.bold
+        : action === 'TIMEOUT'
+        ? chalk.yellow.bold
         : chalk.blue.bold;
     write('trade', painter, action, `${chalk.white(token)} ${chalk.gray(details)}`);
   },

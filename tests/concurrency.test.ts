@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { InflightGate, TimeoutError, withTimeout } from '../src/concurrency';
+import { InflightGate, TimeoutError, retry, withTimeout } from '../src/concurrency';
 
 describe('withTimeout', () => {
   it('resolves with the promise value when it completes in time', async () => {
@@ -27,6 +27,44 @@ describe('withTimeout', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('retry', () => {
+  it('returns the first successful result without delay', async () => {
+    const fn = vi.fn().mockResolvedValue('ok');
+    const result = await retry(fn, { attempts: 3, baseDelayMs: 0 });
+    expect(result).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries until one attempt succeeds', async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('miss'))
+      .mockRejectedValueOnce(new Error('miss'))
+      .mockResolvedValue('got it');
+    const result = await retry(fn, { attempts: 3, baseDelayMs: 0 });
+    expect(result).toBe('got it');
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('throws the last error when all attempts fail, decorated with the label', async () => {
+    const fn = vi.fn().mockRejectedValue(new Error('boom'));
+    await expect(
+      retry(fn, { attempts: 2, baseDelayMs: 0, label: 'ping' })
+    ).rejects.toThrow(/ping: boom/);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to err.name when the message is empty (e.g. SPL token errors)', async () => {
+    class NamedError extends Error {
+      name = 'TokenAccountNotFoundError';
+    }
+    const fn = vi.fn().mockRejectedValue(new NamedError(''));
+    await expect(
+      retry(fn, { attempts: 1, baseDelayMs: 0, label: 'getMint' })
+    ).rejects.toThrow(/getMint: TokenAccountNotFoundError/);
   });
 });
 

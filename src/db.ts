@@ -297,10 +297,14 @@ export function getPnlSummary(): PnlSummary {
     closed_count: number | null;
     stopped_count: number | null;
   };
+  // Wins must be scoped to finished positions only — otherwise an open
+  // position whose partial sells already exceeded its buy cost (a winning
+  // TP1 on a still-running bag) gets counted as a win against a denominator
+  // of finished trades only, which can push winRate above 100%.
   const winRow = conn
     .prepare(
       `SELECT
-         SUM(CASE WHEN amount_sol_received > amount_sol_spent THEN 1 ELSE 0 END) as wins,
+         SUM(CASE WHEN status IN ('closed','stopped') AND amount_sol_received > amount_sol_spent THEN 1 ELSE 0 END) as wins,
          SUM(CASE WHEN status IN ('closed','stopped') THEN 1 ELSE 0 END) as finished
        FROM positions`
     )

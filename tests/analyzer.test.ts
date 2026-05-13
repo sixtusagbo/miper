@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   mockCreate: vi.fn(),
+  mockOpenAICreate: vi.fn(),
   mockFetch: vi.fn(),
   mockGetMint: vi.fn(),
   mockGetTokenLargestAccounts: vi.fn(),
+  mockGetAccountInfo: vi.fn(),
+  mockGetSignaturesForAddress: vi.fn(),
 }));
 
 vi.mock('node-fetch', () => ({ default: mocks.mockFetch }));
@@ -17,19 +20,44 @@ vi.mock('@anthropic-ai/sdk', () => {
   return { default: MockAnthropic };
 });
 
-vi.mock('@solana/spl-token', () => ({ getMint: mocks.mockGetMint }));
+vi.mock('openai', () => {
+  class MockOpenAI {
+    chat = { completions: { create: mocks.mockOpenAICreate } };
+    constructor(_opts?: unknown) {}
+  }
+  return { default: MockOpenAI };
+});
+
+vi.mock('@solana/spl-token', async () => {
+  const { PublicKey } = await import('@solana/web3.js');
+  class TokenInvalidAccountOwnerError extends Error {
+    name = 'TokenInvalidAccountOwnerError';
+  }
+  return {
+    getMint: mocks.mockGetMint,
+    TOKEN_2022_PROGRAM_ID: new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'),
+    TokenInvalidAccountOwnerError,
+  };
+});
 
 import { resetConfigCache, loadConfig } from '../src/config';
 import {
+  PUMP_INITIAL_PRICE_SOL,
   analyzeToken,
   fetchMarketData,
+  pumpMarketData,
+  resetAiClientCache,
   runSafetyChecks,
   scoreWithAi,
 } from '../src/analyzer';
 import type { NewPool } from '../src/listener';
+import { clearCreatorHistoryCache } from '../src/creatorHistory';
 
 beforeEach(() => {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
+  process.env.OPENAI_API_KEY = 'sk-openai-test';
+  // Existing tests stay on the anthropic path; the OpenAI path has its own block.
+  process.env.AI_MODEL = 'claude-haiku-4-5';
   process.env.WALLET_PRIVATE_KEY = '';
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
@@ -38,11 +66,21 @@ beforeEach(() => {
   process.env.MAX_TOP_HOLDER_PCT = '30';
   process.env.REQUIRE_MINT_REVOKED = 'true';
   process.env.REQUIRE_FREEZE_REVOKED = 'true';
+  process.env.MIPER_SAFETY_PRE_READ_DELAY_MS = '0';
+  delete process.env.SOURCE;
   resetConfigCache();
+  resetAiClientCache();
   mocks.mockCreate.mockReset();
+  mocks.mockOpenAICreate.mockReset();
   mocks.mockFetch.mockReset();
   mocks.mockGetMint.mockReset();
   mocks.mockGetTokenLargestAccounts.mockReset();
+  mocks.mockGetAccountInfo.mockReset();
+  mocks.mockGetSignaturesForAddress.mockReset();
+  // Default: metadata account missing, creator wallet untouched.
+  mocks.mockGetAccountInfo.mockResolvedValue(null);
+  mocks.mockGetSignaturesForAddress.mockResolvedValue([]);
+  clearCreatorHistoryCache();
 });
 
 function fakePool(overrides: Partial<NewPool> = {}): NewPool {
@@ -54,6 +92,7 @@ function fakePool(overrides: Partial<NewPool> = {}): NewPool {
     initialLiquiditySol: 10,
     txSignature: 'SIG',
     timestamp: Math.floor(Date.now() / 1000),
+    creator: null,
     ...overrides,
   };
 }
@@ -61,6 +100,8 @@ function fakePool(overrides: Partial<NewPool> = {}): NewPool {
 function fakeConnection() {
   return {
     getTokenLargestAccounts: mocks.mockGetTokenLargestAccounts,
+    getAccountInfo: mocks.mockGetAccountInfo,
+    getSignaturesForAddress: mocks.mockGetSignaturesForAddress,
   } as any;
 }
 
@@ -158,6 +199,64 @@ describe('runSafetyChecks', () => {
     const result = await runSafetyChecks(fakeConnection(), 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', 10_000, cfg);
     expect(result.passed).toBe(false);
     expect(result.failures.some((f) => f.includes('rpc timeout'))).toBe(true);
+  });
+
+  it('retries getMint with Token-2022 when the default program rejects the owner', async () => {
+    // Import the mocked class so we can throw the exact type the handler
+    // catches (instanceof check in getMintAcrossPrograms).
+    const spl = await import('@solana/spl-token');
+    const invalidOwner = new spl.TokenInvalidAccountOwnerError('');
+
+    // First call (default SPL Token programId) rejects — pump.fun mint.
+    // Second call (with TOKEN_2022_PROGRAM_ID) succeeds.
+    mocks.mockGetMint
+      .mockRejectedValueOnce(invalidOwner)
+      .mockResolvedValueOnce({
+        mintAuthority: null,
+        freezeAuthority: null,
+        supply: 1_000_000n * 1_000_000n,
+        decimals: 6,
+      });
+    mocks.mockGetTokenLargestAccounts.mockResolvedValue({
+      value: [{ amount: '50000000000' }],
+    });
+
+    const result = await runSafetyChecks(
+      fakeConnection(),
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+      10_000,
+      loadConfig()
+    );
+    expect(result.passed).toBe(true);
+    expect(mocks.mockGetMint).toHaveBeenCalledTimes(2);
+    // Second call must pass the Token-2022 program ID.
+    const secondCallArgs = mocks.mockGetMint.mock.calls[1];
+    expect(secondCallArgs[3].toBase58()).toBe('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+  });
+
+  it('retries getMint when the mint has not propagated yet', async () => {
+    // First two attempts: fresh mint not visible on the RPC (simulated
+    // empty-message throw). Third attempt succeeds — the realistic case.
+    mocks.mockGetMint
+      .mockRejectedValueOnce(new Error(''))
+      .mockRejectedValueOnce(new Error(''))
+      .mockResolvedValueOnce({
+        mintAuthority: null,
+        freezeAuthority: null,
+        supply: 1_000_000n * 1_000_000n,
+        decimals: 6,
+      });
+    mocks.mockGetTokenLargestAccounts.mockResolvedValue({
+      value: [{ amount: '50000000000' }], // 5% top holder
+    });
+    const result = await runSafetyChecks(
+      fakeConnection(),
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+      10_000,
+      loadConfig()
+    );
+    expect(result.passed).toBe(true);
+    expect(mocks.mockGetMint).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -331,7 +430,9 @@ describe('analyzeToken', () => {
       fakePool({ tokenMint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' })
     );
     expect(analysis.shouldBuy).toBe(false);
-    expect(analysis.rejectionReason).toMatch(/ai score 50/);
+    // Log line shows the score in its own (score X) prefix; rejection reason
+    // states the threshold + reasoning without redundantly repeating the score.
+    expect(analysis.rejectionReason).toMatch(/below threshold 70/);
   });
 
   it('rejects on safety failure and skips the AI call', async () => {
@@ -360,5 +461,272 @@ describe('analyzeToken', () => {
     expect(analysis.shouldBuy).toBe(false);
     expect(analysis.rejectionReason).toMatch(/safety/);
     expect(mocks.mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pump.fun source specifics
+// ---------------------------------------------------------------------------
+
+describe('pump source', () => {
+  const VALID_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+
+  beforeEach(() => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+  });
+
+  it('pumpMarketData returns the bonding-curve initial price, not DexScreener', () => {
+    const md = pumpMarketData(fakePool({ initialLiquiditySol: 0.3 }));
+    expect(md.source).toBe('pump-curve');
+    expect(md.priceSol).toBe(PUMP_INITIAL_PRICE_SOL);
+    expect(md.liquiditySol).toBe(0.3);
+    expect(md.supply).toBe(1_000_000_000);
+  });
+
+  it('runSafetyChecks skips holder distribution and min liquidity for pump source', async () => {
+    // The bonding curve PDA holds 100% of supply at t=0 — Raydium defaults
+    // would reject this, pump must tolerate it. We also can't call
+    // getTokenLargestAccounts at all because the RPC rejects Token-2022
+    // mints as "not a Token mint".
+    mocks.mockGetMint.mockResolvedValue({
+      mintAuthority: null,
+      freezeAuthority: null,
+      supply: 1_000_000n * 1_000_000n,
+      decimals: 6,
+    });
+    const result = await runSafetyChecks(fakeConnection(), VALID_MINT, 50, loadConfig());
+    expect(result.passed).toBe(true);
+    expect(result.failures).toEqual([]);
+    expect(mocks.mockGetTokenLargestAccounts).not.toHaveBeenCalled();
+  });
+
+  it('analyzeToken uses pump market data and skips DexScreener entirely', async () => {
+    mocks.mockGetMint.mockResolvedValue({
+      mintAuthority: null,
+      freezeAuthority: null,
+      supply: 1_000_000n * 1_000_000n,
+      decimals: 6,
+    });
+    mocks.mockGetTokenLargestAccounts.mockResolvedValue({
+      value: [{ amount: '1000000000000' }],
+    });
+    mocks.mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"score": 80, "reasoning": "pump"}' }],
+    });
+
+    const analysis = await analyzeToken(fakeConnection(), fakePool({ tokenMint: VALID_MINT }));
+    expect(analysis.market.source).toBe('pump-curve');
+    expect(analysis.shouldBuy).toBe(true);
+    expect(analysis.ai.score).toBe(80);
+    expect(mocks.mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('pump analysis fetches metadata + creator history and surfaces both in the AI prompt', async () => {
+    mocks.mockGetMint.mockResolvedValue({
+      mintAuthority: null,
+      freezeAuthority: null,
+      supply: 1_000_000n * 1_000_000n,
+      decimals: 6,
+    });
+    // Build a realistic Metaplex metadata account so fetchTokenMetadata
+    // returns real name/symbol/uri rather than null.
+    const metadataBuffer = (() => {
+      const header = Buffer.alloc(1 + 32 + 32, 0);
+      header[0] = 4;
+      const strField = (s: string, max: number) => {
+        const len = Buffer.alloc(4);
+        len.writeUInt32LE(max, 0);
+        const body = Buffer.alloc(max, 0);
+        Buffer.from(s).copy(body, 0);
+        return Buffer.concat([len, body]);
+      };
+      return Buffer.concat([
+        header,
+        strField('Pepe 2.0', 32),
+        strField('PEPE2', 10),
+        strField('https://example.com/p.json', 200),
+        Buffer.alloc(32, 0),
+      ]);
+    })();
+    mocks.mockGetAccountInfo.mockResolvedValue({ data: metadataBuffer });
+    const nowSec = Math.floor(Date.now() / 1000);
+    mocks.mockGetSignaturesForAddress.mockResolvedValue([
+      { signature: 'a', blockTime: nowSec - 86400 },
+      { signature: 'b', blockTime: nowSec - 7 * 86400 },
+    ]);
+    mocks.mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"score": 65, "reasoning": "aged creator + real metadata"}' }],
+    });
+
+    const analysis = await analyzeToken(
+      fakeConnection(),
+      fakePool({
+        tokenMint: VALID_MINT,
+        creator: 'So11111111111111111111111111111111111111112',
+        initialLiquiditySol: 2.5,
+      })
+    );
+
+    expect(analysis.shouldBuy).toBe(false); // 65 < MIN_AI_SCORE=70 default
+    expect(analysis.ai.score).toBe(65);
+    expect(mocks.mockGetAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockGetSignaturesForAddress).toHaveBeenCalledTimes(1);
+
+    // Inspect the user prompt Claude actually saw.
+    const call = mocks.mockCreate.mock.calls[0][0];
+    const userPrompt = call.messages[0].content as string;
+    expect(userPrompt).toContain('Pepe 2.0');
+    expect(userPrompt).toContain('PEPE2');
+    expect(userPrompt).toContain('https://example.com/p.json');
+    expect(userPrompt).toContain('2.500 SOL'); // initialLiquiditySol
+    expect(userPrompt).toContain('2 recent txs');
+    // System is sent as a cached text block (cache_control: ephemeral) so we
+    // assert on the inner text rather than treating system as a bare string.
+    expect(call.system[0].type).toBe('text');
+    expect(call.system[0].text).toContain('pump.fun launches');
+    expect(call.system[0].cache_control).toEqual({ type: 'ephemeral' });
+    expect(call.model).toBe('claude-haiku-4-5');
+  });
+
+  it('describes saturated creator wallets as high-volume rather than fresh', async () => {
+    // Regression: when getSignaturesForAddress returns the API max (1000),
+    // the in-window oldest is recent — without the saturation flag in the
+    // prompt, the LLM reads "0.04 days old" as "fresh disposable wallet"
+    // and tanks the score on tokens that are actually launched by aged,
+    // high-volume traders.
+    mocks.mockGetMint.mockResolvedValue({
+      mintAuthority: null,
+      freezeAuthority: null,
+      supply: 1_000_000n * 1_000_000n,
+      decimals: 6,
+    });
+    const nowSec = Math.floor(Date.now() / 1000);
+    const oneHourAgo = nowSec - 3600;
+    const sigs = Array.from({ length: 1000 }, (_, i) => ({
+      signature: `s-${i}`,
+      blockTime: nowSec - Math.floor((i / 1000) * 3600),
+    }));
+    sigs[sigs.length - 1].blockTime = oneHourAgo;
+    mocks.mockGetSignaturesForAddress.mockResolvedValue(sigs);
+    mocks.mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"score": 70, "reasoning": "high-volume creator + dev buy"}' }],
+    });
+
+    await analyzeToken(
+      fakeConnection(),
+      fakePool({
+        tokenMint: VALID_MINT,
+        creator: 'So11111111111111111111111111111111111111112',
+        initialLiquiditySol: 2.5,
+      })
+    );
+
+    const userPrompt = mocks.mockCreate.mock.calls[0][0].messages[0].content as string;
+    expect(userPrompt).toContain('1000+ recent txs');
+    expect(userPrompt).toContain('true wallet age unknown');
+    expect(userPrompt).not.toMatch(/oldest activity 0\.0 days ago/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OpenAI provider dispatch
+// ---------------------------------------------------------------------------
+
+describe('scoreWithAi (openai provider)', () => {
+  beforeEach(() => {
+    process.env.AI_MODEL = 'gpt-5-nano';
+    resetConfigCache();
+    resetAiClientCache();
+  });
+
+  const fixturePool = (): NewPool => ({
+    poolAddress: 'POOL',
+    tokenMint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    baseMint: 'So11111111111111111111111111111111111111112',
+    quoteMint: 'MINT',
+    initialLiquiditySol: 1.5,
+    txSignature: 'SIG',
+    timestamp: Math.floor(Date.now() / 1000),
+    creator: null,
+  });
+
+  const fixtureMarket = {
+    symbol: null,
+    name: null,
+    priceUsd: null,
+    priceSol: null,
+    liquidityUsd: null,
+    liquiditySol: 1.5,
+    marketCapUsd: null,
+    volume24hUsd: null,
+    supply: null,
+    source: 'pool-fallback' as const,
+  };
+
+  const fixtureSafety = {
+    mintRevoked: true,
+    freezeRevoked: true,
+    topHolderPct: 10,
+    holderCount: 20,
+    passed: true,
+    failures: [],
+  };
+
+  it('dispatches to the OpenAI client and parses chat-completion JSON output', async () => {
+    mocks.mockOpenAICreate.mockResolvedValueOnce({
+      choices: [
+        { message: { content: '{"score": 78, "reasoning": "decent dev buy"}' } },
+      ],
+      usage: { prompt_tokens: 800, completion_tokens: 60 },
+    });
+    const out = await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    expect(out.score).toBe(78);
+    expect(out.reasoning).toBe('decent dev buy');
+    expect(mocks.mockCreate).not.toHaveBeenCalled();
+    expect(mocks.mockOpenAICreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the gpt-5-nano default and forces minimal reasoning effort', async () => {
+    mocks.mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: '{"score": 50, "reasoning": "neutral"}' } }],
+      usage: { prompt_tokens: 800, completion_tokens: 30 },
+    });
+    await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    const call = mocks.mockOpenAICreate.mock.calls[0][0];
+    expect(call.model).toBe('gpt-5-nano');
+    expect(call.response_format).toEqual({ type: 'json_object' });
+    expect(call.reasoning_effort).toBe('minimal');
+  });
+
+  it('honors AI_MODEL and skips reasoning_effort on non-reasoning models', async () => {
+    process.env.AI_MODEL = 'gpt-4o-mini';
+    resetConfigCache();
+    resetAiClientCache();
+    mocks.mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: '{"score": 33, "reasoning": "ok"}' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+    });
+    await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    const call = mocks.mockOpenAICreate.mock.calls[0][0];
+    expect(call.model).toBe('gpt-4o-mini');
+    expect(call.reasoning_effort).toBeUndefined();
+  });
+
+  it('returns parse-error fallback when the OpenAI response is non-JSON', async () => {
+    mocks.mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: 'I refuse to answer' } }],
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+    });
+    const out = await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    expect(out.score).toBe(0);
+    expect(out.error).toBe('parse error');
+  });
+
+  it('returns API-error fallback when the OpenAI call rejects', async () => {
+    mocks.mockOpenAICreate.mockRejectedValueOnce(new Error('rate limited'));
+    const out = await scoreWithAi(fixturePool(), fixtureMarket, fixtureSafety, loadConfig());
+    expect(out.score).toBe(0);
+    expect(out.error).toBe('rate limited');
   });
 });

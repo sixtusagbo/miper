@@ -18,16 +18,24 @@ import { resetConfigCache } from '../src/config';
 import {
   closeDb,
   createPosition,
+  getDb,
   getPosition,
   getTradesForPosition,
   recordTrade,
+  updatePosition,
 } from '../src/db';
 import {
+  TIME_EXIT_TP_LEVEL,
   checkPosition,
+  clearGraduatedCurves,
+  closeAllOpenPositions,
   executeStopLoss,
   executeTakeProfit,
+  executeTimeExit,
   fetchPriceSol,
+  isPastHoldLimit,
 } from '../src/positions';
+import { clearBondingCurveCache } from '../src/bondingCurve';
 
 let tempDir: string;
 
@@ -37,7 +45,7 @@ beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miper-pos-'));
   process.env.DB_PATH = path.join(tempDir, 'test.db');
   process.env.ANTHROPIC_API_KEY = 'sk-test';
-  process.env.WALLET_PRIVATE_KEY = '';
+  process.env.OPENAI_API_KEY = 'sk-openai-test';  process.env.WALLET_PRIVATE_KEY = '';
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
   process.env.TAKE_PROFIT_1 = '2';
@@ -47,7 +55,12 @@ beforeEach(() => {
   process.env.SELL_PCT_TP2 = '30';
   process.env.SELL_PCT_TP3 = '30';
   process.env.STOP_LOSS = '0.4';
+  delete process.env.SOURCE;
+  delete process.env.EXIT_MODE;
+  delete process.env.EXIT_AT_MULT;
   resetConfigCache();
+  clearGraduatedCurves();
+  clearBondingCurveCache();
   mocks.mockFetch.mockReset();
   mocks.mockSellToken.mockReset();
 });
@@ -57,7 +70,12 @@ afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-function mkPosition(opts: { entryPriceSol?: number; amountTokens?: number; tokenMint?: string } = {}) {
+function mkPosition(opts: {
+  entryPriceSol?: number;
+  amountTokens?: number;
+  tokenMint?: string;
+  poolAddress?: string;
+} = {}) {
   const p = createPosition({
     tokenMint: opts.tokenMint ?? MINT,
     tokenSymbol: 'AAA',
@@ -65,7 +83,7 @@ function mkPosition(opts: { entryPriceSol?: number; amountTokens?: number; token
     amountTokens: opts.amountTokens ?? 1_000_000,
     amountSolSpent: 0.05,
     aiScore: 80,
-    poolAddress: 'POOL',
+    poolAddress: opts.poolAddress ?? 'POOL',
     entryTx: 'TX',
   });
   // Record the buy so executeTakeProfit can derive original bag size.
@@ -139,6 +157,166 @@ describe('fetchPriceSol', () => {
   it('returns null when fetch throws', async () => {
     mocks.mockFetch.mockRejectedValueOnce(new Error('network'));
     expect(await fetchPriceSol('C1111111111111111111111111111111111111111112')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchPositionPriceSol -- per-source price oracle dispatch
+// ---------------------------------------------------------------------------
+
+describe('fetchPositionPriceSol', () => {
+  // Build a fake bonding curve account buffer for the connection mock.
+  function buildCurveBuffer(virtualSolLamports: bigint, virtualTokens: bigint): Buffer {
+    const buf = Buffer.alloc(8 + 5 * 8 + 1);
+    let offset = 8;
+    buf.writeBigUInt64LE(virtualTokens, offset); offset += 8;
+    buf.writeBigUInt64LE(virtualSolLamports, offset); offset += 8;
+    buf.writeBigUInt64LE(0n, offset); offset += 8;
+    buf.writeBigUInt64LE(0n, offset); offset += 8;
+    buf.writeBigUInt64LE(0n, offset); offset += 8;
+    buf[offset] = 0;
+    return buf;
+  }
+
+  it('reads the bonding curve when source=pump and the position has a pool address', async () => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const conn = {
+      getAccountInfo: vi.fn().mockResolvedValue({
+        data: buildCurveBuffer(60n * 1_000_000_000n, 1_073_000_000n * 1_000_000n),
+      }),
+    } as any;
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+    const price = await fetchPositionPriceSol(p, loadConfig(), conn);
+    // Doubled virtual SOL → 2× the launch price.
+    expect(price).toBeCloseTo(2 * (30 / 1_073_000_000), 12);
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('falls back to DexScreener when the bonding curve has graduated', async () => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const completedBuf = (() => {
+      const b = buildCurveBuffer(60n * 1_000_000_000n, 1_073_000_000n * 1_000_000n);
+      b[b.length - 1] = 1; // complete=true
+      return b;
+    })();
+    const conn = {
+      getAccountInfo: vi.fn().mockResolvedValue({ data: completedBuf }),
+    } as any;
+    mockPriceFetch(0.00099, MINT);
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+    const price = await fetchPositionPriceSol(p, loadConfig(), conn);
+    expect(price).toBe(0.00099);
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the bonding curve RPC after the first graduated reading', async () => {
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const completedBuf = (() => {
+      const b = buildCurveBuffer(60n * 1_000_000_000n, 1_073_000_000n * 1_000_000n);
+      b[b.length - 1] = 1;
+      return b;
+    })();
+    const conn = {
+      getAccountInfo: vi.fn().mockResolvedValue({ data: completedBuf }),
+    } as any;
+    mockPriceFetch(0.00099, MINT);
+    mockPriceFetch(0.00099, MINT);
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+
+    await fetchPositionPriceSol(p, loadConfig(), conn);
+    await fetchPositionPriceSol(p, loadConfig(), conn);
+
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT cache as graduated on transient RPC failure (R11 regression)', async () => {
+    // R11 bug: a single ~600ms RPC blip flipped 48/50 open positions to
+    // "graduated" forever and the bot never exited any of them. A throw
+    // from getAccountInfo must not poison the cache — the next tick has to
+    // hit the curve again and return a real price.
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const liveBuf = buildCurveBuffer(
+      60n * 1_000_000_000n,
+      1_073_000_000n * 1_000_000n
+    );
+    const conn = {
+      getAccountInfo: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('rpc down'))
+        .mockResolvedValueOnce({ data: liveBuf }),
+    } as any;
+    mockPriceFetch(0.00099, MINT);
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+
+    const first = await fetchPositionPriceSol(p, loadConfig(), conn);
+    expect(first).toBe(0.00099);
+
+    const second = await fetchPositionPriceSol(p, loadConfig(), conn);
+    expect(second).toBeCloseTo(2 * (30 / 1_073_000_000), 12);
+
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT cache as graduated when account info is missing', async () => {
+    // Same idea as the R11 regression but for the !info?.data branch —
+    // an RPC that returns null without throwing also means "not right now"
+    // not "permanently graduated".
+    process.env.SOURCE = 'pump';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const liveBuf = buildCurveBuffer(
+      60n * 1_000_000_000n,
+      1_073_000_000n * 1_000_000n
+    );
+    const conn = {
+      getAccountInfo: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ data: liveBuf }),
+    } as any;
+    mockPriceFetch(0.00099, MINT);
+    const p = mkPosition({ poolAddress: 'So11111111111111111111111111111111111111112' });
+
+    await fetchPositionPriceSol(p, loadConfig(), conn);
+    const second = await fetchPositionPriceSol(p, loadConfig(), conn);
+
+    expect(second).toBeCloseTo(2 * (30 / 1_073_000_000), 12);
+    expect(conn.getAccountInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses DexScreener for raydium positions (no bonding curve)', async () => {
+    process.env.SOURCE = 'raydium';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const { fetchPositionPriceSol } = await import('../src/positions');
+
+    const conn = { getAccountInfo: vi.fn() } as any;
+    mockPriceFetch(0.00007, MINT);
+    const p = mkPosition();
+    const price = await fetchPositionPriceSol(p, loadConfig(), conn);
+    expect(price).toBe(0.00007);
+    expect(conn.getAccountInfo).not.toHaveBeenCalled();
   });
 });
 
@@ -249,6 +427,17 @@ describe('executeStopLoss', () => {
     expect(updated.amount_sol_received).toBeCloseTo(0.02);
   });
 
+  it('passes the position current price as a hint to sellToken', async () => {
+    // Without this hint, paper-mode pump sells fall back to the bonding-curve
+    // init price and book every exit at entry — fake breakeven on every
+    // position. We rely on positions.ts threading current_price_sol through.
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockSellSuccess(0.015, 0.00003);
+    await executeStopLoss(getPosition(p.id)!);
+    const sellCall = mocks.mockSellToken.mock.calls[0];
+    expect(sellCall[3]).toBe(0.0001); // mkPosition's seeded current_price_sol
+  });
+
   it('leaves the position open when the sell fails', async () => {
     const p = mkPosition();
     mockSellFailure();
@@ -275,6 +464,21 @@ describe('checkPosition', () => {
     expect(getPosition(p.id)!.status).toBe('stopped');
   });
 
+  it('passes the freshly-observed price to sellToken (not the stale tick-start value)', async () => {
+    // Regression: when a TP triggers on the first successful price fetch,
+    // the in-memory position.current_price_sol still equals entry. We must
+    // refresh it before downstream sells, otherwise pump paper exits book
+    // at zero PnL despite a real TP/SL multiplier firing.
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    expect(p.current_price_sol).toBe(0.0001); // sanity: starts at entry
+    mockPriceFetch(0.00055); // 5.5x → triggers TP3
+    mockSellSuccess(0.55, 0.00055);
+    await checkPosition(p);
+
+    const sellCall = mocks.mockSellToken.mock.calls[0];
+    expect(sellCall[3]).toBe(0.00055);
+  });
+
   it('triggers TP1 when price reaches 2x and tp_level is 0', async () => {
     const p = mkPosition({ entryPriceSol: 0.0001 });
     mockPriceFetch(0.00021); // > 2x
@@ -282,6 +486,50 @@ describe('checkPosition', () => {
     await checkPosition(p);
 
     expect(getPosition(p.id)!.tp_level).toBe(1);
+  });
+
+  it('all-in mode: full exit at EXIT_AT_MULT, ignores tiered TP levels', async () => {
+    process.env.EXIT_MODE = 'all-in';
+    process.env.EXIT_AT_MULT = '2';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00021); // 2.1x — clears all-in target
+    mockSellSuccess(0.105, 0.00021);
+    await checkPosition(p);
+
+    // All-in fires once and closes the position fully — not partial.
+    const updated = getPosition(p.id)!;
+    expect(updated.status).toBe('closed');
+    expect(updated.amount_tokens).toBe(0);
+    expect(updated.tp_level).toBe(3);
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+    // Should sell the full bag, not the 40% TP1 tranche.
+    const sellArgs = mocks.mockSellToken.mock.calls[0];
+    expect(sellArgs[1]).toBeCloseTo(1_000_000);
+  });
+
+  it('all-in mode: holds when multiplier is below EXIT_AT_MULT', async () => {
+    process.env.EXIT_MODE = 'all-in';
+    process.env.EXIT_AT_MULT = '5';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00025); // 2.5x — well above tiered TP1 but under all-in 5x target
+    await checkPosition(p);
+
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('all-in mode: stop-loss still fires independently of EXIT_AT_MULT', async () => {
+    process.env.EXIT_MODE = 'all-in';
+    process.env.EXIT_AT_MULT = '5';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00003); // 0.3x → SL
+    mockSellSuccess(0.015, 0.00003);
+    await checkPosition(p);
+
+    expect(getPosition(p.id)!.status).toBe('stopped');
   });
 
   it('skips TP triggers when current price is null', async () => {
@@ -316,6 +564,137 @@ describe('checkPosition', () => {
     expect(mocks.mockSellToken).not.toHaveBeenCalled();
     expect(getPosition(p.id)!.status).toBe('closed');
   });
+
+  // Backdates a position's created_at by `minutes`. SQLite stores
+  // datetime('now') as UTC text; we write the same format.
+  function agePositionByMinutes(positionId: number, minutes: number): void {
+    const past = new Date(Date.now() - minutes * 60_000);
+    const iso = past.toISOString().replace('T', ' ').slice(0, 19);
+    getDb().prepare('UPDATE positions SET created_at = ? WHERE id = ?').run(iso, positionId);
+  }
+
+  it('time-exit fires when MAX_HOLD_MINUTES has elapsed and TP/SL did not trigger', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    agePositionByMinutes(p.id, 31);
+    const aged = getPosition(p.id)!;
+    mockPriceFetch(0.00012); // 1.2x — between SL (0.4x) and TP1 (2x)
+    mockSellSuccess(0.06, 0.00012);
+    await checkPosition(aged);
+
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.tp_level).toBe(TIME_EXIT_TP_LEVEL);
+    expect(closed.amount_tokens).toBe(0);
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT time-exit when MAX_HOLD_MINUTES=0 (default disabled)', async () => {
+    delete process.env.MAX_HOLD_MINUTES;
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    agePositionByMinutes(p.id, 60 * 24); // a day old
+    const aged = getPosition(p.id)!;
+    mockPriceFetch(0.00012);
+    await checkPosition(aged);
+
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('does NOT time-exit when position is younger than MAX_HOLD_MINUTES', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    // Fresh position — its default created_at is "now". Don't age it.
+    mockPriceFetch(0.00012);
+    await checkPosition(p);
+
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('TP3 takes precedence over time-exit when both conditions hold', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    agePositionByMinutes(p.id, 60); // past the limit
+    const aged = getPosition(p.id)!;
+    mockPriceFetch(0.001); // 10x — TP3 territory
+    mockSellSuccess(0.5, 0.001);
+    await checkPosition(aged);
+
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.tp_level).toBe(3); // real TP3, not time-exit sentinel
+  });
+
+  it('SL takes precedence over time-exit when both conditions hold', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    agePositionByMinutes(p.id, 60);
+    const aged = getPosition(p.id)!;
+    mockPriceFetch(0.00003); // 0.3x — SL territory
+    mockSellSuccess(0.015, 0.00003);
+    await checkPosition(aged);
+
+    const updated = getPosition(p.id)!;
+    expect(updated.status).toBe('stopped');
+  });
+});
+
+describe('isPastHoldLimit', () => {
+  it('returns false when MAX_HOLD_MINUTES is 0 (disabled)', async () => {
+    delete process.env.MAX_HOLD_MINUTES;
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition();
+    expect(isPastHoldLimit(p, loadConfig())).toBe(false);
+  });
+
+  it('returns true when the position is older than the limit', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition();
+    // Backdate created_at to 31 minutes ago (UTC text format).
+    const past = new Date(Date.now() - 31 * 60_000)
+      .toISOString()
+      .replace('T', ' ')
+      .slice(0, 19);
+    expect(isPastHoldLimit({ ...p, created_at: past }, loadConfig())).toBe(true);
+  });
+
+  it('returns false when the position is younger than the limit', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition();
+    expect(isPastHoldLimit(p, loadConfig())).toBe(false);
+  });
+});
+
+describe('executeTimeExit', () => {
+  it('sells the full bag at last-known price and marks tp_level=4', async () => {
+    process.env.MAX_HOLD_MINUTES = '30';
+    resetConfigCache();
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition({ entryPriceSol: 0.0001, amountTokens: 1_000_000 });
+    updatePosition(p.id, { currentPriceSol: 0.00015 });
+    const updated = getPosition(p.id)!;
+    mockSellSuccess(0.15, 0.00015);
+    await executeTimeExit(updated, loadConfig());
+
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.tp_level).toBe(TIME_EXIT_TP_LEVEL);
+    expect(closed.amount_tokens).toBe(0);
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+    // Full bag, not a partial.
+    expect(mocks.mockSellToken.mock.calls[0][1]).toBeCloseTo(1_000_000);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -349,5 +728,90 @@ describe('trade recording', () => {
     const sells = trades.filter((t) => t.type === 'sell');
     expect(sells).toHaveLength(1);
     expect(sells[0].amount_sol).toBeCloseTo(0.04);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// closeAllOpenPositions — graceful shutdown
+// ---------------------------------------------------------------------------
+
+describe('closeAllOpenPositions', () => {
+  it('returns zeros and is a no-op when nothing is open', async () => {
+    const result = await closeAllOpenPositions();
+    expect(result).toEqual({ closed: 0, failed: 0 });
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+  });
+
+  it('sells every open and partial position and marks them closed', async () => {
+    const a = mkPosition({ tokenMint: 'AAA' });
+    const b = mkPosition({ tokenMint: 'BBB' });
+    const c = mkPosition({ tokenMint: 'CCC' });
+    // Mark one partial; should still be closed by the shutdown sweep.
+    updatePosition(b.id, { status: 'partial' });
+    // Each call to closeAllOpenPositions does a price refresh per position;
+    // mock the priceFetch + sell for all three.
+    for (let i = 0; i < 3; i++) mockPriceFetch(0.0002, [a, b, c][i].token_mint);
+    mockSellSuccess(0.05, 0.0002);
+    mockSellSuccess(0.05, 0.0002);
+    mockSellSuccess(0.05, 0.0002);
+
+    const result = await closeAllOpenPositions();
+    expect(result.closed).toBe(3);
+    expect(result.failed).toBe(0);
+    for (const p of [a, b, c]) {
+      const updated = getPosition(p.id)!;
+      expect(updated.status).toBe('closed');
+      expect(updated.amount_tokens).toBe(0);
+    }
+  });
+
+  it('counts failures separately and continues on a single sell error', async () => {
+    const a = mkPosition({ tokenMint: 'AAA' });
+    const b = mkPosition({ tokenMint: 'BBB' });
+    mockPriceFetch(0.0002, 'AAA');
+    mockPriceFetch(0.0002, 'BBB');
+    mockSellSuccess(0.05, 0.0002);
+    mockSellFailure('liquidity drained');
+
+    const result = await closeAllOpenPositions();
+    expect(result.closed).toBe(1);
+    expect(result.failed).toBe(1);
+    // The successful one is closed; the failed one stays open for review.
+    expect(getPosition(a.id)!.status).toBe('closed');
+    expect(getPosition(b.id)!.status).toBe('open');
+  });
+
+  it('falls back to last-known DB price when refresh hangs, then closes the position', async () => {
+    const a = mkPosition({ tokenMint: 'AAA' });
+    // Seed a last-known price on the position so the sell has something to use.
+    updatePosition(a.id, { currentPriceSol: 0.0003 });
+    // Price fetch never resolves — simulates DNS down / hung TCP.
+    mocks.mockFetch.mockImplementationOnce(() => new Promise(() => {}));
+    mockSellSuccess(0.05, 0.0003);
+
+    const result = await closeAllOpenPositions(undefined, null, 30);
+
+    expect(result.closed).toBe(1);
+    expect(result.failed).toBe(0);
+    const updated = getPosition(a.id)!;
+    expect(updated.status).toBe('closed');
+    expect(updated.amount_tokens).toBe(0);
+    // Refresh failed, so the DB price stays at the seeded last-known value.
+    expect(updated.current_price_sol).toBe(0.0003);
+    // Sell still happened with the last-known price as the hint.
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks position as failed when the sell itself hangs past the timeout', async () => {
+    const a = mkPosition({ tokenMint: 'AAA' });
+    mockPriceFetch(0.0002, 'AAA');
+    // The sell promise never resolves — e.g. live RPC blocked.
+    mocks.mockSellToken.mockImplementationOnce(() => new Promise(() => {}));
+
+    const result = await closeAllOpenPositions(undefined, null, 30);
+
+    expect(result.closed).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(getPosition(a.id)!.status).toBe('open');
   });
 });

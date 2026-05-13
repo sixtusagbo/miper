@@ -12,10 +12,12 @@ beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miper-log-'));
   logPath = path.join(tempDir, 'miper.log');
   process.env.ANTHROPIC_API_KEY = 'sk-test';
-  process.env.WALLET_PRIVATE_KEY = '';
+  process.env.OPENAI_API_KEY = 'sk-openai-test';  process.env.WALLET_PRIVATE_KEY = '';
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'info';
   process.env.LOG_FILE = logPath;
+  delete process.env.LOG_MAX_BYTES;
+  delete process.env.LOG_MAX_FILES;
   resetConfigCache();
 });
 
@@ -64,5 +66,51 @@ describe('file logging', () => {
     logger.info('no-file');
     await new Promise((r) => setTimeout(r, 20));
     expect(fs.existsSync(logPath)).toBe(false);
+  });
+});
+
+describe('log rotation', () => {
+  it('rotates the file when LOG_MAX_BYTES is exceeded', async () => {
+    process.env.LOG_MAX_BYTES = '200';
+    process.env.LOG_MAX_FILES = '3';
+    resetConfigCache();
+
+    // Each line is ~30+ bytes once timestamp and tag are added, so a few
+    // lines blow past 200 bytes and trigger rotation.
+    for (let i = 0; i < 20; i++) {
+      logger.info(`line-${i}-padding-padding-padding`);
+    }
+    await flushFile();
+
+    expect(fs.existsSync(logPath)).toBe(true);
+    expect(fs.existsSync(`${logPath}.1`)).toBe(true);
+  });
+
+  it('drops archives past LOG_MAX_FILES', async () => {
+    process.env.LOG_MAX_BYTES = '200';
+    process.env.LOG_MAX_FILES = '2';
+    resetConfigCache();
+
+    // Force enough rotations to require evicting the oldest archive.
+    for (let i = 0; i < 100; i++) {
+      logger.info(`line-${i}-padding-padding-padding-padding`);
+    }
+    await flushFile();
+
+    expect(fs.existsSync(`${logPath}.1`)).toBe(true);
+    expect(fs.existsSync(`${logPath}.2`)).toBe(true);
+    expect(fs.existsSync(`${logPath}.3`)).toBe(false);
+  });
+
+  it('does not rotate when LOG_MAX_BYTES is 0 (rotation disabled)', async () => {
+    process.env.LOG_MAX_BYTES = '0';
+    resetConfigCache();
+
+    for (let i = 0; i < 50; i++) {
+      logger.info(`line-${i}-padding-padding-padding`);
+    }
+    await flushFile();
+
+    expect(fs.existsSync(`${logPath}.1`)).toBe(false);
   });
 });

@@ -1,101 +1,199 @@
 # miper
 
-Autonomous Solana memecoin sniping bot. For the operational playbook (how long to run, peak hours, going-live checklist), see [RUNNING.md](./RUNNING.md). Listens for new Raydium AMM pools, runs on-chain safety checks, asks Claude for a score, and auto-buys via Jupiter V6 when the score clears the threshold. Manages positions with tiered take-profit (2x/3x/5x by default) and a stop-loss.
+Autonomous Solana memecoin sniping bot. Listens for new launches, runs on-chain safety checks, asks Claude for a 0-100 score, and auto-buys via Jupiter V6 when the score clears the threshold. Manages positions with tiered take-profit (2x/3x/5x by default) and a stop-loss.
 
-**Starts in simulation mode by default.** No real transactions are sent until you flip `SIMULATE=false`.
+**Starts in simulation mode by default.** No real transactions are sent until you flip `SIMULATE=false`. For the operational playbook (how long to run, peak hours, going-live checklist), see [RUNNING.md](./RUNNING.md).
+
+---
+
+## Token sources
+
+miper supports two launch streams, selected at the command line or via env. Each source uses its own DB and log file so their histories never mix.
+
+| Source | Program | Default DB | Default log | Live trading |
+|---|---|---|---|---|
+| `raydium` *(default)* | Raydium AMM | `./sniper.db` | none | Jupiter V6 |
+| `pump` | pump.fun (Token-2022) | `./pump.db` | `./pump.log` | **Phase 1: paper-only** |
+
+**Why two sources?** Raydium AMM inits are rare (often only a handful per hour during off-peak). Pump.fun creates hundreds of mints per hour, which is great for signal density but comes with different mechanics (Token-2022 mints, bonding-curve pricing, tokens not yet on DexScreener). Pump live trading would need a direct bonding-curve execution path — out of scope for phase 1 — so pump mode currently refuses live buys with a clear error.
+
+### Source precedence
+
+```
+  --source raydium|pump       (wins if passed)
+  SOURCE=raydium|pump          (falls back from env)
+  raydium                      (final default)
+```
+
+Explicit `--source` also clears any stale `DB_PATH` / `LOG_FILE` from your shell so pump sessions never silently land in the Raydium DB.
+
+---
 
 ## Setup
 
 ```bash
 npm install
-cp .env.example .env
-# fill in ANTHROPIC_API_KEY and WALLET_PRIVATE_KEY
-npm run build
+cp .env.example .env            # fill in ANTHROPIC_API_KEY, WALLET_PRIVATE_KEY, SOLANA_RPC_URL
+npm run build                   # optional; ts-node is used by all npm scripts
 ```
 
-Required env:
+### Required env
 
-- `ANTHROPIC_API_KEY` - from https://console.anthropic.com
-- `WALLET_PRIVATE_KEY` - base58-encoded Solana private key (Phantom / Solflare export)
-- `SOLANA_RPC_URL` / `SOLANA_WS_URL` - the public `api.mainnet-beta.solana.com` endpoint will 429 on almost every call. Use a dedicated RPC. Helius free tier (1M credits/month, 10 req/s) is enough for paper trading:
-   ```
-   SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
-   SOLANA_WS_URL=wss://mainnet.helius-rpc.com/?api-key=YOUR_KEY
-   ```
-   miper caps concurrent analyses at 3 and each makes ~3 RPC calls, so it stays comfortably under the 10 req/s ceiling.
+| Var | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | From https://console.anthropic.com |
+| `WALLET_PRIVATE_KEY` | Base58-encoded Solana private key (required for live mode; optional in simulation — an ephemeral key is generated if missing) |
+| `SOLANA_RPC_URL` / `SOLANA_WS_URL` | Dedicated RPC. The public `api.mainnet-beta.solana.com` endpoint will 429 on almost every call. Helius free tier (1M credits/month, 10 req/s) is enough for paper trading. |
 
-See `.env.example` for the full list.
+miper caps concurrent analyses at 6 and each makes ~3 RPC calls, so it stays comfortably under the 10 req/s ceiling.
 
-## Usage
+### Optional env
+
+Strategy knobs (all have defaults — see `.env.example`):
+
+| Var | What it does |
+|---|---|
+| `BUY_AMOUNT_SOL` | SOL spent per snipe. Default `0.05`. |
+| `EXIT_MODE` | `tiered` (default) sells in three tranches at TP1/TP2/TP3 — the original "compound profits" ladder. `all-in` sells the entire bag at `EXIT_AT_MULT` and ignores TP1/TP2/TP3. |
+| `EXIT_AT_MULT` | Multiplier at which `all-in` mode fully exits. Must be > 1. Ignored in tiered mode. Default `2`. |
+| `TAKE_PROFIT_1/2/3` | Tiered-mode only. Multipliers for the three sells. Must be strictly increasing. Default `2 / 3 / 5`. |
+| `SELL_PCT_TP1/2/3` | Tiered-mode only. Fraction of the original bag sold at each TP. Must sum to 100. Default `40 / 30 / 30`. |
+| `STOP_LOSS` | Fraction of entry price that triggers a full exit. Applies in both exit modes. Default `0.4` (exit at -60%). |
+| `MIN_AI_SCORE` | Score threshold the LLM must clear to trigger a buy (0-100). Default `70`. |
+| `MAX_SLIPPAGE_BPS` | Slippage tolerance in basis points. Default `300` (3%). |
+| `MIN_LIQUIDITY_USD` | Reject if pool liquidity below this. Raydium only. Default `5000`. |
+| `MAX_TOP_HOLDER_PCT` | Reject if the largest holder owns more than this. Raydium only. Default `30`. |
+| `REQUIRE_MINT_REVOKED` / `REQUIRE_FREEZE_REVOKED` | Treat tokens with live mint/freeze authority as unsafe. Default `true`. |
+| `MAX_OPEN_POSITIONS` | Cap on concurrent positions. Default `10`. |
+| `MAX_RUN_HOURS` | Auto-shutdown the snipe loop after N hours. `0` (default) disables — runs until SIGINT. Useful for unattended paper sessions. |
+| `CLOSE_ON_SHUTDOWN` | When `true`, the graceful shutdown handler sells every open/partial position at last-known price before exiting. Default `false`. Recommended `true` for live trading and bounded paper sessions. |
+| `SIMULATED_STARTING_SOL` | Virtual starting balance for paper-mode PnL display. Default `1.0`. |
+| `DB_PATH` / `LOG_FILE` | Override per-source defaults if you need custom paths. Leave unset to let source drive them. |
+| `MIPER_SAFETY_PRE_READ_DELAY_MS` | How long to sleep before the first on-chain read (ms). Default `1500`. |
+
+---
+
+## Commands
+
+Every command accepts `--source raydium|pump`. The `:pump` npm scripts are thin aliases.
 
 ```bash
-# Paper trading (default). Listens, analyzes, records simulated buys and sells.
-npm run simulate
+# Run the sniper end-to-end (listener + analyzer + trader + position monitor)
+npm run simulate                    # paper, Raydium
+npm run simulate:pump               # paper, pump.fun
+SIMULATE=false npm run snipe        # live, Raydium
+SIMULATE=false npx ts-node src/index.ts snipe --source pump   # refused: pump live not supported
 
-# Live mode. Sends real transactions.
-SIMULATE=false npm run snipe
+# Read-only inspection
+npm run status                      # open positions + PnL (Raydium DB)
+npm run status:pump                 # same, against pump DB
+npm run review                      # full summary: PnL, rejections, live-readiness
+npm run review:pump                 # same, against pump DB
 
 # Monitor existing positions without opening new ones
 npm run monitor
-
-# Show open positions and PnL summary
-npm run status
+npm run monitor:pump
 
 # Wallet balance
 npm run balance
+npm run balance:pump
 
 # Manually sell a position (ID from `status`)
-node dist/index.js sell 3 --pct 50
+npx ts-node src/index.ts sell 3 --pct 50 --source raydium
 ```
 
-## How it works
+---
+
+## How the pipeline works
 
 ```
-[Raydium pool detected]
+[listener: new mint detected via WebSocket log subscription]
+    -> analyzer gate (max 3 concurrent, skip duplicates)
     -> on-chain safety checks (mint/freeze authority, top holder, liquidity)
-    -> DexScreener market data
-    -> Claude AI scoring (0-100)
-    -> buy via Jupiter V6 if score >= MIN_AI_SCORE
-    -> monitor price every ~7s
-    -> sell at TP1/TP2/TP3 (partial) or stop-loss (full)
+         * 1500ms pre-read sleep + 3 retries for mint propagation lag
+         * auto-fallback to Token-2022 program for pump.fun mints
+         * pump: skip top-holder and liquidity checks (bonding curve holds ~100% by design)
+    -> market data
+         * Raydium: DexScreener, falls back to pool liquidity
+         * pump:    synthetic — priced from the known bonding-curve virtual reserves
+    -> enrich signal (pump only, in parallel):
+         * Metaplex metadata (name, symbol, URI)
+         * creator wallet history (recent tx count, oldest activity age)
+    -> Claude scoring (0-100)
+         * Raydium: absolute rubric (safety + liquidity + holder distribution)
+         * pump:    relative rubric, baselined to "typical pump.fun launch",
+                    grading on dev commitment, creator track record, metadata quality
+    -> buy if score >= MIN_AI_SCORE
+         * Raydium: Jupiter V6 swap
+         * pump: synthetic paper buy at bonding-curve initial price (no live buy)
+    -> position monitor polls price every ~7s
+         * Raydium: DexScreener priceNative
+         * pump:    bonding-curve account read (real-time, always available
+                    pre-graduation), falls back to DexScreener once the
+                    curve completes and the token moves to PumpSwap
+    -> partial sell at TP1 / TP2 / TP3, full exit at stop-loss
 ```
 
-All trades, rejections, and positions are stored in a local SQLite file (`sniper.db`).
+All trades, rejections, and positions land in the source-specific SQLite file (`sniper.db` or `pump.db`). Simulated trades are marked `simulated = 1` so paper PnL is observable via `status` / `review`.
 
-## Strategy tuning
+---
 
-Everything in `.env`:
+## Simulation vs live mode
 
-- `BUY_AMOUNT_SOL` - SOL per snipe
-- `TAKE_PROFIT_1/2/3` + `SELL_PCT_TP1/2/3` - TP multipliers and what fraction of the bag to sell at each (must sum to 100)
-- `STOP_LOSS` - fraction of entry price to trigger a full exit (e.g. `0.4` = -60%)
-- `MIN_AI_SCORE` - Claude's score threshold
-- `MAX_SLIPPAGE_BPS` - slippage tolerance (300 = 3%)
-- `MAX_OPEN_POSITIONS` - cap on concurrent positions
+`SIMULATE=true` (default):
 
-## Simulation mode details
-
-When `SIMULATE=true`:
-
-- Pool detection and safety checks use real on-chain data
+- Pool detection and safety checks hit real on-chain state
 - Claude scoring runs for real (API calls still cost)
-- Jupiter *quotes* are fetched, but swap transactions are not sent
-- All simulated trades are written to the DB with `simulated = 1`, so `miper status` shows paper PnL
+- Raydium: Jupiter *quotes* are fetched but swap transactions are not sent
+- Pump: buy is synthesized from the bonding-curve initial price (Jupiter is bypassed since it won't route fresh launches)
+- Every decision is written to the DB so PnL is observable
+
+`SIMULATE=false`:
+
+- Raydium: signs and sends real Jupiter swaps from `WALLET_PRIVATE_KEY`
+- Pump: returns an error ("phase 1 is paper-only") — see the [Token sources](#token-sources) table
+
+---
+
+## Propagation and retry tuning
+
+Fresh mints often aren't visible to every RPC node for a second or two after creation. The safety-check path:
+
+1. Sleeps `MIPER_SAFETY_PRE_READ_DELAY_MS` (default 1500 ms) before the first `getMint` call
+2. Retries up to 3 times with 500/1000/1500 ms backoff on failure
+3. For pump.fun mints, automatically falls back to the Token-2022 program ID when the classic SPL Token program rejects the owner
+
+If you're on a slow RPC and still see `TokenAccountNotFoundError` on every token, bump `MIPER_SAFETY_PRE_READ_DELAY_MS` higher or move to a faster RPC.
+
+---
+
+## File layout
+
+```
+src/
+  index.ts            CLI entry + command wiring
+  config.ts           env loading, typed config, program IDs, source resolution
+  logger.ts           colorized logger with optional file sink
+  db.ts               SQLite schema and queries (positions, trades, rejections)
+  listener.ts         generic LogListener + Raydium and pump.fun bindings
+  analyzer.ts         on-chain safety, market data, Claude scoring (per-source prompts)
+  metadata.ts         Metaplex token metadata PDA + decoder
+  creatorHistory.ts   creator wallet activity lookup + in-memory cache
+  bondingCurve.ts     pump.fun bonding-curve account decoder + price helper
+  trader.ts           Jupiter V6 swaps + synthetic pump paper trades
+  positions.ts        TP/SL monitoring loop
+  review.ts           PnL + live-readiness summary
+  concurrency.ts      InflightGate, withTimeout, retry helpers
+tests/                vitest unit tests per module
+```
+
+---
 
 ## Caveats
 
-- This is a personal tool. No warranty, use at your own risk with small amounts.
-- On-chain sniping is inherently racy and competitive. Faster RPCs help.
+- Personal tool. No warranty. Use at your own risk with small amounts.
+- On-chain sniping is racy and competitive — faster RPCs matter.
 - Claude can be wrong. Keep position sizes small.
-- The bot intentionally skips non-SOL pairs and tokens it has already seen.
-
-## Files
-
-- `src/index.ts` - CLI entry
-- `src/config.ts` - env loading and typed config
-- `src/logger.ts` - colorized logger
-- `src/db.ts` - SQLite schema and queries
-- `src/listener.ts` - Raydium pool discovery (WebSocket + polling fallback)
-- `src/analyzer.ts` - safety checks, DexScreener, Claude scoring
-- `src/trader.ts` - Jupiter V6 swap execution
-- `src/positions.ts` - TP/SL monitoring loop
+- Non-SOL pairs and previously-seen mints are skipped.
+- Never commit `.env` or the `*.db` files (both are gitignored).
+- Pump.fun live trading is not yet supported; stay in simulation for that source.

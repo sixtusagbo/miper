@@ -10,9 +10,15 @@ import bs58 from 'bs58';
 import fetch from 'node-fetch';
 import { Config, loadConfig, MIN_SOL_RESERVE, SOL_MINT_ADDRESS } from './config';
 import { logger } from './logger';
+import { PUMP_INITIAL_PRICE_SOL } from './analyzer';
 
 
 const JUPITER_BASE = 'https://quote-api.jup.ag/v6';
+
+// Phase 1 pump.fun support is paper-only. Live buys on pump-mode would need a
+// direct bonding-curve instruction path; Jupiter won't route fresh launches.
+const PUMP_LIVE_NOT_SUPPORTED =
+  'live pump.fun trading is not supported yet (phase 1 is paper-only)';
 
 export interface SwapResult {
   success: boolean;
@@ -174,6 +180,10 @@ export async function buyToken(
   amountSol: number,
   cfg: Config = loadConfig()
 ): Promise<SwapResult> {
+  if (cfg.source === 'pump') {
+    return pumpBuy(tokenMint, amountSol, cfg);
+  }
+
   const lamports = Math.floor(amountSol * LAMPORTS_PER_SOL);
 
   // Balance guard (skip in simulation — no real balance to check when using ephemeral key)
@@ -240,11 +250,93 @@ export async function buyToken(
   }
 }
 
+async function pumpBuy(
+  tokenMint: string,
+  amountSol: number,
+  cfg: Config
+): Promise<SwapResult> {
+  if (!cfg.simulate) {
+    return {
+      success: false,
+      txSignature: '',
+      amountIn: amountSol,
+      amountOut: 0,
+      pricePerToken: 0,
+      simulated: false,
+      error: PUMP_LIVE_NOT_SUPPORTED,
+    };
+  }
+  const pricePerToken = PUMP_INITIAL_PRICE_SOL;
+  const tokensOut = amountSol / pricePerToken;
+  logger.sim(
+    `BUY ${tokenMint} ${amountSol} SOL -> ${tokensOut.toFixed(0)} tokens @ ${pricePerToken.toExponential(4)} SOL (pump bonding-curve init price)`
+  );
+  return {
+    success: true,
+    txSignature: `SIM-${Date.now()}`,
+    amountIn: amountSol,
+    amountOut: tokensOut,
+    pricePerToken,
+    simulated: true,
+  };
+}
+
+async function pumpSell(
+  tokenMint: string,
+  amountTokens: number,
+  cfg: Config,
+  currentPriceSol: number | null
+): Promise<SwapResult> {
+  if (!cfg.simulate) {
+    return {
+      success: false,
+      txSignature: '',
+      amountIn: amountTokens,
+      amountOut: 0,
+      pricePerToken: 0,
+      simulated: false,
+      error: PUMP_LIVE_NOT_SUPPORTED,
+    };
+  }
+  // Paper sells must reflect the actual price the position monitor saw,
+  // otherwise stop-loss and TP exits both book at entry and every paper
+  // pump position closes at wash. Fall back to the bonding-curve init
+  // price only when no current price is available (e.g. manual sell on a
+  // token we never got a quote for) — that case still records a fake
+  // breakeven, but it's the best we can do without a live price feed.
+  const pricePerToken =
+    currentPriceSol !== null && Number.isFinite(currentPriceSol) && currentPriceSol > 0
+      ? currentPriceSol
+      : PUMP_INITIAL_PRICE_SOL;
+  const solOut = amountTokens * pricePerToken;
+  const priceSource =
+    pricePerToken === PUMP_INITIAL_PRICE_SOL ? 'pump bonding-curve init price' : 'last observed price';
+  logger.sim(
+    `SELL ${tokenMint} ${amountTokens.toFixed(0)} tokens -> ${solOut} SOL @ ${pricePerToken.toExponential(4)} SOL (${priceSource})`
+  );
+  return {
+    success: true,
+    txSignature: `SIM-${Date.now()}`,
+    amountIn: amountTokens,
+    amountOut: solOut,
+    pricePerToken,
+    simulated: true,
+  };
+}
+
 export async function sellToken(
   tokenMint: string,
   amountTokens: number,
-  cfg: Config = loadConfig()
+  cfg: Config = loadConfig(),
+  // Hint of the current market price, supplied by the caller when known.
+  // Required for accurate paper-mode pump bookkeeping; ignored on the
+  // Raydium path because Jupiter's outAmount is the source of truth.
+  currentPriceSol: number | null = null
 ): Promise<SwapResult> {
+  if (cfg.source === 'pump') {
+    return pumpSell(tokenMint, amountTokens, cfg, currentPriceSol);
+  }
+
   try {
     const decimals = await getMintDecimals(tokenMint, cfg);
     const rawAmount = BigInt(Math.floor(amountTokens * 10 ** decimals));
