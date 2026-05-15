@@ -126,9 +126,9 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
                     grading on dev commitment, creator track record, metadata quality
     -> buy if score >= MIN_AI_SCORE
          * Raydium: Jupiter V6 swap
-         * pump:    direct bonding-curve `buy` instruction (constant-product
-                    math with slippage-capped max_sol_cost). In paper mode the
-                    same flow records a synthetic fill at the curve init price.
+         * pump:    live `buy_v2` instruction via @pump-fun/pump-sdk, slippage
+                    capped. In paper mode the same flow records a synthetic
+                    fill at the curve init price.
     -> position monitor polls price every ~7s
          * Raydium: DexScreener priceNative
          * pump:    bonding-curve account read (real-time, always available
