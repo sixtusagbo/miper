@@ -8,7 +8,9 @@ const mocks = vi.hoisted(() => ({
   mockSendTransaction: vi.fn(),
   mockConfirmTransaction: vi.fn(),
   mockGetLatestBlockhash: vi.fn(),
+  mockGetTokenAccountBalance: vi.fn(),
   mockCreateAtaIdempotent: vi.fn(),
+  mockCreateCloseAccount: vi.fn(),
   mockFetch: vi.fn(),
   mockGetMint: vi.fn(),
 }));
@@ -23,6 +25,7 @@ vi.mock('@solana/web3.js', async () => {
     sendTransaction = mocks.mockSendTransaction;
     confirmTransaction = mocks.mockConfirmTransaction;
     getLatestBlockhash = mocks.mockGetLatestBlockhash;
+    getTokenAccountBalance = mocks.mockGetTokenAccountBalance;
     constructor(_url: string, _opts?: unknown) {}
   }
   return { ...actual, Connection: MockConnection };
@@ -33,6 +36,7 @@ vi.mock('@solana/spl-token', async () => {
   return {
     ...actual,
     createAssociatedTokenAccountIdempotentInstruction: mocks.mockCreateAtaIdempotent,
+    createCloseAccountInstruction: mocks.mockCreateCloseAccount,
     getMint: mocks.mockGetMint,
   };
 });
@@ -189,8 +193,10 @@ describe('pump live buy', () => {
 
 // Sell live's getAccountInfo sequence reads bonding curve, mint, and global
 // in that order (same as buy minus the balance check, which doesn't apply
-// when we're receiving SOL).
-function mockSellHappyPath() {
+// when we're receiving SOL). `remainingAtaBalance` is the token balance the
+// ATA reports AFTER the sell: '0' (default) means the position fully exited,
+// so the rent-reclaim close fires; non-zero means a partial sell.
+function mockSellHappyPath(remainingAtaBalance = '0') {
   mocks.mockGetAccountInfo
     .mockResolvedValueOnce({ data: buildBondingCurveData(), owner: new PublicKey('11111111111111111111111111111111') })
     .mockResolvedValueOnce({ data: Buffer.alloc(0), owner: TOKEN_2022_PROGRAM })
@@ -201,6 +207,14 @@ function mockSellHappyPath() {
   });
   mocks.mockSendTransaction.mockResolvedValue('SELLSIG12345abc');
   mocks.mockConfirmTransaction.mockResolvedValue({ value: { err: null } });
+  mocks.mockGetTokenAccountBalance.mockResolvedValue({
+    value: { amount: remainingAtaBalance },
+  });
+  mocks.mockCreateCloseAccount.mockReturnValue({
+    keys: [],
+    programId: new PublicKey('11111111111111111111111111111111'),
+    data: Buffer.alloc(0),
+  });
 }
 
 describe('pump live sell — direct bonding-curve path', () => {
@@ -216,10 +230,9 @@ describe('pump live sell — direct bonding-curve path', () => {
     expect(result.amountOut).toBeLessThan(0.06);
   });
 
-  it('sends a single transaction (no ATA-create prefix needed for sells)', async () => {
+  it('does not prepend an ATA-create instruction (the buy already created it)', async () => {
     mockSellHappyPath();
     await sellToken(MINT, 1_000_000, undefined, null);
-    expect(mocks.mockSendTransaction).toHaveBeenCalledTimes(1);
     expect(mocks.mockCreateAtaIdempotent).not.toHaveBeenCalled();
   });
 
@@ -243,6 +256,35 @@ describe('pump live sell — direct bonding-curve path', () => {
     const result = await sellToken(MINT, 1_000_000, undefined, null);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/InstructionError/);
+  });
+});
+
+describe('pump live sell — ATA rent reclaim', () => {
+  it('closes the emptied ATA after a full-exit sell', async () => {
+    mockSellHappyPath('0'); // ATA drained to zero by the sell
+    await sellToken(MINT, 1_000_000, undefined, null);
+    // Two transactions land: the sell, then the rent-reclaim close.
+    expect(mocks.mockSendTransaction).toHaveBeenCalledTimes(2);
+    expect(mocks.mockCreateCloseAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the ATA open when tokens remain after a partial sell', async () => {
+    mockSellHappyPath('500000'); // 0.5 tokens still held
+    await sellToken(MINT, 1_000_000, undefined, null);
+    expect(mocks.mockSendTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.mockCreateCloseAccount).not.toHaveBeenCalled();
+  });
+
+  it('still books the sell when the rent-reclaim close fails', async () => {
+    mockSellHappyPath('0');
+    // First sendTransaction is the sell (ok); second is the close (dropped).
+    mocks.mockSendTransaction
+      .mockReset()
+      .mockResolvedValueOnce('SELLSIG12345abc')
+      .mockRejectedValueOnce(new Error('close tx dropped'));
+    const result = await sellToken(MINT, 1_000_000, undefined, null);
+    expect(result.success).toBe(true);
+    expect(result.txSignature).toBe('SELLSIG12345abc');
   });
 });
 
