@@ -59,7 +59,8 @@ Strategy knobs (all have defaults — see `.env.example`):
 | `TAKE_PROFIT_1/2/3` | Tiered-mode only. Multipliers for the three sells. Must be strictly increasing. Default `2 / 3 / 5`. |
 | `SELL_PCT_TP1/2/3` | Tiered-mode only. Fraction of the original bag sold at each TP. Must sum to 100. Default `40 / 30 / 30`. |
 | `STOP_LOSS` | Fraction of entry price that triggers a full exit. Applies in both exit modes. Default `0.4` (exit at -60%). |
-| `MIN_AI_SCORE` | Score threshold the LLM must clear to trigger a buy (0-100). Default `70`. |
+| `MIN_AI_SCORE` | Score threshold the AI model must clear to trigger a buy (0-100). Default `70`. |
+| `AI_MODEL` | Scoring model; the provider is inferred from the prefix (`gpt-`/`o1`/`o3`/`chatgpt-` → OpenAI, `claude-` → Anthropic). Default `gpt-5-nano`. |
 | `MAX_SLIPPAGE_BPS` | Slippage tolerance in basis points. Default `300` (3%). |
 | `MIN_LIQUIDITY_USD` | Reject if pool liquidity below this. Raydium only. Default `5000`. |
 | `MAX_TOP_HOLDER_PCT` | Reject if the largest holder owns more than this. Raydium only. Default `30`. |
@@ -67,10 +68,16 @@ Strategy knobs (all have defaults — see `.env.example`):
 | `MAX_OPEN_POSITIONS` | Cap on concurrent positions. Default `10`. |
 | `MAX_RUN_HOURS` | Auto-shutdown the snipe loop after N hours. `0` (default) disables — runs until SIGINT. Useful for unattended paper sessions. |
 | `CLOSE_ON_SHUTDOWN` | When `true`, the graceful shutdown handler sells every open/partial position at last-known price before exiting. Default `false`. Recommended `true` for live trading and bounded paper sessions. |
+| `MAX_HOLD_MINUTES` | Force-exit a position open longer than N minutes without hitting TP/SL — drains non-movers so capital recycles. `0` (default) disables. |
+| `MAX_CONSECUTIVE_BUY_FAILURES` | Circuit breaker: graceful shutdown after N buys fail in a row (bad encoding, dead RPC, drained wallet). Resets on any successful buy. Default `5`; `0` disables. |
 | `SIMULATED_STARTING_SOL` | Virtual starting balance for paper-mode PnL display. Default `1.0`. |
 | `DB_PATH` / `LOG_FILE` | Override per-source defaults if you need custom paths. Leave unset to let source drive them. |
 | `MIPER_SAFETY_PRE_READ_DELAY_MS` | How long to sleep before the first on-chain read (ms). Default `1500`. |
-| `PUMP_PRIORITY_MICROLAMPORTS` | Compute-unit priority fee (µLamports per CU) on pump.fun direct buy/sell txs. Default `100000` (~$0.005 priority for a 200k-CU tx). Bump higher when transactions consistently fail to land. |
+| `BONDING_CURVE_CACHE_MS` | TTL for the pump bonding-curve price cache — cuts repeated `getAccountInfo` reads on the monitor loop. Default `5000`; `0` disables. |
+| `PUMP_PRIORITY_MICROLAMPORTS` | Compute-unit priority fee (µLamports per CU) on pump.fun buy/sell txs. Default `100000`. Bump higher when transactions consistently fail to land. |
+| `LOG_LEVEL` | `debug` / `info` / `warn` / `error` / `trade`. Default `info`. The file log captures `debug` detail regardless of this. |
+| `LOG_MAX_BYTES` | Rotate the log file past this size (the prior file becomes `.1`, `.2`, …). Default `104857600` (100 MB); `0` disables rotation. |
+| `LOG_MAX_FILES` | How many rotated log archives to keep. Default `5`. |
 
 ---
 
@@ -83,7 +90,7 @@ Every command accepts `--source raydium|pump`. The `:pump` npm scripts are thin 
 npm run simulate                    # paper, Raydium
 npm run simulate:pump               # paper, pump.fun
 SIMULATE=false npm run snipe        # live, Raydium
-SIMULATE=false npx ts-node src/index.ts snipe --source pump   # live, pump.fun
+SIMULATE=false npm run snipe:pump   # live, pump.fun
 
 # Read-only inspection
 npm run status                      # open positions + PnL (Raydium DB)
@@ -103,13 +110,15 @@ npm run balance:pump
 npx ts-node src/index.ts sell 3 --pct 50 --source raydium
 ```
 
+`make help` lists convenience targets — archiving a run's DB+log into `runs/`, log/score inspection, and `make snipe-pump-fresh` (archive the prior run, then start a live pump run).
+
 ---
 
 ## How the pipeline works
 
 ```
 [listener: new mint detected via WebSocket log subscription]
-    -> analyzer gate (max 3 concurrent, skip duplicates)
+    -> analyzer gate (max 6 concurrent, skip duplicates)
     -> on-chain safety checks (mint/freeze authority, top holder, liquidity)
          * 1500ms pre-read sleep + 3 retries for mint propagation lag
          * auto-fallback to Token-2022 program for pump.fun mints
@@ -129,12 +138,12 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
          * pump:    live `buy_v2` instruction via @pump-fun/pump-sdk, slippage
                     capped. In paper mode the same flow records a synthetic
                     fill at the curve init price.
-    -> position monitor polls price every ~7s
+    -> position monitor polls price every ~10s
          * Raydium: DexScreener priceNative
          * pump:    bonding-curve account read (real-time, always available
                     pre-graduation), falls back to DexScreener once the
                     curve completes and the token moves to PumpSwap
-    -> partial sell at TP1 / TP2 / TP3, full exit at stop-loss
+    -> exit: TP1/2/3 partials or an all-in target, stop-loss, or the hold-time cap
 ```
 
 All trades, rejections, and positions land in the source-specific SQLite file (`sniper.db` or `pump.db`). Simulated trades are marked `simulated = 1` so paper PnL is observable via `status` / `review`.
@@ -154,7 +163,7 @@ All trades, rejections, and positions land in the source-specific SQLite file (`
 `SIMULATE=false`:
 
 - Raydium: signs and sends real Jupiter swaps from `WALLET_PRIVATE_KEY`
-- Pump (active curve): signs and sends a direct `buy`/`sell` instruction to the pump.fun program with slippage protection. ATA is created idempotently on first buy.
+- Pump (active curve): signs and sends a `buy_v2`/`sell_v2` instruction built by `@pump-fun/pump-sdk`, with slippage protection. The token account is created on first buy and closed (rent reclaimed) after a full exit.
 - Pump (graduated curve): falls back to Jupiter — the token has moved to PumpSwap AMM and aggregators route it normally.
 
 ---
@@ -184,10 +193,11 @@ src/
   metadata.ts         Metaplex token metadata PDA + decoder
   creatorHistory.ts   creator wallet activity lookup + in-memory cache
   bondingCurve.ts     pump.fun bonding-curve account decoder + price helper
-  trader.ts           Jupiter V6 swaps + synthetic pump paper trades
-  positions.ts        TP/SL monitoring loop
+  trader.ts           Jupiter V6 swaps + live pump buy/sell via @pump-fun/pump-sdk
+  positions.ts        TP/SL + time-exit monitoring loop
   review.ts           PnL + live-readiness summary
   concurrency.ts      InflightGate, withTimeout, retry helpers
+  rpcCounter.ts       per-method RPC call counter for the status heartbeat
 tests/                vitest unit tests per module
 ```
 
