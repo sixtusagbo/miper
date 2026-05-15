@@ -36,10 +36,12 @@ import {
 
 const JUPITER_BASE = 'https://quote-api.jup.ag/v6';
 
-// Pump's buy/sell instructions each use ~150k CUs on the happy path; 200k
-// leaves margin for the prepended ATA-create + compute-budget ixs without
-// paying for unused units.
-const PUMP_COMPUTE_UNIT_LIMIT = 200_000;
+// Compute-unit limit for pump buy/sell txs. A first-time buy bundles a
+// Token-2022 ATA-create (~25k CU) ahead of the pump buy itself (~120-160k),
+// which crowds a 200k ceiling; 250k clears it with headroom. The priority
+// fee scales with this limit, but the absolute difference is a rounding
+// error (~0.000005 SOL per tx).
+const PUMP_COMPUTE_UNIT_LIMIT = 250_000;
 
 export interface SwapResult {
   success: boolean;
