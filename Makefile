@@ -3,7 +3,7 @@
 # nuke targets that get used between paper-trading runs.
 
 .PHONY: help install build test test-watch typecheck check \
-	sim sim-pump sim-pump-fresh \
+	sim sim-pump sim-pump-fresh snipe-pump snipe-pump-fresh \
 	monitor-pump status-pump review-pump balance-pump \
 	stats-pump scores-pump exits-pump tail-pump \
 	archive-pump archive-raydium archive-all \
@@ -16,11 +16,16 @@ LABEL ?= unlabeled
 help:
 	@echo "miper — common targets (default goal)"
 	@echo ""
-	@echo "  Run"
+	@echo "  Run — paper"
 	@echo "    sim-pump-fresh   archive pump state under runs/, then start simulate:pump"
 	@echo "                     (pass LABEL=Rxx to tag the archived dir)"
 	@echo "    sim-pump         start simulate:pump (keeps existing state)"
 	@echo "    sim              start simulate (raydium source)"
+	@echo ""
+	@echo "  Run — LIVE (real SOL; needs SIMULATE=false in .env)"
+	@echo "    snipe-pump-fresh archive pump state under runs/, then start a live pump run"
+	@echo "                     (pass LABEL=Rxx to tag the archived dir)"
+	@echo "    snipe-pump       start a live pump run (keeps existing state)"
 	@echo ""
 	@echo "  Inspect a session (reads pump.log / pump.db)"
 	@echo "    stats-pump       pipeline counts (detected/analyzed/skipping/BUYING/exits)"
@@ -64,6 +69,15 @@ sim-pump:
 # DATABASE — losing R10a/b/c data after R11 was the lesson here.
 sim-pump-fresh: archive-pump
 	npm run simulate:pump
+
+# Live pump run — real SOL. SIMULATE=false must be set in .env; --source pump
+# is explicit so the run can't silently fall back to the Raydium DB.
+snipe-pump:
+	npm run snipe:pump
+
+# Fresh live run: archive the prior run's DB+log first, same as sim-pump-fresh.
+snipe-pump-fresh: archive-pump
+	npm run snipe:pump
 
 # ---- inspect -------------------------------------------------------------
 
