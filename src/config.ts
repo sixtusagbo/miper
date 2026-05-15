@@ -87,6 +87,12 @@ export interface Config {
   // Older archives are dropped when this cap is hit. Ignored when
   // logMaxBytes=0.
   logMaxFiles: number;
+  // Compute-unit priority fee (micro-lamports per CU) on pump.fun direct
+  // buy/sell transactions. Sniping needs front-of-line in the leader slot,
+  // so we set a non-zero default; tune up when you see consistent
+  // "transaction not landing" failures. 100_000 * 200k CU = 20k lamports
+  // (~$0.005 priority) per snipe.
+  pumpPriorityMicrolamports: number;
 }
 
 function required(name: string): string {
@@ -224,6 +230,7 @@ export function loadConfig(): Config {
     bondingCurveCacheMs: numberFromEnv('BONDING_CURVE_CACHE_MS', 5000),
     logMaxBytes: numberFromEnv('LOG_MAX_BYTES', 100 * 1024 * 1024),
     logMaxFiles: numberFromEnv('LOG_MAX_FILES', 5),
+    pumpPriorityMicrolamports: numberFromEnv('PUMP_PRIORITY_MICROLAMPORTS', 100_000),
   };
 
   validateConfig(config);
@@ -272,6 +279,11 @@ function validateConfig(c: Config): void {
   }
   if (c.logMaxFiles < 1) {
     throw new Error(`LOG_MAX_FILES must be >= 1, got ${c.logMaxFiles}`);
+  }
+  if (c.pumpPriorityMicrolamports < 0) {
+    throw new Error(
+      `PUMP_PRIORITY_MICROLAMPORTS must be >= 0, got ${c.pumpPriorityMicrolamports}`
+    );
   }
 }
 

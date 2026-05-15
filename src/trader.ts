@@ -1,24 +1,47 @@
 import {
+  ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
+  TransactionMessage,
   VersionedTransaction,
   LAMPORTS_PER_SOL,
 } from '@solana/web3.js';
-import { getAssociatedTokenAddress, getMint } from '@solana/spl-token';
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddress,
+  getAssociatedTokenAddressSync,
+  getMint,
+} from '@solana/spl-token';
 import bs58 from 'bs58';
 import fetch from 'node-fetch';
 import { Config, loadConfig, MIN_SOL_RESERVE, SOL_MINT_ADDRESS } from './config';
 import { logger } from './logger';
 import { PUMP_INITIAL_PRICE_SOL } from './analyzer';
+import { decodeBondingCurve } from './bondingCurve';
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  PUMP_TOKEN_BASE_UNITS,
+  applySlippageMaxSol,
+  buildBuyInstruction,
+  computeBuyTokensOut,
+  getBondingCurvePda,
+  readPumpFeeRecipient,
+} from './pumpProgram';
 
 
 const JUPITER_BASE = 'https://quote-api.jup.ag/v6';
 
-// Phase 1 pump.fun support is paper-only. Live buys on pump-mode would need a
-// direct bonding-curve instruction path; Jupiter won't route fresh launches.
-const PUMP_LIVE_NOT_SUPPORTED =
-  'live pump.fun trading is not supported yet (phase 1 is paper-only)';
+// Pump's buy instruction uses ~150k CUs on the happy path; 200k leaves
+// margin for the prepended ATA-create + compute-budget ixs without paying
+// for unused units.
+const PUMP_COMPUTE_UNIT_LIMIT = 200_000;
+
+// Sell still falls back to this until pumpSellLive ships in the next commit.
+// Buy is now live; sell stays paper-only for one more atomic step so each
+// flow ships with its own focused test pass.
+const PUMP_SELL_LIVE_NOT_SUPPORTED =
+  'live pump.fun sells not wired yet (buy is live; sell ships next)';
 
 export interface SwapResult {
   success: boolean;
@@ -255,17 +278,12 @@ async function pumpBuy(
   amountSol: number,
   cfg: Config
 ): Promise<SwapResult> {
-  if (!cfg.simulate) {
-    return {
-      success: false,
-      txSignature: '',
-      amountIn: amountSol,
-      amountOut: 0,
-      pricePerToken: 0,
-      simulated: false,
-      error: PUMP_LIVE_NOT_SUPPORTED,
-    };
-  }
+  return cfg.simulate
+    ? pumpBuySim(tokenMint, amountSol)
+    : pumpBuyLive(tokenMint, amountSol, cfg);
+}
+
+function pumpBuySim(tokenMint: string, amountSol: number): SwapResult {
   const pricePerToken = PUMP_INITIAL_PRICE_SOL;
   const tokensOut = amountSol / pricePerToken;
   logger.sim(
@@ -279,6 +297,157 @@ async function pumpBuy(
     pricePerToken,
     simulated: true,
   };
+}
+
+function pumpFailure(amountIn: number, error: string): SwapResult {
+  return {
+    success: false,
+    txSignature: '',
+    amountIn,
+    amountOut: 0,
+    pricePerToken: 0,
+    simulated: false,
+    error,
+  };
+}
+
+async function detectTokenProgram(
+  connection: Connection,
+  mint: PublicKey
+): Promise<PublicKey> {
+  const info = await connection.getAccountInfo(mint, 'confirmed');
+  if (!info) throw new Error(`mint ${mint.toBase58()} not found`);
+  return info.owner;
+}
+
+async function pumpBuyLive(
+  tokenMint: string,
+  amountSol: number,
+  cfg: Config
+): Promise<SwapResult> {
+  try {
+    const connection = getConnection(cfg);
+    const wallet = getWallet(cfg);
+    const mintPk = new PublicKey(tokenMint);
+
+    const bondingCurvePda = getBondingCurvePda(mintPk);
+    const bcInfo = await connection.getAccountInfo(bondingCurvePda, 'confirmed');
+    if (!bcInfo?.data) {
+      return pumpFailure(amountSol, 'bonding curve account not found');
+    }
+    const state = decodeBondingCurve(Buffer.from(bcInfo.data));
+    if (state.complete) {
+      return pumpFailure(amountSol, 'bonding curve already graduated');
+    }
+    if (!state.creator) {
+      return pumpFailure(
+        amountSol,
+        'bonding curve missing creator (pre-creator-fees layout)'
+      );
+    }
+
+    const tokenProgram = await detectTokenProgram(connection, mintPk);
+    const feeRecipient = await readPumpFeeRecipient(connection);
+
+    const balance = await getWalletBalance(cfg);
+    if (balance - amountSol < MIN_SOL_RESERVE) {
+      return pumpFailure(
+        amountSol,
+        `insufficient balance: ${balance.toFixed(4)} SOL, need ${(amountSol + MIN_SOL_RESERVE).toFixed(4)}`
+      );
+    }
+
+    const lamportsIn = BigInt(Math.floor(amountSol * LAMPORTS_PER_SOL));
+    const tokensOutBaseUnits = computeBuyTokensOut(
+      state.virtualSolReserves,
+      state.virtualTokenReserves,
+      lamportsIn
+    );
+    if (tokensOutBaseUnits <= 0n) {
+      return pumpFailure(amountSol, 'curve math returned zero tokens');
+    }
+    const maxSolCost = applySlippageMaxSol(lamportsIn, cfg.maxSlippageBps);
+
+    const userAta = getAssociatedTokenAddressSync(
+      mintPk,
+      wallet.publicKey,
+      false,
+      tokenProgram,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const ataIx = createAssociatedTokenAccountIdempotentInstruction(
+      wallet.publicKey,
+      userAta,
+      wallet.publicKey,
+      mintPk,
+      tokenProgram,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const buyIx = buildBuyInstruction({
+      user: wallet.publicKey,
+      mint: mintPk,
+      creator: state.creator,
+      tokenProgram,
+      userAta,
+      feeRecipient,
+      amount: tokensOutBaseUnits,
+      maxSolCost,
+      trackVolume: false,
+    });
+
+    const cuLimitIx = ComputeBudgetProgram.setComputeUnitLimit({
+      units: PUMP_COMPUTE_UNIT_LIMIT,
+    });
+    const cuPriceIx = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: cfg.pumpPriorityMicrolamports,
+    });
+
+    const { blockhash, lastValidBlockHeight } =
+      await connection.getLatestBlockhash('confirmed');
+    const message = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: blockhash,
+      instructions: [cuLimitIx, cuPriceIx, ataIx, buyIx],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(message);
+    tx.sign([wallet]);
+
+    const signature = await connection.sendTransaction(tx, {
+      skipPreflight: true,
+      maxRetries: 2,
+    });
+    const confirmation = await connection.confirmTransaction(
+      { signature, blockhash, lastValidBlockHeight },
+      'confirmed'
+    );
+    if (confirmation.value.err) {
+      return pumpFailure(
+        amountSol,
+        `pump buy tx failed: ${JSON.stringify(confirmation.value.err)}`
+      );
+    }
+
+    const tokensOut = Number(tokensOutBaseUnits) / PUMP_TOKEN_BASE_UNITS;
+    const pricePerToken = tokensOut > 0 ? amountSol / tokensOut : 0;
+    logger.position(
+      'BUY',
+      tokenMint,
+      `${amountSol} SOL -> ${tokensOut.toFixed(4)} tokens (${signature.slice(0, 8)}..., pump direct)`
+    );
+    return {
+      success: true,
+      txSignature: signature,
+      amountIn: amountSol,
+      amountOut: tokensOut,
+      pricePerToken,
+      simulated: false,
+    };
+  } catch (err) {
+    const message = (err as Error).message;
+    logger.error(`pumpBuyLive ${tokenMint}: ${message}`);
+    return pumpFailure(amountSol, message);
+  }
 }
 
 async function pumpSell(
@@ -295,7 +464,7 @@ async function pumpSell(
       amountOut: 0,
       pricePerToken: 0,
       simulated: false,
-      error: PUMP_LIVE_NOT_SUPPORTED,
+      error: PUMP_SELL_LIVE_NOT_SUPPORTED,
     };
   }
   // Paper sells must reflect the actual price the position monitor saw,

@@ -11,6 +11,10 @@ import { PROGRAM_IDS } from './config';
 // is at 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P.
 
 export const PUMP_PROGRAM_ID = PROGRAM_IDS.PUMP_FUN;
+// Pump.fun mints decimals are fixed by the program's global config; both
+// the curve price math and trader's human-unit conversion lean on this.
+export const PUMP_TOKEN_DECIMALS = 6;
+export const PUMP_TOKEN_BASE_UNITS = 10 ** PUMP_TOKEN_DECIMALS;
 // Separate program that owns the fee_config PDA; routed to from buy/sell
 // for fee accounting. Address is hardcoded in the IDL.
 export const PUMP_FEE_PROGRAM_ID = new PublicKey(
