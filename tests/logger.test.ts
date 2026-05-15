@@ -16,6 +16,9 @@ beforeEach(() => {
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'info';
   process.env.LOG_FILE = logPath;
+  // Pin the source so the LOG_FILE-unset test resolves logFile to null
+  // rather than falling through to the pump default (./pump.log).
+  process.env.SOURCE = 'raydium';
   delete process.env.LOG_MAX_BYTES;
   delete process.env.LOG_MAX_FILES;
   resetConfigCache();
