@@ -432,6 +432,31 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-3 — first 2h attempt; circuit breaker tripped at 12 min
+**Date:** 2026-05-15
+**Code state:** post-SDK migration; shutdown-sell timeout widened to 30s (`4ef9918`). Launched with `make snipe-pump-fresh LABEL=R-live-3`.
+**Config:** LIVE, `--source pump`. Validation sizing — `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_SLIPPAGE_BPS=500`, `PUMP_PRIORITY_MICROLAMPORTS=100000`, `MIN_AI_SCORE=70` (gpt-5-nano), `EXIT_MODE=all-in` 3×, `MAX_CONSECUTIVE_BUY_FAILURES=3`.
+**Duration:** ~12.5 min (20:27:31 → 20:39:59; circuit-breaker shutdown — did not reach the 2h cap).
+
+| Metric | Value |
+|---|---|
+| BUYING attempts | 12 |
+| Buys landed | 4 |
+| Buy failures | 8 — 6× `6002` slippage, 2× `block height exceeded` |
+| Positions | 4 opened, 4 closed |
+| Realized PnL | **−0.0154 SOL** (spent 0.080, received 0.065) |
+| Outcomes | 1 stop-loss (−0.014), 2 ~breakeven exits, 1 manually reconciled at breakeven |
+
+**Outcome:** 67% buy-failure rate. The circuit breaker tripped on 3 consecutive failures and shut down at 12.5 min — no 2h baseline yet. The 4 buys that landed produced zero winners.
+
+**Learning:**
+- Root cause is landing latency, not a bug. The bot is too slow: the curve moves >5% between our quote and the tx landing (`6002` slippage revert) or the tx expires before confirming (`block height exceeded`). `PUMP_PRIORITY_MICROLAMPORTS=100000` is far too low — raised to `1000000` for R-live-4.
+- The shutdown sweep stranded a position again (`2N4Wf`) — its sell couldn't land within the 30s timeout (same latency). Manually sold at breakeven; DB reconciled.
+- The breaker at 3 trips on slippage *clusters*, not just systematic faults — 3 hot launches in a row is enough. Now that the encoding is proven, the threshold should be raised so a measurement run can actually complete.
+- Across R-live-2 + R-live-3: 7 landed buys, 1 winner. The code works; the strategy is unproven; no complete run yet.
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
