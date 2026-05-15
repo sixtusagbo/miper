@@ -1,6 +1,6 @@
 # miper
 
-Autonomous Solana memecoin sniping bot. Full spec: `miper-spec.md`. Operational playbook: `RUNNING.md`. Phase 2 plan (live pump trading): `PHASE-2.md`.
+Autonomous Solana memecoin sniping bot. Full spec: `miper-spec.md`. Operational playbook: `RUNNING.md`.
 
 ## What it does
 
@@ -17,7 +17,8 @@ Listens for new Raydium AMM pools or pump.fun launches, runs on-chain safety che
 - `src/metadata.ts` — Metaplex token metadata PDA + decoder
 - `src/creatorHistory.ts` — creator wallet activity lookup with TTL cache
 - `src/bondingCurve.ts` — pump.fun bonding-curve account decoder + price helper
-- `src/trader.ts` — Jupiter V6 swaps (Raydium) + synthetic pump paper trades
+- `src/pumpProgram.ts` — pump.fun PDAs, instruction discriminators, buy/sell instruction builders, constant-product math
+- `src/trader.ts` — Jupiter V6 swaps (Raydium + pump-graduated) and direct pump bonding-curve buy/sell
 - `src/positions.ts` — TP/SL monitoring loop; per-source price oracle dispatch
 - `src/review.ts` — PnL summary + live-readiness checklist
 - `src/concurrency.ts` — InflightGate, withTimeout, retry helpers
@@ -28,7 +29,7 @@ Listens for new Raydium AMM pools or pump.fun launches, runs on-chain safety che
 | Source | Stream | Default DB | Default log | Live trading |
 |---|---|---|---|---|
 | `raydium` *(default)* | Raydium AMM pool inits | `./sniper.db` | none | Jupiter V6 |
-| `pump` | pump.fun mint creates (Token-2022) | `./pump.db` | `./pump.log` | **paper-only (Phase 1)** |
+| `pump` | pump.fun mint creates (Token-2022 / SPL) | `./pump.db` | `./pump.log` | Direct bonding-curve `buy`/`sell` ix; Jupiter fallback once curve graduates |
 
 Source selection: `--source` flag wins over `SOURCE` env, env wins over the `'raydium'` default. Explicit `--source` clears any stale `DB_PATH` / `LOG_FILE` shell exports so pump runs never silently land in the Raydium DB.
 
