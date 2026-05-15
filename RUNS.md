@@ -1,6 +1,6 @@
-# Paper-Trading Run Log
+# Run Log
 
-A condensed history of paper-trading sessions on `pump-fun` so we have a reference before each `pump.db` / `pump.log` nuke. Append a new entry per meaningful run; old runs aren't backfilled in detail because the code state changes between them.
+A condensed history of paper-trading and live runs on `pump-fun` so we have a reference before each `pump.db` / `pump.log` nuke. Append a new entry per meaningful run; old runs aren't backfilled in detail because the code state changes between them.
 
 For each run record: date, code state, config, pipeline metrics, score distribution highlights, realized PnL, cost (if known), and what we learned.
 
@@ -384,6 +384,26 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 - `STATUS` heartbeat every 15 min: `closed` and `stopped` counts should grow continuously, not stall after hour 1.
 - `listener heartbeat`: events should stay non-zero. If a "WebSocket may be dead" appears, look for "Listener re-subscribed" within the next 5 min — its absence is the bug recurring.
 - `rpc:` line: `getAccountInfo` growth rate reflects open-bag size × tick rate; should NOT flatline.
+
+---
+
+## Run R-live-1 — first live pump run; pump V2 program upgrade
+**Date:** 2026-05-15
+**Code state:** circuit breaker shipped (`ed07789`); live pump buy/sell still on the hand-rolled legacy `buy` instruction (pre-SDK migration).
+**Config:** LIVE (`SIMULATE=false`), `--source pump`. Validation sizing: `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_SLIPPAGE_BPS=500`, `MIN_AI_SCORE=70` (gpt-5-nano), `EXIT_MODE=all-in` 3×, `MAX_CONSECUTIVE_BUY_FAILURES=3`. Wallet funded with 0.3135 SOL.
+**Duration:** ~33 s (15:02:09 → 15:02:42; circuit-breaker shutdown).
+
+| Metric | Value |
+|---|---|
+| BUYING attempts | 3 (AI scores 72 / 72 / 75) |
+| Buy failures | 3 — all `InstructionError [3, Custom:6062]` |
+| Positions opened | 0 |
+| Realized PnL | 0 SOL |
+| Cost | ~0.0001 SOL (3 reverted-tx fees; not DB-tracked) |
+
+**Outcome:** every buy reverted with pump program error `6062 BuybackFeeRecipientMissing`. The consecutive-buy-failure circuit breaker tripped at 3 and shut down gracefully — 0 positions opened, 0 SOL lost.
+
+**Learning:** pump.fun had shipped a V2 program upgrade (`buy_v2`/`sell_v2`, a cashback/buyback system). The hand-rolled legacy `buy` matched the IDL's *static* account list, but the program now also requires buyback fee-recipient accounts passed as *remaining accounts*, which the static IDL doesn't surface. Hand-rolling instructions against a fast-moving program is a maintenance trap — migrated live buy/sell to the official `@pump-fun/pump-sdk` (`buy_v2`/`sell_v2`, commit `40e58a4`). The validation design held: small sizing plus the 3-strike breaker meant a wrong instruction cost ~$0 and surfaced an exact, fixable error in 33 seconds — exactly what a first live run is for.
 
 ---
 
