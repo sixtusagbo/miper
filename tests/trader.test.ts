@@ -179,19 +179,6 @@ describe('sellToken (pump source)', () => {
     expect(result.pricePerToken).toBeCloseTo(initPrice, 12);
   });
 
-  it('refuses live pump sells', async () => {
-    process.env.SIMULATE = 'false';
-    const { Keypair } = await import('@solana/web3.js');
-    const bs58 = (await import('bs58')).default;
-    process.env.WALLET_PRIVATE_KEY = bs58.encode(Keypair.generate().secretKey);
-    resetConfigCache();
-
-    vi.resetModules();
-    const { sellToken: sell } = await import('../src/trader');
-    const result = await sell(VALID_MINT, 1_000_000, undefined, 1e-8);
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/pump\.fun/);
-  });
 });
 
 describe('sellToken (simulate)', () => {

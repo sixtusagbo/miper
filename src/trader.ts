@@ -23,8 +23,11 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   PUMP_TOKEN_BASE_UNITS,
   applySlippageMaxSol,
+  applySlippageMinSol,
   buildBuyInstruction,
+  buildSellInstruction,
   computeBuyTokensOut,
+  computeSellSolOut,
   getBondingCurvePda,
   readPumpFeeRecipient,
 } from './pumpProgram';
@@ -32,16 +35,10 @@ import {
 
 const JUPITER_BASE = 'https://quote-api.jup.ag/v6';
 
-// Pump's buy instruction uses ~150k CUs on the happy path; 200k leaves
-// margin for the prepended ATA-create + compute-budget ixs without paying
-// for unused units.
+// Pump's buy/sell instructions each use ~150k CUs on the happy path; 200k
+// leaves margin for the prepended ATA-create + compute-budget ixs without
+// paying for unused units.
 const PUMP_COMPUTE_UNIT_LIMIT = 200_000;
-
-// Sell still falls back to this until pumpSellLive ships in the next commit.
-// Buy is now live; sell stays paper-only for one more atomic step so each
-// flow ships with its own focused test pass.
-const PUMP_SELL_LIVE_NOT_SUPPORTED =
-  'live pump.fun sells not wired yet (buy is live; sell ships next)';
 
 export interface SwapResult {
   success: boolean;
@@ -456,17 +453,15 @@ async function pumpSell(
   cfg: Config,
   currentPriceSol: number | null
 ): Promise<SwapResult> {
-  if (!cfg.simulate) {
-    return {
-      success: false,
-      txSignature: '',
-      amountIn: amountTokens,
-      amountOut: 0,
-      pricePerToken: 0,
-      simulated: false,
-      error: PUMP_SELL_LIVE_NOT_SUPPORTED,
-    };
-  }
+  if (cfg.simulate) return pumpSellSim(tokenMint, amountTokens, currentPriceSol);
+  return pumpSellLive(tokenMint, amountTokens, cfg);
+}
+
+function pumpSellSim(
+  tokenMint: string,
+  amountTokens: number,
+  currentPriceSol: number | null
+): SwapResult {
   // Paper sells must reflect the actual price the position monitor saw,
   // otherwise stop-loss and TP exits both book at entry and every paper
   // pump position closes at wash. Fall back to the bonding-curve init
@@ -493,19 +488,158 @@ async function pumpSell(
   };
 }
 
-export async function sellToken(
+function pumpSellFailure(amountTokens: number, error: string): SwapResult {
+  return {
+    success: false,
+    txSignature: '',
+    amountIn: amountTokens,
+    amountOut: 0,
+    pricePerToken: 0,
+    simulated: false,
+    error,
+  };
+}
+
+async function pumpSellLive(
   tokenMint: string,
   amountTokens: number,
-  cfg: Config = loadConfig(),
-  // Hint of the current market price, supplied by the caller when known.
-  // Required for accurate paper-mode pump bookkeeping; ignored on the
-  // Raydium path because Jupiter's outAmount is the source of truth.
-  currentPriceSol: number | null = null
+  cfg: Config
 ): Promise<SwapResult> {
-  if (cfg.source === 'pump') {
-    return pumpSell(tokenMint, amountTokens, cfg, currentPriceSol);
-  }
+  try {
+    const connection = getConnection(cfg);
+    const mintPk = new PublicKey(tokenMint);
+    const bondingCurvePda = getBondingCurvePda(mintPk);
 
+    let bcInfo: Awaited<ReturnType<Connection['getAccountInfo']>>;
+    try {
+      bcInfo = await connection.getAccountInfo(bondingCurvePda, 'confirmed');
+    } catch (err) {
+      // RPC failed reading the curve. We can't tell graduated from blip, so
+      // try Jupiter — it'll succeed for graduated tokens and fail cleanly
+      // for active curves (which it can't route anyway).
+      logger.debug(`pumpSellLive curve read failed (${(err as Error).message}); trying Jupiter`);
+      return jupiterSell(tokenMint, amountTokens, cfg);
+    }
+
+    // No account or complete=true means the curve graduated; the mint moved
+    // to PumpSwap AMM and Jupiter routes it.
+    if (!bcInfo?.data) {
+      logger.info(`bonding curve closed for ${tokenMint}; selling via Jupiter (post-graduation)`);
+      return jupiterSell(tokenMint, amountTokens, cfg);
+    }
+    const state = decodeBondingCurve(Buffer.from(bcInfo.data));
+    if (state.complete) {
+      logger.info(`bonding curve complete for ${tokenMint}; selling via Jupiter (post-graduation)`);
+      return jupiterSell(tokenMint, amountTokens, cfg);
+    }
+    if (!state.creator) {
+      return pumpSellFailure(
+        amountTokens,
+        'bonding curve missing creator (pre-creator-fees layout)'
+      );
+    }
+
+    const wallet = getWallet(cfg);
+    const tokenProgram = await detectTokenProgram(connection, mintPk);
+    const feeRecipient = await readPumpFeeRecipient(connection);
+
+    const amountBaseUnits = BigInt(Math.floor(amountTokens * PUMP_TOKEN_BASE_UNITS));
+    if (amountBaseUnits <= 0n) {
+      return pumpSellFailure(amountTokens, 'amount too small');
+    }
+    const expectedSolOut = computeSellSolOut(
+      state.virtualSolReserves,
+      state.virtualTokenReserves,
+      amountBaseUnits
+    );
+    if (expectedSolOut <= 0n) {
+      return pumpSellFailure(amountTokens, 'curve math returned zero SOL out');
+    }
+    const minSolOutput = applySlippageMinSol(expectedSolOut, cfg.maxSlippageBps);
+
+    const userAta = getAssociatedTokenAddressSync(
+      mintPk,
+      wallet.publicKey,
+      false,
+      tokenProgram,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+
+    const sellIx = buildSellInstruction({
+      user: wallet.publicKey,
+      mint: mintPk,
+      creator: state.creator,
+      tokenProgram,
+      userAta,
+      feeRecipient,
+      amount: amountBaseUnits,
+      minSolOutput,
+    });
+
+    const cuLimitIx = ComputeBudgetProgram.setComputeUnitLimit({
+      units: PUMP_COMPUTE_UNIT_LIMIT,
+    });
+    const cuPriceIx = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: cfg.pumpPriorityMicrolamports,
+    });
+
+    const { blockhash, lastValidBlockHeight } =
+      await connection.getLatestBlockhash('confirmed');
+    const message = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: blockhash,
+      instructions: [cuLimitIx, cuPriceIx, sellIx],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(message);
+    tx.sign([wallet]);
+
+    const signature = await connection.sendTransaction(tx, {
+      skipPreflight: true,
+      maxRetries: 2,
+    });
+    const confirmation = await connection.confirmTransaction(
+      { signature, blockhash, lastValidBlockHeight },
+      'confirmed'
+    );
+    if (confirmation.value.err) {
+      return pumpSellFailure(
+        amountTokens,
+        `pump sell tx failed: ${JSON.stringify(confirmation.value.err)}`
+      );
+    }
+
+    // Book the trade at the curve-implied price — actual SOL delivered may
+    // be a hair higher if the program rounded our minSolOutput up, but the
+    // computed expected is the conservative figure for PnL accounting.
+    const solOut = Number(expectedSolOut) / LAMPORTS_PER_SOL;
+    const pricePerToken = amountTokens > 0 ? solOut / amountTokens : 0;
+    logger.position(
+      'SELL',
+      tokenMint,
+      `${amountTokens.toFixed(4)} tokens -> ${solOut.toFixed(6)} SOL (${signature.slice(0, 8)}..., pump direct)`
+    );
+    return {
+      success: true,
+      txSignature: signature,
+      amountIn: amountTokens,
+      amountOut: solOut,
+      pricePerToken,
+      simulated: false,
+    };
+  } catch (err) {
+    const message = (err as Error).message;
+    logger.error(`pumpSellLive ${tokenMint}: ${message}`);
+    return pumpSellFailure(amountTokens, message);
+  }
+}
+
+// Token → SOL via Jupiter V6. Used by Raydium and pump-post-graduation; pump
+// pre-graduation goes through pumpSellLive's direct curve instruction.
+async function jupiterSell(
+  tokenMint: string,
+  amountTokens: number,
+  cfg: Config
+): Promise<SwapResult> {
   try {
     const decimals = await getMintDecimals(tokenMint, cfg);
     const rawAmount = BigInt(Math.floor(amountTokens * 10 ** decimals));
@@ -554,7 +688,7 @@ export async function sellToken(
     };
   } catch (err) {
     const message = (err as Error).message;
-    logger.error(`sellToken failed for ${tokenMint}: ${message}`);
+    logger.error(`jupiterSell failed for ${tokenMint}: ${message}`);
     return {
       success: false,
       txSignature: '',
@@ -565,4 +699,19 @@ export async function sellToken(
       error: message,
     };
   }
+}
+
+export async function sellToken(
+  tokenMint: string,
+  amountTokens: number,
+  cfg: Config = loadConfig(),
+  // Hint of the current market price, supplied by the caller when known.
+  // Required for accurate paper-mode pump bookkeeping; ignored on the
+  // Jupiter path because the quote's outAmount is the source of truth.
+  currentPriceSol: number | null = null
+): Promise<SwapResult> {
+  if (cfg.source === 'pump') {
+    return pumpSell(tokenMint, amountTokens, cfg, currentPriceSol);
+  }
+  return jupiterSell(tokenMint, amountTokens, cfg);
 }
