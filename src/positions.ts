@@ -24,8 +24,11 @@ const DUST_SOL_THRESHOLD = 1e-8;
 const MAX_SELL_RETRIES = 3;
 // Per-position cap on the close-on-shutdown price refresh and sell. Protects
 // the sweep from hanging indefinitely when DNS or RPC stops responding mid-
-// outage (R10b had 50 positions stuck for hours behind unbounded waits).
-const SHUTDOWN_PER_POSITION_TIMEOUT_MS = 5000;
+// outage (R10b had 50 positions stuck for hours behind unbounded waits). A
+// live pump SDK sell — several RPC fetches plus send-and-confirm — runs
+// 10-20s, so the old 5s cap was too tight and R-live-2 left a position open
+// on shutdown. 30s covers the real sell path with margin.
+const SHUTDOWN_PER_POSITION_TIMEOUT_MS = 30_000;
 // Sentinel value for tp_level on positions force-exited by the time-based
 // hold cap (MAX_HOLD_MINUTES). Distinguishable from tp_level=3 (real TP3
 // hit), tp_level=0 (sweep-closed at shutdown), and status='stopped' (SL).
