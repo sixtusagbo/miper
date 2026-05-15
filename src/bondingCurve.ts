@@ -2,14 +2,22 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { logger } from './logger';
 
 // pump.fun bonding-curve account layout (Anchor-encoded):
-//   [0..8)   discriminator (sha256("account:BondingCurve")[..8])
-//   [8..16)  virtualTokenReserves: u64 LE
-//   [16..24) virtualSolReserves:   u64 LE
-//   [24..32) realTokenReserves:    u64 LE
-//   [32..40) realSolReserves:      u64 LE
-//   [40..48) tokenTotalSupply:     u64 LE
-//   [48..49) complete:             bool
+//   [0..8)    discriminator (sha256("account:BondingCurve")[..8])
+//   [8..16)   virtualTokenReserves: u64 LE
+//   [16..24)  virtualSolReserves:   u64 LE   (named virtual_quote_reserves in
+//             IDL after the multi-quote refactor — same field, same offset)
+//   [24..32)  realTokenReserves:    u64 LE
+//   [32..40)  realSolReserves:      u64 LE
+//   [40..48)  tokenTotalSupply:     u64 LE
+//   [48..49)  complete:             bool
+//   [49..81)  creator:              pubkey  (added with creator-fee rollout;
+//             required for the buy/sell ix to derive creator_vault PDA)
+//   [81..82)  isMayhemMode:         bool
+//   [82..83)  isCashbackCoin:       bool
+//   [83..115) quoteMint:            pubkey
 const BONDING_CURVE_MIN_SIZE = 8 + 5 * 8 + 1;
+const BONDING_CURVE_CREATOR_OFFSET = BONDING_CURVE_MIN_SIZE;
+const BONDING_CURVE_CREATOR_END = BONDING_CURVE_CREATOR_OFFSET + 32;
 
 const SOL_LAMPORTS = 1_000_000_000;
 // pump.fun mints are Token-2022 with 6 decimals fixed by the program global
@@ -23,6 +31,10 @@ export interface BondingCurveState {
   realSolReserves: bigint;
   tokenTotalSupply: bigint;
   complete: boolean;
+  // Null on legacy 49-byte buffers (test fixtures pre-creator-fees). Live
+  // on-chain accounts always carry it; live trades need it to derive the
+  // creator_vault PDA.
+  creator: PublicKey | null;
 }
 
 export function decodeBondingCurve(data: Buffer): BondingCurveState {
@@ -38,6 +50,10 @@ export function decodeBondingCurve(data: Buffer): BondingCurveState {
   const realSolReserves = data.readBigUInt64LE(offset); offset += 8;
   const tokenTotalSupply = data.readBigUInt64LE(offset); offset += 8;
   const complete = data[offset] === 1;
+  const creator =
+    data.length >= BONDING_CURVE_CREATOR_END
+      ? new PublicKey(data.subarray(BONDING_CURVE_CREATOR_OFFSET, BONDING_CURVE_CREATOR_END))
+      : null;
   return {
     virtualTokenReserves,
     virtualSolReserves,
@@ -45,6 +61,7 @@ export function decodeBondingCurve(data: Buffer): BondingCurveState {
     realSolReserves,
     tokenTotalSupply,
     complete,
+    creator,
   };
 }
 

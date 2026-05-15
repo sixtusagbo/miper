@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PublicKey } from '@solana/web3.js';
 import {
   bondingCurvePriceSol,
   clearBondingCurveCache,
@@ -52,6 +53,20 @@ describe('decodeBondingCurve', () => {
     expect(state.realSolReserves).toBe(2n);
     expect(state.tokenTotalSupply).toBe(1_000_000_000n * 1_000_000n);
     expect(state.complete).toBe(false);
+  });
+
+  it('leaves creator as null on the legacy 49-byte buffer (test fixtures)', () => {
+    const state = decodeBondingCurve(buildCurve({}));
+    expect(state.creator).toBeNull();
+  });
+
+  it('reads creator off a buffer that includes the post-creator-fees layout', () => {
+    const creatorPk = new PublicKey('11111111111111111111111111111113');
+    // 49-byte legacy buffer plus 32 bytes of creator pubkey.
+    const full = Buffer.concat([buildCurve({}), creatorPk.toBuffer()]);
+    const state = decodeBondingCurve(full);
+    expect(state.creator).not.toBeNull();
+    expect(state.creator!.toBase58()).toBe(creatorPk.toBase58());
   });
 
   it('throws on a buffer too short for the layout', () => {
