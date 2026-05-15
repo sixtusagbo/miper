@@ -1,6 +1,6 @@
 # miper
 
-Autonomous Solana memecoin sniping bot. Listens for new launches, runs on-chain safety checks, asks Claude for a 0-100 score, and auto-buys via Jupiter V6 when the score clears the threshold. Manages positions with tiered take-profit (2x/3x/5x by default) and a stop-loss.
+Autonomous Solana memecoin sniping bot. Listens for new launches, runs on-chain safety checks, asks an AI model for a 0-100 score, and auto-buys via Jupiter V6 when the score clears the threshold. Manages positions with tiered take-profit (2x/3x/5x by default) and a stop-loss.
 
 **Starts in simulation mode by default.** No real transactions are sent until you flip `SIMULATE=false`. For the operational playbook (how long to run, peak hours, going-live checklist), see [RUNNING.md](./RUNNING.md).
 
@@ -33,7 +33,7 @@ Explicit `--source` also clears any stale `DB_PATH` / `LOG_FILE` from your shell
 
 ```bash
 npm install
-cp .env.example .env            # fill in ANTHROPIC_API_KEY, WALLET_PRIVATE_KEY, SOLANA_RPC_URL
+cp .env.example .env            # fill in OPENAI_API_KEY (or ANTHROPIC_API_KEY), WALLET_PRIVATE_KEY, SOLANA_RPC_URL
 npm run build                   # optional; ts-node is used by all npm scripts
 ```
 
@@ -41,7 +41,7 @@ npm run build                   # optional; ts-node is used by all npm scripts
 
 | Var | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | From https://console.anthropic.com |
+| `OPENAI_API_KEY` *or* `ANTHROPIC_API_KEY` | API key for your `AI_MODEL`'s provider — OpenAI by default (`gpt-5-nano`), or Anthropic for a `claude-*` model. Only the inferred provider's key is needed. |
 | `WALLET_PRIVATE_KEY` | Base58-encoded Solana private key (required for live mode; optional in simulation — an ephemeral key is generated if missing) |
 | `SOLANA_RPC_URL` / `SOLANA_WS_URL` | Dedicated RPC. The public `api.mainnet-beta.solana.com` endpoint will 429 on almost every call. Helius free tier (1M credits/month, 10 req/s) is enough for paper trading. |
 
@@ -120,7 +120,7 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
     -> enrich signal (pump only, in parallel):
          * Metaplex metadata (name, symbol, URI)
          * creator wallet history (recent tx count, oldest activity age)
-    -> Claude scoring (0-100)
+    -> AI scoring (0-100)
          * Raydium: absolute rubric (safety + liquidity + holder distribution)
          * pump:    relative rubric, baselined to "typical pump.fun launch",
                     grading on dev commitment, creator track record, metadata quality
@@ -146,7 +146,7 @@ All trades, rejections, and positions land in the source-specific SQLite file (`
 `SIMULATE=true` (default):
 
 - Pool detection and safety checks hit real on-chain state
-- Claude scoring runs for real (API calls still cost)
+- AI scoring runs for real (API calls still cost)
 - Raydium: Jupiter *quotes* are fetched but swap transactions are not sent
 - Pump: buy is synthesized from the bonding-curve initial price (Jupiter is bypassed since it won't route fresh launches)
 - Every decision is written to the DB so PnL is observable
@@ -180,7 +180,7 @@ src/
   logger.ts           colorized logger with optional file sink
   db.ts               SQLite schema and queries (positions, trades, rejections)
   listener.ts         generic LogListener + Raydium and pump.fun bindings
-  analyzer.ts         on-chain safety, market data, Claude scoring (per-source prompts)
+  analyzer.ts         on-chain safety, market data, AI scoring (per-source prompts)
   metadata.ts         Metaplex token metadata PDA + decoder
   creatorHistory.ts   creator wallet activity lookup + in-memory cache
   bondingCurve.ts     pump.fun bonding-curve account decoder + price helper
@@ -197,6 +197,6 @@ tests/                vitest unit tests per module
 
 - Personal tool. No warranty. Use at your own risk with small amounts.
 - On-chain sniping is racy and competitive — faster RPCs matter.
-- Claude can be wrong. Keep position sizes small.
+- The AI model can be wrong. Keep position sizes small.
 - Non-SOL pairs and previously-seen mints are skipped.
 - Never commit `.env` or the `*.db` files (both are gitignored).

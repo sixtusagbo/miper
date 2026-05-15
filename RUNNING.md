@@ -5,7 +5,7 @@ Operator's playbook. Read this before each run.
 ## Before you start
 
 1. `.env` is filled in with:
-   - `ANTHROPIC_API_KEY` (sk-ant-...)
+   - `OPENAI_API_KEY` (default, for `gpt-5-nano`) or `ANTHROPIC_API_KEY` (for a `claude-*` model)
    - `WALLET_PRIVATE_KEY` (base58 from Phantom)
    - `SOLANA_RPC_URL` and `SOLANA_WS_URL` (Helius free tier — don't use the public endpoint, you'll get 429'd)
    - `SIMULATE=true`
@@ -21,7 +21,7 @@ npm run simulate
 
 That's it. The bot will:
 - Subscribe to Raydium pool creation events
-- Analyze each new pool (safety checks + Claude scoring)
+- Analyze each new pool (safety checks + AI scoring)
 - Simulate buys for passing tokens
 - Monitor simulated positions and simulate sells at TP1 (2x) / TP2 (3x) / TP3 (5x) or stop-loss (-60%)
 - Print a rolling status every 15 minutes
@@ -196,7 +196,7 @@ Then scan `pump.log` for any `tx failed` lines.
 | Symptom | Fix |
 |---------|-----|
 | Flood of `429 Too Many Requests` | You're on the public RPC. Switch to Helius (see `.env.example`). |
-| `ANTHROPIC_API_KEY is required` | Set it in `.env`, save, retry. |
+| `... API key is required` | Set the key for your `AI_MODEL`'s provider (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) in `.env`, save, retry. |
 | Bot runs but no pools ever detected | Check your Solana WS URL starts with `wss://`, not `https://`. |
 | `npm run simulate` exits immediately | Check `npm test` first — a config validation error means a bad value in `.env`. |
 | Want to reset paper PnL | Delete `sniper.db` (miper will recreate on next run). |
