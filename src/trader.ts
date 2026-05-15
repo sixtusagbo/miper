@@ -9,6 +9,7 @@ import {
 } from '@solana/web3.js';
 import {
   createAssociatedTokenAccountIdempotentInstruction,
+  createCloseAccountInstruction,
   getAssociatedTokenAddress,
   getAssociatedTokenAddressSync,
   getMint,
@@ -608,6 +609,11 @@ async function pumpSellLive(
       );
     }
 
+    // If that sell drained the position, the now-empty ATA still holds
+    // ~0.002 SOL of rent — reclaim it. Best-effort and in its own tx so a
+    // close failure can never undo the booked sell above.
+    await maybeCloseEmptyAta(connection, mintPk, userAta, tokenProgram, cfg);
+
     // Book the trade at the curve-implied price — actual SOL delivered may
     // be a hair higher if the program rounded our minSolOutput up, but the
     // computed expected is the conservative figure for PnL accounting.
@@ -630,6 +636,66 @@ async function pumpSellLive(
     const message = (err as Error).message;
     logger.error(`pumpSellLive ${tokenMint}: ${message}`);
     return pumpSellFailure(amountTokens, message);
+  }
+}
+
+// Closes the user's token ATA once it is empty, returning its rent-exempt
+// lamports (~0.002 SOL) to the wallet. Called after every live pump sell:
+// a partial sell leaves a balance and is skipped; a full exit drains the
+// account and triggers the close. Entirely best-effort — any failure (RPC
+// hiccup, residual dust, Token-2022 withheld fees) is logged and swallowed
+// so the already-confirmed sell is never affected.
+async function maybeCloseEmptyAta(
+  connection: Connection,
+  mint: PublicKey,
+  ata: PublicKey,
+  tokenProgram: PublicKey,
+  cfg: Config
+): Promise<void> {
+  try {
+    const balance = await connection.getTokenAccountBalance(ata);
+    if (BigInt(balance.value.amount) !== 0n) return; // partial sell — tokens remain
+
+    const wallet = getWallet(cfg);
+    const closeIx = createCloseAccountInstruction(
+      ata,
+      wallet.publicKey, // rent-exempt lamports go back to the wallet
+      wallet.publicKey, // ATA owner / close authority
+      [],
+      tokenProgram
+    );
+    const instructions = [closeIx];
+    if (cfg.pumpPriorityMicrolamports > 0) {
+      instructions.unshift(
+        ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: cfg.pumpPriorityMicrolamports,
+        })
+      );
+    }
+
+    const { blockhash, lastValidBlockHeight } =
+      await connection.getLatestBlockhash('confirmed');
+    const message = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: blockhash,
+      instructions,
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(message);
+    tx.sign([wallet]);
+
+    const signature = await connection.sendTransaction(tx, {
+      skipPreflight: true,
+      maxRetries: 2,
+    });
+    await connection.confirmTransaction(
+      { signature, blockhash, lastValidBlockHeight },
+      'confirmed'
+    );
+    logger.info(
+      `closed empty ATA for ${mint.toBase58()} — reclaimed rent (${signature.slice(0, 8)}...)`
+    );
+  } catch (err) {
+    logger.debug(`ATA close skipped for ${mint.toBase58()}: ${(err as Error).message}`);
   }
 }
 
