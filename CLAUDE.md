@@ -17,8 +17,7 @@ Listens for new Raydium AMM pools or pump.fun launches, runs on-chain safety che
 - `src/metadata.ts` — Metaplex token metadata PDA + decoder
 - `src/creatorHistory.ts` — creator wallet activity lookup with TTL cache
 - `src/bondingCurve.ts` — pump.fun bonding-curve account decoder + price helper
-- `src/pumpProgram.ts` — pump.fun PDAs, instruction discriminators, buy/sell instruction builders, constant-product math
-- `src/trader.ts` — Jupiter V6 swaps (Raydium + pump-graduated) and direct pump bonding-curve buy/sell
+- `src/trader.ts` — Jupiter V6 swaps (Raydium + pump-graduated) and live pump buy/sell via `@pump-fun/pump-sdk` (`buy_v2`/`sell_v2`)
 - `src/positions.ts` — TP/SL monitoring loop; per-source price oracle dispatch
 - `src/review.ts` — PnL summary + live-readiness checklist
 - `src/concurrency.ts` — InflightGate, withTimeout, retry helpers
