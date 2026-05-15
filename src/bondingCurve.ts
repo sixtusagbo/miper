@@ -1,5 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { logger } from './logger';
+import { PUMP_TOKEN_BASE_UNITS } from './pumpProgram';
 
 // pump.fun bonding-curve account layout (Anchor-encoded):
 //   [0..8)    discriminator (sha256("account:BondingCurve")[..8])
@@ -20,9 +21,6 @@ const BONDING_CURVE_CREATOR_OFFSET = BONDING_CURVE_MIN_SIZE;
 const BONDING_CURVE_CREATOR_END = BONDING_CURVE_CREATOR_OFFSET + 32;
 
 const SOL_LAMPORTS = 1_000_000_000;
-// pump.fun mints are Token-2022 with 6 decimals fixed by the program global
-// config. If pump ever changes this, the price math here breaks.
-const PUMP_TOKEN_BASE_UNITS = 1_000_000;
 
 export interface BondingCurveState {
   virtualTokenReserves: bigint;

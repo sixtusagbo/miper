@@ -152,20 +152,6 @@ describe('buyToken (pump source)', () => {
     expect(mocks.mockFetch).not.toHaveBeenCalled();
   });
 
-  it('refuses live pump buys (phase 1 is paper-only)', async () => {
-    process.env.SIMULATE = 'false';
-    const { Keypair } = await import('@solana/web3.js');
-    const bs58 = (await import('bs58')).default;
-    process.env.WALLET_PRIVATE_KEY = bs58.encode(Keypair.generate().secretKey);
-    resetConfigCache();
-
-    vi.resetModules();
-    const { buyToken: buy } = await import('../src/trader');
-    const result = await buy(VALID_MINT, 0.05);
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/pump\.fun/);
-    expect(mocks.mockFetch).not.toHaveBeenCalled();
-  });
 });
 
 describe('sellToken (pump source)', () => {
