@@ -233,9 +233,11 @@ export async function getSolUsdPrice(): Promise<number | null> {
   return solUsdCache?.price ?? null;
 }
 
-// Fresh pump.fun tokens rarely show up on DexScreener in the first few minutes,
-// so we synthesize market data from the program's known initial bonding-curve
-// state and any SOL the creator co-deposited in the create tx.
+// Fresh pump.fun tokens rarely show up on DexScreener in the first few
+// minutes — and even for live trades we read the bonding curve directly
+// at execution time. This pass synthesizes market data from the program's
+// known initial bonding-curve state and any SOL the creator co-deposited
+// in the create tx, which is enough for the analyzer's scoring stage.
 export function pumpMarketData(pool: NewPool): MarketData {
   return {
     symbol: null,

@@ -13,9 +13,9 @@ miper supports two launch streams, selected at the command line or via env. Each
 | Source | Program | Default DB | Default log | Live trading |
 |---|---|---|---|---|
 | `raydium` *(default)* | Raydium AMM | `./sniper.db` | none | Jupiter V6 |
-| `pump` | pump.fun (Token-2022) | `./pump.db` | `./pump.log` | **Phase 1: paper-only** |
+| `pump` | pump.fun (Token-2022 / SPL) | `./pump.db` | `./pump.log` | Direct bonding-curve instruction; falls back to Jupiter once a curve graduates |
 
-**Why two sources?** Raydium AMM inits are rare (often only a handful per hour during off-peak). Pump.fun creates hundreds of mints per hour, which is great for signal density but comes with different mechanics (Token-2022 mints, bonding-curve pricing, tokens not yet on DexScreener). Pump live trading would need a direct bonding-curve execution path — out of scope for phase 1 — so pump mode currently refuses live buys with a clear error.
+**Why two sources?** Raydium AMM inits are rare (often only a handful per hour during off-peak). Pump.fun creates hundreds of mints per hour, which is great for signal density but comes with different mechanics: Token-2022 (or legacy SPL) mints, bonding-curve pricing, and tokens not yet on DexScreener. Live pump trades go through the pump.fun program directly while the bonding curve is active, then fall back to Jupiter once a curve graduates and the token moves to PumpSwap.
 
 ### Source precedence
 
@@ -70,6 +70,7 @@ Strategy knobs (all have defaults — see `.env.example`):
 | `SIMULATED_STARTING_SOL` | Virtual starting balance for paper-mode PnL display. Default `1.0`. |
 | `DB_PATH` / `LOG_FILE` | Override per-source defaults if you need custom paths. Leave unset to let source drive them. |
 | `MIPER_SAFETY_PRE_READ_DELAY_MS` | How long to sleep before the first on-chain read (ms). Default `1500`. |
+| `PUMP_PRIORITY_MICROLAMPORTS` | Compute-unit priority fee (µLamports per CU) on pump.fun direct buy/sell txs. Default `100000` (~$0.005 priority for a 200k-CU tx). Bump higher when transactions consistently fail to land. |
 
 ---
 
@@ -82,7 +83,7 @@ Every command accepts `--source raydium|pump`. The `:pump` npm scripts are thin 
 npm run simulate                    # paper, Raydium
 npm run simulate:pump               # paper, pump.fun
 SIMULATE=false npm run snipe        # live, Raydium
-SIMULATE=false npx ts-node src/index.ts snipe --source pump   # refused: pump live not supported
+SIMULATE=false npx ts-node src/index.ts snipe --source pump   # live, pump.fun
 
 # Read-only inspection
 npm run status                      # open positions + PnL (Raydium DB)
@@ -125,7 +126,9 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
                     grading on dev commitment, creator track record, metadata quality
     -> buy if score >= MIN_AI_SCORE
          * Raydium: Jupiter V6 swap
-         * pump: synthetic paper buy at bonding-curve initial price (no live buy)
+         * pump:    direct bonding-curve `buy` instruction (constant-product
+                    math with slippage-capped max_sol_cost). In paper mode the
+                    same flow records a synthetic fill at the curve init price.
     -> position monitor polls price every ~7s
          * Raydium: DexScreener priceNative
          * pump:    bonding-curve account read (real-time, always available
@@ -151,7 +154,8 @@ All trades, rejections, and positions land in the source-specific SQLite file (`
 `SIMULATE=false`:
 
 - Raydium: signs and sends real Jupiter swaps from `WALLET_PRIVATE_KEY`
-- Pump: returns an error ("phase 1 is paper-only") — see the [Token sources](#token-sources) table
+- Pump (active curve): signs and sends a direct `buy`/`sell` instruction to the pump.fun program with slippage protection. ATA is created idempotently on first buy.
+- Pump (graduated curve): falls back to Jupiter — the token has moved to PumpSwap AMM and aggregators route it normally.
 
 ---
 
@@ -196,4 +200,3 @@ tests/                vitest unit tests per module
 - Claude can be wrong. Keep position sizes small.
 - Non-SOL pairs and previously-seen mints are skipped.
 - Never commit `.env` or the `*.db` files (both are gitignored).
-- Pump.fun live trading is not yet supported; stay in simulation for that source.
