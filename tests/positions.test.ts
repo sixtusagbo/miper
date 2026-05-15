@@ -34,6 +34,7 @@ import {
   executeTimeExit,
   fetchPriceSol,
   isPastHoldLimit,
+  positionAgeMinutes,
 } from '../src/positions';
 import { clearBondingCurveCache } from '../src/bondingCurve';
 
@@ -642,6 +643,29 @@ describe('checkPosition', () => {
 
     const updated = getPosition(p.id)!;
     expect(updated.status).toBe('stopped');
+  });
+});
+
+describe('positionAgeMinutes', () => {
+  it('computes minutes elapsed since created_at (read as UTC)', () => {
+    const p = mkPosition();
+    p.created_at = '2026-05-15 12:00:00';
+    expect(
+      positionAgeMinutes(p, new Date('2026-05-15T12:42:00Z'))
+    ).toBeCloseTo(42, 5);
+  });
+
+  it('returns null when created_at is unparseable', () => {
+    const p = mkPosition();
+    p.created_at = 'not-a-date';
+    expect(positionAgeMinutes(p)).toBeNull();
+  });
+
+  it('is a small non-negative number for a freshly created position', () => {
+    const age = positionAgeMinutes(mkPosition());
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(0);
+    expect(age!).toBeLessThan(1);
   });
 });
 

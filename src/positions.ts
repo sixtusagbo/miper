@@ -332,18 +332,26 @@ export async function executeTimeExit(
   });
 }
 
-// Returns true if the position has been open longer than cfg.maxHoldMinutes.
+// Minutes a position has been open, or null if created_at can't be parsed.
 // Reads created_at as UTC (SQLite's datetime('now') stores UTC text).
+export function positionAgeMinutes(
+  position: Position,
+  now: Date = new Date()
+): number | null {
+  const createdMs = Date.parse(position.created_at + 'Z');
+  if (!Number.isFinite(createdMs)) return null;
+  return (now.getTime() - createdMs) / 60_000;
+}
+
+// Returns true if the position has been open longer than cfg.maxHoldMinutes.
 export function isPastHoldLimit(
   position: Position,
   cfg: Config,
   now: Date = new Date()
 ): boolean {
   if (cfg.maxHoldMinutes <= 0) return false;
-  const createdMs = Date.parse(position.created_at + 'Z');
-  if (!Number.isFinite(createdMs)) return false;
-  const ageMs = now.getTime() - createdMs;
-  return ageMs >= cfg.maxHoldMinutes * 60_000;
+  const age = positionAgeMinutes(position, now);
+  return age !== null && age >= cfg.maxHoldMinutes;
 }
 
 // Sells the entire remaining bag at the all-in target. Distinct from
