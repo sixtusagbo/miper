@@ -132,6 +132,64 @@ Then:
 npm run snipe
 ```
 
+## Live pump trading
+
+Pump.fun live trading is wired: direct bonding-curve `buy`/`sell` instructions while the curve is active, Jupiter fallback once a curve graduates. The procedure below is the **first validation run** — small size, short duration. The goal is proving execution lands, not profit.
+
+### Pre-flight
+
+1. **Fresh wallet.** Create a brand-new wallet in Solflare or Phantom — never your main wallet, never a multi-coin wallet. Export its base58 private key into `WALLET_PRIVATE_KEY` in `.env`.
+2. **Fund it** with ~0.25-0.3 SOL. Covers position exposure (`BUY_AMOUNT_SOL` x `MAX_OPEN_POSITIONS`), per-token ATA rent, fees, and the 0.01 SOL reserve.
+3. `npm test` (must be green) and `npm run build`.
+4. `npm run balance:pump` — confirms the key decodes and the RPC answers. It prints the wallet's SOL balance.
+
+### Validation-run config
+
+`.env` ships set for this run; `.env.paper` holds the paper-mode snapshot.
+
+| Var | Value | Why |
+|---|---|---|
+| `SIMULATE` | `false` | Real transactions |
+| `SOURCE` | `pump` | Direct bonding-curve trading |
+| `BUY_AMOUNT_SOL` | `0.02` | Small per-snipe stake |
+| `MAX_OPEN_POSITIONS` | `3` | Peak exposure 0.06 SOL |
+| `MAX_RUN_HOURS` | `2` | Auto-stop; review before a longer run |
+| `MAX_SLIPPAGE_BPS` | `500` | A 3% cap reverts too easily on a fast curve |
+| `PUMP_PRIORITY_MICROLAMPORTS` | `100000` | Leader-slot priority fee per tx |
+
+### Start and stop
+
+```
+npm run snipe
+```
+
+Runs 2 hours, then auto-stops. `CLOSE_ON_SHUTDOWN=true` sells every open position at last-known price before exit, so the session ends with no exposure.
+
+### What to watch in `pump.log`
+
+| Line | Meaning |
+|------|---------|
+| `BUY ... pump direct` | A live buy landed on the bonding curve. |
+| `SELL ... pump direct` | A live sell landed on the curve. |
+| `selling via Jupiter (post-graduation)` | Sell routed to Jupiter — the curve graduated. |
+| `closed empty ATA ... reclaimed rent` | ATA rent reclaimed after a full exit. |
+| `pump buy tx failed` / `pump sell tx failed` | The program rejected the tx — read the error. |
+
+### After the run
+
+```
+npm run review:pump
+```
+
+Then scan `pump.log` for any `tx failed` lines.
+
+### Known caveats
+
+- **The first live buy is the real proof** of the instruction encoding (account layout, creator-vault PDA, fee recipient). If it reverts with a program error, stop and read the error before burning more attempts.
+- **PnL reads ~1-2% optimistic.** The curve math does not model pump's ~1% protocol/creator fee, so booked buy cost is slightly low and booked sell proceeds slightly high. Real PnL is a touch worse than `review:pump` shows.
+- **Keep `MAX_SLIPPAGE_BPS` at 200 or above.** Pump's fee is absorbed by slippage headroom; too tight a cap and buys/sells revert.
+- **If transactions consistently fail to land**, raise `PUMP_PRIORITY_MICROLAMPORTS`.
+
 ## Common issues
 
 | Symptom | Fix |
