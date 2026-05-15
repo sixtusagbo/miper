@@ -44,7 +44,10 @@ beforeEach(() => {
   process.env.SIMULATE = 'true';
   process.env.LOG_LEVEL = 'error';
   process.env.MAX_SLIPPAGE_BPS = '300';
-  delete process.env.SOURCE;
+  // Pin the default source explicitly. Tests that re-import after
+  // vi.resetModules() re-run dotenv.config(), which would otherwise fill an
+  // unset SOURCE from the developer's real .env (now SOURCE=pump for live).
+  process.env.SOURCE = 'raydium';
   resetConfigCache();
   for (const m of Object.values(mocks)) m.mockReset();
   mocks.mockGetMint.mockResolvedValue({ decimals: 6 });
