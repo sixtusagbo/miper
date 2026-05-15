@@ -407,6 +407,31 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-2 — first live trades on the pump SDK
+**Date:** 2026-05-15
+**Code state:** post-SDK migration — live buy/sell via `@pump-fun/pump-sdk` (`buy_v2`/`sell_v2`, commit `40e58a4`); launched with `make snipe-pump-fresh LABEL=R-live-2`.
+**Config:** LIVE (`SIMULATE=false`), `--source pump`. Same validation sizing as R-live-1: `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_SLIPPAGE_BPS=500`, `MIN_AI_SCORE=70` (gpt-5-nano), `EXIT_MODE=all-in` 3×, `MAX_CONSECUTIVE_BUY_FAILURES=3`.
+**Duration:** ~2 min of activity (19:02:55 first BUYING → 19:05:01 manual SIGINT).
+
+| Metric | Value |
+|---|---|
+| BUYING attempts | 5 |
+| Buys landed | 3 — all `pump v2` |
+| Buy failures | 2 — `block height exceeded` ×1, `Custom:6002 TooMuchSolRequired` ×1 |
+| Positions | 3 opened, 3 closed |
+| Realized PnL | **+0.009069 SOL** (spent 0.060, received 0.069) |
+| Best exit | `BUhPmqd5…pump` — 3×-triggered all-in exit, 0.02 → 0.029 SOL |
+
+**Outcome:** first successful live trades — the SDK migration fixed 6062, `buy_v2`/`sell_v2` build and land correctly. 3 of 5 buys landed; the 2 misses were a tx that expired before confirming and a slippage revert (`6002`) on a fast curve — operational, not structural. `BUhPmqd5` caught a 3× spike via the all-in exit. Run was stopped manually after the 2 failures.
+
+**Learning / issues surfaced:**
+- The pump SDK path is validated on-chain. The hand-rolled instruction layer is fully retired.
+- `CLOSE_ON_SHUTDOWN` left a position open: a live SDK sell (4 RPC fetches + send-and-confirm) runs 10-20s, past the 5s per-position shutdown-sell timeout. Bumped `SHUTDOWN_PER_POSITION_TIMEOUT_MS` to 30s. The stranded position (`9iZnmeHg…pump`) was sold manually at ~breakeven; the DB row was reconciled.
+- An all-in exit logs `tp_level=3` but the realized multiple is whatever the curve is when the sell *lands* — `BUhPmqd5` triggered at 3× but realized ~1.45×. On fast curves the booked `amount_sol_received` is the truth, not the trigger label.
+- Failure levers if they recur: raise `PUMP_PRIORITY_MICROLAMPORTS` (tx not landing) or `MAX_SLIPPAGE_BPS` (slippage reverts).
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
