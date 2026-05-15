@@ -21,7 +21,12 @@ import {
 import { PoolListener, PumpListener, LogListener } from './listener';
 import { analyzeToken } from './analyzer';
 import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } from './trader';
-import { closeAllOpenPositions, startMonitoring, stopMonitoring } from './positions';
+import {
+  closeAllOpenPositions,
+  positionAgeMinutes,
+  startMonitoring,
+  stopMonitoring,
+} from './positions';
 import { InflightGate, withTimeout } from './concurrency';
 import { reviewCommand } from './review';
 import { formatRpcCounts, getRpcCounts, instrumentConnection } from './rpcCounter';
@@ -327,28 +332,61 @@ function printStatus(): void {
     logger.info('no open positions');
     return;
   }
+  // Column spec — the header and every row are padded by the same widths so
+  // the table actually lines up. The hold column shows time left before the
+  // MAX_HOLD_MINUTES time-exit, or (when that's disabled) the position's age.
+  const holdHead = cfg.maxHoldMinutes > 0 ? 'EXIT-IN' : 'AGE';
+  const cols: ReadonlyArray<{ head: string; w: number; right: boolean }> = [
+    { head: 'ID', w: 4, right: true },
+    { head: 'SYMBOL', w: 12, right: false },
+    { head: 'ENTRY', w: 13, right: true },
+    { head: 'CURRENT', w: 13, right: true },
+    { head: 'MULT', w: 7, right: true },
+    { head: holdHead, w: 8, right: true },
+    { head: 'TP', w: 3, right: true },
+    { head: 'STATUS', w: 8, right: false },
+    { head: 'MINT', w: 0, right: false },
+  ];
+  const renderRow = (cells: readonly string[]): string =>
+    '  ' +
+    cells
+      .map((cell, i) => {
+        const c = cols[i];
+        if (c.w === 0) return cell;
+        return c.right ? cell.padStart(c.w) : cell.padEnd(c.w).slice(0, c.w);
+      })
+      .join('  ');
+
   // eslint-disable-next-line no-console
-  console.log(
-    chalk.bold(
-      `\n  ID  SYMBOL        ENTRY          CURRENT        MULT   TP  STATUS   MINT`
-    )
-  );
+  console.log(chalk.bold('\n' + renderRow(cols.map((c) => c.head))));
   for (const p of positions) {
-    const mult = p.current_price_sol && p.entry_price_sol
-      ? p.current_price_sol / p.entry_price_sol
-      : null;
-    const row = [
-      String(p.id).padStart(4),
-      (p.token_symbol ?? '-').padEnd(12).slice(0, 12),
-      fmt(p.entry_price_sol, 8).padStart(14),
-      fmt(p.current_price_sol, 8).padStart(14),
-      mult !== null ? `${mult.toFixed(2)}x`.padStart(6) : '   -  ',
-      String(p.tp_level).padStart(3),
-      p.status.padEnd(8),
-      p.token_mint,
-    ].join(' ');
+    const mult =
+      p.current_price_sol && p.entry_price_sol
+        ? p.current_price_sol / p.entry_price_sol
+        : null;
+    const age = positionAgeMinutes(p);
+    const hold =
+      age === null
+        ? '-'
+        : cfg.maxHoldMinutes > 0
+          ? cfg.maxHoldMinutes - age > 0
+            ? `${(cfg.maxHoldMinutes - age).toFixed(1)}m`
+            : 'due'
+          : `${age.toFixed(1)}m`;
     // eslint-disable-next-line no-console
-    console.log(`  ${row}`);
+    console.log(
+      renderRow([
+        String(p.id),
+        p.token_symbol ?? '-',
+        fmt(p.entry_price_sol, 8),
+        fmt(p.current_price_sol, 8),
+        mult !== null ? `${mult.toFixed(2)}x` : '-',
+        hold,
+        String(p.tp_level),
+        p.status,
+        p.token_mint,
+      ])
+    );
   }
   // eslint-disable-next-line no-console
   console.log('');
