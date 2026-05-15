@@ -93,6 +93,11 @@ export interface Config {
   // "transaction not landing" failures. 100_000 * 200k CU = 20k lamports
   // (~$0.005 priority) per snipe.
   pumpPriorityMicrolamports: number;
+  // Consecutive failed buys that trip a graceful shutdown — a circuit
+  // breaker for live runs where a systematic fault (bad instruction
+  // encoding, dead RPC, drained wallet) fails every snipe and bleeds fees
+  // until noticed. The counter resets on any successful buy. 0 disables.
+  maxConsecutiveBuyFailures: number;
 }
 
 function required(name: string): string {
@@ -231,6 +236,7 @@ export function loadConfig(): Config {
     logMaxBytes: numberFromEnv('LOG_MAX_BYTES', 100 * 1024 * 1024),
     logMaxFiles: numberFromEnv('LOG_MAX_FILES', 5),
     pumpPriorityMicrolamports: numberFromEnv('PUMP_PRIORITY_MICROLAMPORTS', 100_000),
+    maxConsecutiveBuyFailures: numberFromEnv('MAX_CONSECUTIVE_BUY_FAILURES', 5),
   };
 
   validateConfig(config);
@@ -283,6 +289,11 @@ function validateConfig(c: Config): void {
   if (c.pumpPriorityMicrolamports < 0) {
     throw new Error(
       `PUMP_PRIORITY_MICROLAMPORTS must be >= 0, got ${c.pumpPriorityMicrolamports}`
+    );
+  }
+  if (c.maxConsecutiveBuyFailures < 0) {
+    throw new Error(
+      `MAX_CONSECUTIVE_BUY_FAILURES must be >= 0 (0 disables), got ${c.maxConsecutiveBuyFailures}`
     );
   }
 }

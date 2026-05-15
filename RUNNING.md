@@ -156,6 +156,7 @@ Pump.fun live trading is wired: direct bonding-curve `buy`/`sell` instructions w
 | `MAX_RUN_HOURS` | `2` | Auto-stop; review before a longer run |
 | `MAX_SLIPPAGE_BPS` | `500` | A 3% cap reverts too easily on a fast curve |
 | `PUMP_PRIORITY_MICROLAMPORTS` | `100000` | Leader-slot priority fee per tx |
+| `MAX_CONSECUTIVE_BUY_FAILURES` | `3` | Circuit breaker — auto-stop if 3 buys fail in a row |
 
 ### Start and stop
 
@@ -185,7 +186,7 @@ Then scan `pump.log` for any `tx failed` lines.
 
 ### Known caveats
 
-- **The first live buy is the real proof** of the instruction encoding (account layout, creator-vault PDA, fee recipient). If it reverts with a program error, stop and read the error before burning more attempts.
+- **The first live buy is the real proof** of the instruction encoding (account layout, creator-vault PDA, fee recipient). If it reverts, the circuit breaker stops the bot after `MAX_CONSECUTIVE_BUY_FAILURES` failures — read the error in `pump.log` before re-running.
 - **PnL reads ~1-2% optimistic.** The curve math does not model pump's ~1% protocol/creator fee, so booked buy cost is slightly low and booked sell proceeds slightly high. Real PnL is a touch worse than `review:pump` shows.
 - **Keep `MAX_SLIPPAGE_BPS` at 200 or above.** Pump's fee is absorbed by slippage headroom; too tight a cap and buys/sells revert.
 - **If transactions consistently fail to land**, raise `PUMP_PRIORITY_MICROLAMPORTS`.
