@@ -103,6 +103,8 @@ async function snipeCommand(options: {
   // init signatures for one pool, or replay after reconnect). Without this,
   // several analyses for one mint hit Claude in parallel and trigger 429s.
   const inflightMints = new Set<string>();
+  // Consecutive failed buys; an unbroken run trips the circuit breaker below.
+  let consecutiveBuyFailures = 0;
 
   listener.on('newPool', async (pool) => {
     // Cheapest checks first so a full bag short-circuits before we burn
@@ -165,8 +167,20 @@ async function snipeCommand(options: {
           aiScore: analysis.ai.score,
           poolAddress: pool.poolAddress,
         });
+        consecutiveBuyFailures++;
+        if (
+          cfg.maxConsecutiveBuyFailures > 0 &&
+          consecutiveBuyFailures >= cfg.maxConsecutiveBuyFailures
+        ) {
+          logger.error(
+            `circuit breaker tripped: ${consecutiveBuyFailures} buys failed in a row — shutting down`
+          );
+          void shutdown('circuit breaker: consecutive buy failures');
+        }
         return;
       }
+      // A landed buy clears the streak — only an unbroken run trips the breaker.
+      consecutiveBuyFailures = 0;
 
       const position = createPosition({
         tokenMint: pool.tokenMint,

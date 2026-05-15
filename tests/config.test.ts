@@ -42,7 +42,8 @@ function setEnv(overrides: Record<string, string | undefined> = {}): void {
       key === 'EXIT_MODE' ||
       key === 'EXIT_AT_MULT' ||
       key === 'MAX_RUN_HOURS' ||
-      key === 'CLOSE_ON_SHUTDOWN'
+      key === 'CLOSE_ON_SHUTDOWN' ||
+      key === 'MAX_CONSECUTIVE_BUY_FAILURES'
     ) {
       delete process.env[key];
     }
@@ -172,6 +173,22 @@ describe('loadConfig', () => {
   it('rejects negative MAX_RUN_HOURS', () => {
     setEnv({ MAX_RUN_HOURS: '-1' });
     expect(() => loadConfig()).toThrow(/MAX_RUN_HOURS/);
+  });
+
+  it('defaults MAX_CONSECUTIVE_BUY_FAILURES to 5', () => {
+    expect(loadConfig().maxConsecutiveBuyFailures).toBe(5);
+  });
+
+  it('parses MAX_CONSECUTIVE_BUY_FAILURES from env (0 disables)', () => {
+    setEnv({ MAX_CONSECUTIVE_BUY_FAILURES: '3' });
+    expect(loadConfig().maxConsecutiveBuyFailures).toBe(3);
+    setEnv({ MAX_CONSECUTIVE_BUY_FAILURES: '0' });
+    expect(loadConfig().maxConsecutiveBuyFailures).toBe(0);
+  });
+
+  it('rejects negative MAX_CONSECUTIVE_BUY_FAILURES', () => {
+    setEnv({ MAX_CONSECUTIVE_BUY_FAILURES: '-1' });
+    expect(() => loadConfig()).toThrow(/MAX_CONSECUTIVE_BUY_FAILURES/);
   });
 
   it('requires WALLET_PRIVATE_KEY in live mode', () => {

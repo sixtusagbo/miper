@@ -52,8 +52,9 @@ Two modes, controlled by `EXIT_MODE`:
 
 - `MAX_RUN_HOURS=N` triggers a graceful shutdown after N wall-clock hours. `0` (default) disables — the bot runs until SIGINT.
 - `CLOSE_ON_SHUTDOWN=true` makes the shutdown handler sell every open/partial position at last-known price before exiting. Default `false`. Flip on for live trading and bounded paper sessions.
+- `MAX_CONSECUTIVE_BUY_FAILURES=N` triggers a graceful shutdown after N buys fail in a row — a circuit breaker against a systematic fault (bad encoding, dead RPC, drained wallet) bleeding fees on every snipe. Counter resets on any successful buy. Default `5`; `0` disables.
 
-Both compose: `MAX_RUN_HOURS=4 CLOSE_ON_SHUTDOWN=true` runs for 4h and ends with no open exposure.
+All compose: `MAX_RUN_HOURS=4 CLOSE_ON_SHUTDOWN=true` runs for 4h and ends with no open exposure; the breaker can end it sooner.
 
 ## Running
 
