@@ -3,45 +3,45 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
   LAMPORTS_PER_SOL,
 } from '@solana/web3.js';
 import {
-  createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction,
   getAssociatedTokenAddress,
   getAssociatedTokenAddressSync,
   getMint,
 } from '@solana/spl-token';
+// BN is bn.js re-exported by Anchor; the pump SDK speaks it for every amount.
+import { BN } from '@coral-xyz/anchor';
+import {
+  OnlinePumpSdk,
+  PumpSdk,
+  getBuyTokenAmountFromSolAmount,
+  getSellSolAmountFromTokenAmount,
+} from '@pump-fun/pump-sdk';
 import bs58 from 'bs58';
 import fetch from 'node-fetch';
 import { Config, loadConfig, MIN_SOL_RESERVE, SOL_MINT_ADDRESS } from './config';
 import { logger } from './logger';
 import { PUMP_INITIAL_PRICE_SOL } from './analyzer';
-import { decodeBondingCurve } from './bondingCurve';
-import {
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-  PUMP_TOKEN_BASE_UNITS,
-  applySlippageMaxSol,
-  applySlippageMinSol,
-  buildBuyInstruction,
-  buildSellInstruction,
-  computeBuyTokensOut,
-  computeSellSolOut,
-  getBondingCurvePda,
-  readPumpFeeRecipient,
-} from './pumpProgram';
+import { PUMP_TOKEN_BASE_UNITS } from './bondingCurve';
 
 
 const JUPITER_BASE = 'https://quote-api.jup.ag/v6';
 
-// Compute-unit limit for pump buy/sell txs. A first-time buy bundles a
-// Token-2022 ATA-create (~25k CU) ahead of the pump buy itself (~120-160k),
-// which crowds a 200k ceiling; 250k clears it with headroom. The priority
-// fee scales with this limit, but the absolute difference is a rounding
-// error (~0.000005 SOL per tx).
-const PUMP_COMPUTE_UNIT_LIMIT = 250_000;
+// Compute-unit limit for pump buy/sell txs. buy_v2 carries 27 accounts and the
+// SDK prepends several init_if_needed ATA creates; pump's own docs budget
+// 400k CU for it. The priority fee scales with this limit but the absolute
+// difference from a lower cap is a rounding error (~0.00001 SOL per tx).
+const PUMP_COMPUTE_UNIT_LIMIT = 400_000;
+
+// pump SDK's slippage arg is a whole-percent number (5 = 5%).
+function slippagePercent(cfg: Config): number {
+  return cfg.maxSlippageBps / 100;
+}
 
 export interface SwapResult {
   success: boolean;
@@ -320,6 +320,45 @@ async function detectTokenProgram(
   return info.owner;
 }
 
+// Wraps the pump SDK instructions in a versioned transaction: prepends the
+// compute-budget ixs, signs, sends, confirms. Throws on a program-level
+// failure so the caller's try/catch books it as a failed swap.
+async function sendPumpTransaction(
+  connection: Connection,
+  wallet: Keypair,
+  instructions: TransactionInstruction[],
+  cfg: Config
+): Promise<string> {
+  const { blockhash, lastValidBlockHeight } =
+    await connection.getLatestBlockhash('confirmed');
+  const message = new TransactionMessage({
+    payerKey: wallet.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [
+      ComputeBudgetProgram.setComputeUnitLimit({ units: PUMP_COMPUTE_UNIT_LIMIT }),
+      ComputeBudgetProgram.setComputeUnitPrice({
+        microLamports: cfg.pumpPriorityMicrolamports,
+      }),
+      ...instructions,
+    ],
+  }).compileToV0Message();
+  const tx = new VersionedTransaction(message);
+  tx.sign([wallet]);
+
+  const signature = await connection.sendTransaction(tx, {
+    skipPreflight: true,
+    maxRetries: 2,
+  });
+  const confirmation = await connection.confirmTransaction(
+    { signature, blockhash, lastValidBlockHeight },
+    'confirmed'
+  );
+  if (confirmation.value.err) {
+    throw new Error(`pump tx failed: ${JSON.stringify(confirmation.value.err)}`);
+  }
+  return signature;
+}
+
 async function pumpBuyLive(
   tokenMint: string,
   amountSol: number,
@@ -330,25 +369,6 @@ async function pumpBuyLive(
     const wallet = getWallet(cfg);
     const mintPk = new PublicKey(tokenMint);
 
-    const bondingCurvePda = getBondingCurvePda(mintPk);
-    const bcInfo = await connection.getAccountInfo(bondingCurvePda, 'confirmed');
-    if (!bcInfo?.data) {
-      return pumpFailure(amountSol, 'bonding curve account not found');
-    }
-    const state = decodeBondingCurve(Buffer.from(bcInfo.data));
-    if (state.complete) {
-      return pumpFailure(amountSol, 'bonding curve already graduated');
-    }
-    if (!state.creator) {
-      return pumpFailure(
-        amountSol,
-        'bonding curve missing creator (pre-creator-fees layout)'
-      );
-    }
-
-    const tokenProgram = await detectTokenProgram(connection, mintPk);
-    const feeRecipient = await readPumpFeeRecipient(connection);
-
     const balance = await getWalletBalance(cfg);
     if (balance - amountSol < MIN_SOL_RESERVE) {
       return pumpFailure(
@@ -357,83 +377,54 @@ async function pumpBuyLive(
       );
     }
 
-    const lamportsIn = BigInt(Math.floor(amountSol * LAMPORTS_PER_SOL));
-    const tokensOutBaseUnits = computeBuyTokensOut(
-      state.virtualSolReserves,
-      state.virtualTokenReserves,
-      lamportsIn
-    );
-    if (tokensOutBaseUnits <= 0n) {
-      return pumpFailure(amountSol, 'curve math returned zero tokens');
+    const tokenProgram = await detectTokenProgram(connection, mintPk);
+    const onlineSdk = new OnlinePumpSdk(connection);
+    const sdk = new PumpSdk();
+
+    const global = await onlineSdk.fetchGlobal();
+    const feeConfig = await onlineSdk.fetchFeeConfig();
+    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } =
+      await onlineSdk.fetchBuyState(mintPk, wallet.publicKey, tokenProgram);
+    if (bondingCurve.complete) {
+      return pumpFailure(amountSol, 'bonding curve already graduated');
     }
-    const maxSolCost = applySlippageMaxSol(lamportsIn, cfg.maxSlippageBps);
 
-    const userAta = getAssociatedTokenAddressSync(
-      mintPk,
-      wallet.publicKey,
-      false,
-      tokenProgram,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
-    const ataIx = createAssociatedTokenAccountIdempotentInstruction(
-      wallet.publicKey,
-      userAta,
-      wallet.publicKey,
-      mintPk,
-      tokenProgram,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    // SOL budget -> the fee-aware token amount the buy should request.
+    const quoteAmount = new BN(Math.floor(amountSol * LAMPORTS_PER_SOL));
+    const amount = getBuyTokenAmountFromSolAmount({
+      global,
+      feeConfig,
+      mintSupply: null,
+      bondingCurve,
+      amount: quoteAmount,
+    });
+    if (amount.lten(0)) {
+      return pumpFailure(amountSol, 'curve quote returned zero tokens');
+    }
 
-    const buyIx = buildBuyInstruction({
-      user: wallet.publicKey,
+    // buyV2Instructions assembles the 27-account buy_v2 plus any
+    // init_if_needed ATA-creates; slippage is a whole-percent number.
+    const buyIxs = await sdk.buyV2Instructions({
+      global,
+      bondingCurveAccountInfo,
+      bondingCurve,
+      associatedUserAccountInfo,
       mint: mintPk,
-      creator: state.creator,
+      user: wallet.publicKey,
+      amount,
+      quoteAmount,
+      slippage: slippagePercent(cfg),
       tokenProgram,
-      userAta,
-      feeRecipient,
-      amount: tokensOutBaseUnits,
-      maxSolCost,
-      trackVolume: false,
     });
 
-    const cuLimitIx = ComputeBudgetProgram.setComputeUnitLimit({
-      units: PUMP_COMPUTE_UNIT_LIMIT,
-    });
-    const cuPriceIx = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: cfg.pumpPriorityMicrolamports,
-    });
+    const signature = await sendPumpTransaction(connection, wallet, buyIxs, cfg);
 
-    const { blockhash, lastValidBlockHeight } =
-      await connection.getLatestBlockhash('confirmed');
-    const message = new TransactionMessage({
-      payerKey: wallet.publicKey,
-      recentBlockhash: blockhash,
-      instructions: [cuLimitIx, cuPriceIx, ataIx, buyIx],
-    }).compileToV0Message();
-    const tx = new VersionedTransaction(message);
-    tx.sign([wallet]);
-
-    const signature = await connection.sendTransaction(tx, {
-      skipPreflight: true,
-      maxRetries: 2,
-    });
-    const confirmation = await connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      'confirmed'
-    );
-    if (confirmation.value.err) {
-      return pumpFailure(
-        amountSol,
-        `pump buy tx failed: ${JSON.stringify(confirmation.value.err)}`
-      );
-    }
-
-    const tokensOut = Number(tokensOutBaseUnits) / PUMP_TOKEN_BASE_UNITS;
+    const tokensOut = Number(amount.toString()) / PUMP_TOKEN_BASE_UNITS;
     const pricePerToken = tokensOut > 0 ? amountSol / tokensOut : 0;
     logger.position(
       'BUY',
       tokenMint,
-      `${amountSol} SOL -> ${tokensOut.toFixed(4)} tokens (${signature.slice(0, 8)}..., pump direct)`
+      `${amountSol} SOL -> ${tokensOut.toFixed(4)} tokens (${signature.slice(0, 8)}..., pump v2)`
     );
     return {
       success: true,
@@ -510,121 +501,83 @@ async function pumpSellLive(
 ): Promise<SwapResult> {
   try {
     const connection = getConnection(cfg);
-    const mintPk = new PublicKey(tokenMint);
-    const bondingCurvePda = getBondingCurvePda(mintPk);
-
-    let bcInfo: Awaited<ReturnType<Connection['getAccountInfo']>>;
-    try {
-      bcInfo = await connection.getAccountInfo(bondingCurvePda, 'confirmed');
-    } catch (err) {
-      // RPC failed reading the curve. We can't tell graduated from blip, so
-      // try Jupiter — it'll succeed for graduated tokens and fail cleanly
-      // for active curves (which it can't route anyway).
-      logger.debug(`pumpSellLive curve read failed (${(err as Error).message}); trying Jupiter`);
-      return jupiterSell(tokenMint, amountTokens, cfg);
-    }
-
-    // No account or complete=true means the curve graduated; the mint moved
-    // to PumpSwap AMM and Jupiter routes it.
-    if (!bcInfo?.data) {
-      logger.info(`bonding curve closed for ${tokenMint}; selling via Jupiter (post-graduation)`);
-      return jupiterSell(tokenMint, amountTokens, cfg);
-    }
-    const state = decodeBondingCurve(Buffer.from(bcInfo.data));
-    if (state.complete) {
-      logger.info(`bonding curve complete for ${tokenMint}; selling via Jupiter (post-graduation)`);
-      return jupiterSell(tokenMint, amountTokens, cfg);
-    }
-    if (!state.creator) {
-      return pumpSellFailure(
-        amountTokens,
-        'bonding curve missing creator (pre-creator-fees layout)'
-      );
-    }
-
     const wallet = getWallet(cfg);
+    const mintPk = new PublicKey(tokenMint);
     const tokenProgram = await detectTokenProgram(connection, mintPk);
-    const feeRecipient = await readPumpFeeRecipient(connection);
+    const onlineSdk = new OnlinePumpSdk(connection);
+    const sdk = new PumpSdk();
 
-    const amountBaseUnits = BigInt(Math.floor(amountTokens * PUMP_TOKEN_BASE_UNITS));
-    if (amountBaseUnits <= 0n) {
+    let sellState: Awaited<ReturnType<OnlinePumpSdk['fetchSellState']>>;
+    try {
+      sellState = await onlineSdk.fetchSellState(mintPk, wallet.publicKey, tokenProgram);
+    } catch (err) {
+      // Curve account gone or an RPC blip — can't tell graduated from
+      // transient, so try Jupiter: it routes graduated tokens and fails
+      // cleanly for an active curve it can't price anyway.
+      logger.debug(
+        `pumpSellLive fetchSellState failed (${(err as Error).message}); trying Jupiter`
+      );
+      return jupiterSell(tokenMint, amountTokens, cfg);
+    }
+    const { bondingCurveAccountInfo, bondingCurve } = sellState;
+    if (bondingCurve.complete) {
+      logger.info(
+        `bonding curve complete for ${tokenMint}; selling via Jupiter (post-graduation)`
+      );
+      return jupiterSell(tokenMint, amountTokens, cfg);
+    }
+
+    const amount = new BN(Math.floor(amountTokens * PUMP_TOKEN_BASE_UNITS));
+    if (amount.lten(0)) {
       return pumpSellFailure(amountTokens, 'amount too small');
     }
-    const expectedSolOut = computeSellSolOut(
-      state.virtualSolReserves,
-      state.virtualTokenReserves,
-      amountBaseUnits
-    );
-    if (expectedSolOut <= 0n) {
-      return pumpSellFailure(amountTokens, 'curve math returned zero SOL out');
-    }
-    const minSolOutput = applySlippageMinSol(expectedSolOut, cfg.maxSlippageBps);
 
-    const userAta = getAssociatedTokenAddressSync(
-      mintPk,
-      wallet.publicKey,
-      false,
-      tokenProgram,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    const global = await onlineSdk.fetchGlobal();
+    const feeConfig = await onlineSdk.fetchFeeConfig();
+    // Quote the expected SOL out so the SDK's slippage yields a real
+    // min-output floor rather than zero.
+    const mintInfo = await getMint(connection, mintPk, undefined, tokenProgram);
+    const quoteAmount = getSellSolAmountFromTokenAmount({
+      global,
+      feeConfig,
+      mintSupply: new BN(mintInfo.supply.toString()),
+      bondingCurve,
+      amount,
+    });
 
-    const sellIx = buildSellInstruction({
-      user: wallet.publicKey,
+    const sellIxs = await sdk.sellV2Instructions({
+      global,
+      bondingCurveAccountInfo,
+      bondingCurve,
       mint: mintPk,
-      creator: state.creator,
+      user: wallet.publicKey,
+      amount,
+      quoteAmount,
+      slippage: slippagePercent(cfg),
       tokenProgram,
-      userAta,
-      feeRecipient,
-      amount: amountBaseUnits,
-      minSolOutput,
     });
 
-    const cuLimitIx = ComputeBudgetProgram.setComputeUnitLimit({
-      units: PUMP_COMPUTE_UNIT_LIMIT,
-    });
-    const cuPriceIx = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: cfg.pumpPriorityMicrolamports,
-    });
-
-    const { blockhash, lastValidBlockHeight } =
-      await connection.getLatestBlockhash('confirmed');
-    const message = new TransactionMessage({
-      payerKey: wallet.publicKey,
-      recentBlockhash: blockhash,
-      instructions: [cuLimitIx, cuPriceIx, sellIx],
-    }).compileToV0Message();
-    const tx = new VersionedTransaction(message);
-    tx.sign([wallet]);
-
-    const signature = await connection.sendTransaction(tx, {
-      skipPreflight: true,
-      maxRetries: 2,
-    });
-    const confirmation = await connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      'confirmed'
-    );
-    if (confirmation.value.err) {
-      return pumpSellFailure(
-        amountTokens,
-        `pump sell tx failed: ${JSON.stringify(confirmation.value.err)}`
-      );
-    }
+    const signature = await sendPumpTransaction(connection, wallet, sellIxs, cfg);
 
     // If that sell drained the position, the now-empty ATA still holds
     // ~0.002 SOL of rent — reclaim it. Best-effort and in its own tx so a
     // close failure can never undo the booked sell above.
+    const userAta = getAssociatedTokenAddressSync(
+      mintPk,
+      wallet.publicKey,
+      false,
+      tokenProgram
+    );
     await maybeCloseEmptyAta(connection, mintPk, userAta, tokenProgram, cfg);
 
-    // Book the trade at the curve-implied price — actual SOL delivered may
-    // be a hair higher if the program rounded our minSolOutput up, but the
-    // computed expected is the conservative figure for PnL accounting.
-    const solOut = Number(expectedSolOut) / LAMPORTS_PER_SOL;
+    // Book the trade at the quoted SOL out — actual delivered may be a hair
+    // higher than this conservative figure; good enough for PnL accounting.
+    const solOut = Number(quoteAmount.toString()) / LAMPORTS_PER_SOL;
     const pricePerToken = amountTokens > 0 ? solOut / amountTokens : 0;
     logger.position(
       'SELL',
       tokenMint,
-      `${amountTokens.toFixed(4)} tokens -> ${solOut.toFixed(6)} SOL (${signature.slice(0, 8)}..., pump direct)`
+      `${amountTokens.toFixed(4)} tokens -> ${solOut.toFixed(6)} SOL (${signature.slice(0, 8)}..., pump v2)`
     );
     return {
       success: true,
