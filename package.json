@@ -1,7 +1,7 @@
 {
   "name": "miper",
   "version": "0.1.0",
-  "description": "Autonomous Solana memecoin sniping bot with Claude AI scoring",
+  "description": "Autonomous Solana memecoin sniping bot with AI scoring",
   "private": true,
   "main": "dist/index.js",
   "bin": {
@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "snipe": "ts-node src/index.ts snipe",
+    "snipe:pump": "ts-node src/index.ts snipe --source pump",
     "simulate": "SIMULATE=true ts-node src/index.ts snipe",
     "simulate:pump": "SIMULATE=true ts-node src/index.ts snipe --source pump",
     "monitor": "ts-node src/index.ts monitor",
