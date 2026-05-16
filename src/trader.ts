@@ -53,6 +53,36 @@ function slippagePercent(cfg: Config): number {
   return cfg.maxSlippageBps / 100;
 }
 
+// pump.fun's Global and FeeConfig accounts are network-wide, not per-token,
+// and change very rarely. Re-fetching both on every buy/sell adds two
+// sequential RPC round-trips to the critical path — on a fast-climbing
+// momentum token that latency alone can blow the slippage cap (6002). Cache
+// them with a short TTL so a genuine config change still propagates within
+// minutes, and parallelize the cold fetch.
+const PUMP_CONFIG_TTL_MS = 5 * 60_000;
+type PumpConfig = {
+  global: Awaited<ReturnType<OnlinePumpSdk['fetchGlobal']>>;
+  feeConfig: Awaited<ReturnType<OnlinePumpSdk['fetchFeeConfig']>>;
+};
+let pumpConfigCache: { value: PumpConfig; at: number } | null = null;
+
+async function fetchPumpConfig(onlineSdk: OnlinePumpSdk): Promise<PumpConfig> {
+  if (pumpConfigCache && Date.now() - pumpConfigCache.at < PUMP_CONFIG_TTL_MS) {
+    return pumpConfigCache.value;
+  }
+  const [global, feeConfig] = await Promise.all([
+    onlineSdk.fetchGlobal(),
+    onlineSdk.fetchFeeConfig(),
+  ]);
+  pumpConfigCache = { value: { global, feeConfig }, at: Date.now() };
+  return pumpConfigCache.value;
+}
+
+// Tests drive different mock config per case — drop the cache between them.
+export function __resetPumpConfigCache(): void {
+  pumpConfigCache = null;
+}
+
 export interface SwapResult {
   success: boolean;
   txSignature: string;
@@ -466,8 +496,7 @@ async function pumpBuyLive(
     const onlineSdk = new OnlinePumpSdk(connection);
     const sdk = new PumpSdk();
 
-    const global = await onlineSdk.fetchGlobal();
-    const feeConfig = await onlineSdk.fetchFeeConfig();
+    const { global, feeConfig } = await fetchPumpConfig(onlineSdk);
     const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } =
       await onlineSdk.fetchBuyState(mintPk, wallet.publicKey, tokenProgram);
     if (bondingCurve.complete) {
@@ -617,8 +646,7 @@ async function pumpSellLive(
       return pumpSellFailure(amountTokens, 'amount too small');
     }
 
-    const global = await onlineSdk.fetchGlobal();
-    const feeConfig = await onlineSdk.fetchFeeConfig();
+    const { global, feeConfig } = await fetchPumpConfig(onlineSdk);
     // Quote the expected SOL out so the SDK's slippage yields a real
     // min-output floor rather than zero.
     const mintInfo = await getMint(connection, mintPk, undefined, tokenProgram);

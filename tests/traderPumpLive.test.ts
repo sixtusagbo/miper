@@ -73,7 +73,7 @@ vi.mock('@pump-fun/pump-sdk', () => ({
 }));
 
 import { resetConfigCache } from '../src/config';
-import { buyToken, sellToken } from '../src/trader';
+import { buyToken, sellToken, __resetPumpConfigCache } from '../src/trader';
 
 const TOKEN_2022_PROGRAM = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
@@ -89,6 +89,7 @@ beforeEach(() => {
   process.env.MAX_SLIPPAGE_BPS = '500';
   process.env.PUMP_PRIORITY_MICROLAMPORTS = '0';
   resetConfigCache();
+  __resetPumpConfigCache();
   for (const m of Object.values(mocks)) m.mockReset();
   // Shared defaults: a Token-2022 mint, a live blockhash, confirmable txs.
   mocks.mockGetAccountInfo.mockResolvedValue({ owner: TOKEN_2022_PROGRAM });
