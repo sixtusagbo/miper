@@ -509,6 +509,33 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-6 — tx landing solved; buy slippage is the new wall
+**Date:** 2026-05-16
+**Code state:** dynamic priority fee + tx rebroadcast shipped (`860261e`). Launched with `make snipe-pump-fresh LABEL=R-live-6`.
+**Config:** LIVE, `--source pump`. `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_HOLD_MINUTES=10`, `MAX_SLIPPAGE_BPS=500`, `PUMP_PRIORITY_MICROLAMPORTS=1000000` floor / `5000000` max (dynamic), `MIN_AI_SCORE=70` (gpt-5-nano), `EXIT_MODE=all-in` 3×, `MAX_CONSECUTIVE_BUY_FAILURES=8`.
+**Duration:** ~64 min (08:28 → 09:32; circuit-breaker shutdown on 8 consecutive buy failures — did not reach the 2h cap).
+
+| Metric | Value |
+|---|---|
+| BUYING attempts | 31 |
+| tx landing | ~100% — **zero `block height exceeded`** (R-live-5 had 37) |
+| Buys succeeded | 10 (32%) |
+| Buy failures | 21 — all `Custom:6002` buy-slippage reverts |
+| Mayhem coins rejected | 198 |
+| Positions | 10 opened, all 10 finished (closed) |
+| Realized PnL | **−0.0048 SOL** (spent 0.200, received 0.195) |
+| Outcomes | all 10 time-exited at `MAX_HOLD_MINUTES`; 0 wins |
+
+**Outcome:** the dynamic-fee + rebroadcast fix eliminated `block height exceeded` entirely — every tx landed, on the free RPC tier (no upgrade needed). The failure mode shifted: 21 of 31 buys (68%) landed and reverted with `Custom:6002` — the curve moved past the 5% slippage cap between the curve read and execution. In the final 12 minutes every buy hit it → breaker at 64 min.
+
+**Learning:**
+- Buy *landing* is solved. Dynamic priority fee + rebroadcast validated: `block height exceeded` 37 → 0. The free Helius tier is sufficient — the old static send-once path was the wall, not the RPC.
+- Buy *slippage* is the new wall. 5% (`MAX_SLIPPAGE_BPS=500`) is too tight for hot pump.fun launches that move 5-15% in the 1-2s a tx takes to land. Fixed post-run: `MAX_SLIPPAGE_BPS` 500 → 1500.
+- The 10 landed trades all time-exited flat at 10 min — none reached 3×, consistent with R-live-4/5. Strategy verdict still pending a complete run.
+- Next: R-live-7 at 15% slippage — targeting the first complete 2h run.
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
