@@ -44,6 +44,10 @@ const MAX_CONCURRENT_ANALYSES = 6;
 const ANALYSIS_TIMEOUT_MS = 20_000;
 // How often the snipe command prints a rolling status summary during a run.
 const STATUS_PRINT_INTERVAL_MS = 15 * 60 * 1000;
+// Backstop for the graceful shutdown: if cleanup stalls (e.g. a dead RPC),
+// force-exit so the process never hangs on Ctrl-C. Generous enough to let a
+// legitimate close-on-shutdown sweep finish first.
+const SHUTDOWN_HARD_TIMEOUT_MS = 3 * 60 * 1000;
 
 function printBanner(): void {
   const cfg = loadConfig();
@@ -227,13 +231,24 @@ async function snipeCommand(options: {
     }
   }, STATUS_PRINT_INTERVAL_MS);
 
-  // Idempotent — multiple SIGINTs (or SIGINT during MAX_RUN_HOURS auto-stop)
-  // won't kick off two parallel close-positions loops.
+  // First interrupt runs the graceful shutdown; a second one (impatient user,
+  // or SIGINT during the MAX_RUN_HOURS auto-stop) force-exits instead of
+  // starting a second close-positions loop.
   let shuttingDown = false;
   const shutdown = async (reason: string) => {
-    if (shuttingDown) return;
+    if (shuttingDown) {
+      logger.warn('second interrupt — force-exiting');
+      process.exit(130);
+    }
     shuttingDown = true;
     logger.info(`shutting down (${reason})...`);
+    // Backstop: if any cleanup step stalls on a dead RPC/WebSocket, force-exit
+    // anyway so Ctrl-C is never a dead end.
+    const forceExit = setTimeout(() => {
+      logger.warn('shutdown cleanup stalled — force-exiting');
+      process.exit(1);
+    }, SHUTDOWN_HARD_TIMEOUT_MS);
+    forceExit.unref();
     clearInterval(statusTimer);
     if (autoStopTimer) clearTimeout(autoStopTimer);
     await listener.stop();
@@ -246,6 +261,7 @@ async function snipeCommand(options: {
     }
     printStatus();
     closeDb();
+    clearTimeout(forceExit);
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));

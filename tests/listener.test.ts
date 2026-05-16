@@ -252,6 +252,18 @@ describe('PoolListener', () => {
     await listener.stop();
   });
 
+  it('stop() returns even when removeOnLogsListener never resolves (R-live-7 SIGINT hang)', async () => {
+    const { conn } = setupListenerConnection(null);
+    conn.removeOnLogsListener = vi.fn(() => new Promise(() => {})); // hangs forever
+    const { PoolListener } = await import('../src/listener');
+    const listener = new PoolListener(conn, 0, { reconnectTeardownTimeoutMs: 20 });
+    await listener.start();
+    // Without the withTimeout guard in stop(), this await never resolves and
+    // the graceful shutdown hangs — the process had to be hard-killed.
+    await listener.stop();
+    expect(conn.removeOnLogsListener).toHaveBeenCalledTimes(1);
+  });
+
   it('resets the empty-window counter when events arrive', async () => {
     const { conn, invoke } = setupListenerConnection(null);
     let factoryCalls = 0;

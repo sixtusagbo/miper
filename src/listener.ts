@@ -180,14 +180,16 @@ function makeConnection(): Connection {
 }
 
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
-// Two back-to-back empty heartbeat windows (~10 min) is a strong signal the
-// WebSocket has silently died. Raydium/pump see hundreds of events per minute
-// in normal operation, so genuine stretches of zero activity don't last this long.
-const DEFAULT_RECONNECT_AFTER_EMPTY_WINDOWS = 2;
-// Cap on the removeOnLogsListener teardown await during reconnect. R11b had
-// this hang indefinitely on a dead WebSocket — the reconnect logged "Tearing
-// down..." then never returned, leaving `reconnecting` pinned to true and
-// killing every subsequent reconnect attempt for 8.5 hours.
+// One empty heartbeat window (~5 min) of zero events is already an
+// unambiguous dead-WebSocket signal: both the Raydium AMM and pump.fun
+// programs see hundreds of transactions per minute, so a genuine 5-minute
+// stretch of zero activity never happens. Reconnecting on the first empty
+// window halves the blind time vs. waiting for a second.
+const DEFAULT_RECONNECT_AFTER_EMPTY_WINDOWS = 1;
+// Cap on every removeOnLogsListener teardown await — both reconnect() and
+// stop(). A dead WebSocket makes that call hang forever: R11b pinned
+// `reconnecting` true for 8.5h on reconnect; R-live-7's SIGINT shutdown hung
+// on stop() and the process had to be hard-killed.
 const DEFAULT_RECONNECT_TEARDOWN_TIMEOUT_MS = 5000;
 
 interface ListenerCounters {
@@ -291,7 +293,13 @@ export class LogListener extends EventEmitter {
     }
     if (this.subscriptionId !== null) {
       try {
-        await this.connection.removeOnLogsListener(this.subscriptionId);
+        // Timeout-guarded: a dead WebSocket makes removeOnLogsListener never
+        // resolve, which otherwise hangs the whole SIGINT shutdown (R-live-7).
+        await withTimeout(
+          this.connection.removeOnLogsListener(this.subscriptionId),
+          this.reconnectTeardownTimeoutMs,
+          'removeOnLogsListener'
+        );
       } catch (err) {
         logger.debug(`removeOnLogsListener: ${(err as Error).message}`);
       }
