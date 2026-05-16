@@ -585,6 +585,53 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-9 — momentum entry, first run; the funnel works, the buy doesn't
+**Date:** 2026-05-16
+**Code state:** launch-snipe replaced with the `MomentumWatcher` + bundle-veto pre-screen (`cd29f44`). Launched with `make snipe-pump-fresh LABEL=R-live-9`. Startup banner still showed an AI score; dropped mid-run (`f0ac7b6`).
+**Config:** LIVE, `--source pump`. `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_SLIPPAGE_BPS=1500`, momentum window 3min, band [1.4×, 2.5×], `MOMENTUM_BUNDLE_THRESHOLD=3`, `EXIT_MODE=all-in` 3×.
+**Duration:** full 2h.
+
+| Stage | Count |
+|---|---|
+| Tokens watched | ~983 |
+| Triggered the band | ~80 |
+| Bundle-vetoed | ~22 (28% of triggers) |
+| Safety-vetoed | ~43 |
+| Buy attempts | ~14 |
+| Buys landed | **1** — the other 13 reverted `Custom:6002` (slippage) |
+
+**Outcome:** the momentum funnel is sound — it watches ~1k launches and surfaces ~80 real climbers, and the bundle veto fires on a meaningful 28%. But 13 of 14 buys reverted on slippage: the trigger fired on a price up to one sample interval (25s) stale, and the buy couldn't land before the climbing token moved past the 15% cap.
+
+**Learning:**
+- The watch/score side works; the *entry execution* is the wall — same `6002` as R-live-6, now caused by stale-sample lag rather than launch heat.
+- Decision: momentum v1.1 — add a **min-age filter** (drop band-crossings too fast to catch) and **pre-screen during the watch** so the entry path is just a buy. See R-live-10.
+
+---
+
+## Run R-live-10 — momentum v1.1; min-age filter holds, buys still can't land
+**Date:** 2026-05-16
+**Code state:** momentum v1.1 — min-age filter + pre-screen-during-watch (`9fb3cd1`). Launched with `make snipe-pump-fresh LABEL=R-live-10`.
+**Config:** LIVE, `--source pump`. `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_SLIPPAGE_BPS=1500`, momentum window 3min, band [1.4×, 2.5×], `MOMENTUM_MIN_AGE_SEC=60`, `MOMENTUM_BUNDLE_THRESHOLD=3`, `EXIT_MODE=all-in` 3×.
+**Duration:** full 2h. A 10–12 min local-internet gap mid-run; the bot recovered and ran to the cap.
+
+| Stage | Count |
+|---|---|
+| Tokens watched | 1957 |
+| Expired the window (never reached the band) | 993 |
+| Dropped by the min-age filter (band hit too fast) | ~35 |
+| Ran past the band | 3 |
+| Pre-screen vetoed | 894 (505 mayhem, 389 bundled) |
+| Clean entries (in-band, ≥60s old, screen passed) | **7** |
+| Buys landed | **0** — all 7 reverted `Custom:6002` (slippage) |
+
+**Outcome:** the min-age filter works as intended — it dropped the sub-60s spikes — and pre-screen-during-watch made the entry path a clean buy. But all 7 catchable entries (climbs of +42–64% over 71–123s) still reverted on slippage. The buy path already re-quotes a *fresh* curve, so this is genuine in-flight movement: a momentum token is under active buy pressure by construction and climbs >15% in the seconds the tx is airborne. Across R-live-9 + R-live-10, **20 of 21 momentum buys reverted `6002`**.
+
+**Learning:**
+- Not a tuning problem — a structural one. Detecting a 40%+ climb and then landing a buy at 15% slippage *while it is still climbing* is contradictory.
+- Decision: R-live-11 raises `MAX_SLIPPAGE_BPS` to 4000 (40%) and caches `fetchGlobal`/`fetchFeeConfig` to cut buy-tx latency. Three clean outcomes: buys land and fills profit (momentum works), buys land and fills lose (momentum-entry dead — pivot with real fill data), or buys still fail (the bonding curve is uninvestable for a latency-bound bot).
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
