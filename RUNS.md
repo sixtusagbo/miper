@@ -483,6 +483,32 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-5 — mayhem filter holds; buy landing collapses, breaker at 58 min
+**Date:** 2026-05-16
+**Code state:** mayhem-mode buy filter shipped (`613808b`). Launched with `make snipe-pump-fresh LABEL=R-live-5`.
+**Config:** LIVE, `--source pump`. `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_HOLD_MINUTES=10`, `MAX_SLIPPAGE_BPS=500`, `PUMP_PRIORITY_MICROLAMPORTS=1000000` (static — pre dynamic-fee), `MIN_AI_SCORE=70` (gpt-5-nano), `EXIT_MODE=all-in` 3×, `MAX_CONSECUTIVE_BUY_FAILURES=8`, `CLOSE_ON_SHUTDOWN=true`.
+**Duration:** ~58 min (04:02 → 05:00; circuit-breaker shutdown on 8 consecutive buy failures — did not reach the 2h cap).
+
+| Metric | Value |
+|---|---|
+| BUYING attempts | ~31 |
+| Buys landed | 8 (~26%) |
+| Buy failures | 23 — 37 `block height exceeded` tx-expiry events |
+| Mayhem coins rejected | 141 — filter working, **zero bought, zero `6024`** |
+| Positions | 8 opened, all 8 finished (closed) |
+| Realized PnL | **−0.0033 SOL** (spent 0.160, received 0.157) |
+| Outcomes | all 8 time-exited at `MAX_HOLD_MINUTES`; 1 marginal win, 7 × −2.5% |
+
+**Outcome:** the mayhem filter is validated — 141 mayhem coins rejected, none bought, no `6024` reverts. But buy landing collapsed to ~26% (R-live-4 was 71% at the same static fee), and the breaker tripped at 58 min. Still no clean 2h run. Of the 8 that landed, none reached the 3× target and none rugged — they all drifted sideways and force-exited flat.
+
+**Learning:**
+- Mayhem-mode blocker is closed. The filter works exactly as designed.
+- **Buy landing is now the live blocker.** A static priority fee isn't competitive across network conditions — 71% landing in a calm window, 26% in a busy one. 37 `block height exceeded`: each tx was sent once, dropped by validators, then left to expire with nothing resending it. This is the third run killed by buy latency (R-live-3, R-live-5).
+- The 8 landed trades say nothing yet about the strategy — a thin sample, all time-exited at flat. Strategy verdict still pending a clean run.
+- **Fix shipped post-run:** `sendPumpTransaction` now sets a dynamic priority fee from `getRecentPrioritizationFees` (clamped floor..max via `PUMP_PRIORITY_MAX_MICROLAMPORTS`) and actively rebroadcasts the signed tx until it confirms or its blockhash truly expires. Next: R-live-6.
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
