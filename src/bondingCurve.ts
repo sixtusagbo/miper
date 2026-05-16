@@ -1,5 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { logger } from './logger';
+import { PROGRAM_IDS } from './config';
 
 // pump.fun bonding-curve account layout (Anchor-encoded):
 //   [0..8)    discriminator (sha256("account:BondingCurve")[..8])
@@ -18,6 +19,8 @@ import { logger } from './logger';
 const BONDING_CURVE_MIN_SIZE = 8 + 5 * 8 + 1;
 const BONDING_CURVE_CREATOR_OFFSET = BONDING_CURVE_MIN_SIZE;
 const BONDING_CURVE_CREATOR_END = BONDING_CURVE_CREATOR_OFFSET + 32;
+// is_mayhem_mode: the bool byte immediately after the creator pubkey.
+const BONDING_CURVE_MAYHEM_OFFSET = BONDING_CURVE_CREATOR_END;
 
 const SOL_LAMPORTS = 1_000_000_000;
 // pump.fun mints have 6 decimals fixed by the program's global config.
@@ -34,6 +37,11 @@ export interface BondingCurveState {
   // on-chain accounts always carry it; live trades need it to derive the
   // creator_vault PDA.
   creator: PublicKey | null;
+  // pump.fun "Mayhem Mode" flag (byte 81). Mayhem coins can enter a Paused
+  // state where the bonding-curve sell reverts with Custom:6024 — unsellable
+  // trapped capital. False on buffers too short to carry the byte (legacy
+  // 49-byte test fixtures).
+  isMayhemMode: boolean;
 }
 
 export function decodeBondingCurve(data: Buffer): BondingCurveState {
@@ -53,6 +61,9 @@ export function decodeBondingCurve(data: Buffer): BondingCurveState {
     data.length >= BONDING_CURVE_CREATOR_END
       ? new PublicKey(data.subarray(BONDING_CURVE_CREATOR_OFFSET, BONDING_CURVE_CREATOR_END))
       : null;
+  const isMayhemMode =
+    data.length > BONDING_CURVE_MAYHEM_OFFSET &&
+    data[BONDING_CURVE_MAYHEM_OFFSET] === 1;
   return {
     virtualTokenReserves,
     virtualSolReserves,
@@ -61,7 +72,16 @@ export function decodeBondingCurve(data: Buffer): BondingCurveState {
     tokenTotalSupply,
     complete,
     creator,
+    isMayhemMode,
   };
+}
+
+// Derive a pump.fun token's bonding-curve PDA — seeds ["bonding-curve", mint].
+export function bondingCurvePda(mint: string): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('bonding-curve'), new PublicKey(mint).toBuffer()],
+    PROGRAM_IDS.PUMP_FUN
+  )[0];
 }
 
 // SOL per token (human units) implied by the curve's current virtual

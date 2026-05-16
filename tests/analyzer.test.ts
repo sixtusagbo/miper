@@ -114,6 +114,24 @@ function mockFetchJson(json: unknown, ok = true, status = 200): void {
   });
 }
 
+// A revoked-authority mint that clears the basic mint/freeze safety gates.
+function mockPassingMint(): void {
+  mocks.mockGetMint.mockResolvedValue({
+    mintAuthority: null,
+    freezeAuthority: null,
+    supply: 1_000_000n * 1_000_000n,
+    decimals: 6,
+  });
+}
+
+// Minimal bonding-curve account buffer for the mayhem-flag check: 49-byte
+// base + 32-byte creator + the is_mayhem_mode bool at offset 81.
+function buildCurveBuf(isMayhem: boolean): Buffer {
+  const buf = Buffer.alloc(8 + 5 * 8 + 1 + 32 + 1);
+  buf[8 + 5 * 8 + 1 + 32] = isMayhem ? 1 : 0;
+  return buf;
+}
+
 // ---------------------------------------------------------------------------
 // runSafetyChecks
 // ---------------------------------------------------------------------------
@@ -398,12 +416,7 @@ describe('analyzeToken', () => {
         },
       ],
     });
-    mocks.mockGetMint.mockResolvedValue({
-      mintAuthority: null,
-      freezeAuthority: null,
-      supply: 1_000_000n * 1_000_000n,
-      decimals: 6,
-    });
+    mockPassingMint();
     mocks.mockGetTokenLargestAccounts.mockResolvedValue({
       value: [{ amount: '50000000000' }], // 5% of 1M
     });
@@ -444,12 +457,7 @@ describe('analyzeToken', () => {
         },
       ],
     });
-    mocks.mockGetMint.mockResolvedValue({
-      mintAuthority: null,
-      freezeAuthority: null,
-      supply: 1_000_000n * 1_000_000n,
-      decimals: 6,
-    });
+    mockPassingMint();
     mocks.mockGetTokenLargestAccounts.mockResolvedValue({
       value: [{ amount: '50000000000' }],
     });
@@ -489,12 +497,7 @@ describe('pump source', () => {
     // would reject this, pump must tolerate it. We also can't call
     // getTokenLargestAccounts at all because the RPC rejects Token-2022
     // mints as "not a Token mint".
-    mocks.mockGetMint.mockResolvedValue({
-      mintAuthority: null,
-      freezeAuthority: null,
-      supply: 1_000_000n * 1_000_000n,
-      decimals: 6,
-    });
+    mockPassingMint();
     const result = await runSafetyChecks(fakeConnection(), VALID_MINT, 50, loadConfig());
     expect(result.passed).toBe(true);
     expect(result.failures).toEqual([]);
@@ -502,12 +505,7 @@ describe('pump source', () => {
   });
 
   it('analyzeToken uses pump market data and skips DexScreener entirely', async () => {
-    mocks.mockGetMint.mockResolvedValue({
-      mintAuthority: null,
-      freezeAuthority: null,
-      supply: 1_000_000n * 1_000_000n,
-      decimals: 6,
-    });
+    mockPassingMint();
     mocks.mockGetTokenLargestAccounts.mockResolvedValue({
       value: [{ amount: '1000000000000' }],
     });
@@ -523,12 +521,7 @@ describe('pump source', () => {
   });
 
   it('pump analysis fetches metadata + creator history and surfaces both in the AI prompt', async () => {
-    mocks.mockGetMint.mockResolvedValue({
-      mintAuthority: null,
-      freezeAuthority: null,
-      supply: 1_000_000n * 1_000_000n,
-      decimals: 6,
-    });
+    mockPassingMint();
     // Build a realistic Metaplex metadata account so fetchTokenMetadata
     // returns real name/symbol/uri rather than null.
     const metadataBuffer = (() => {
@@ -549,7 +542,11 @@ describe('pump source', () => {
         Buffer.alloc(32, 0),
       ]);
     })();
-    mocks.mockGetAccountInfo.mockResolvedValue({ data: metadataBuffer });
+    // runSafetyChecks reads the bonding curve (mayhem-flag check) before
+    // metadata: feed a clean non-mayhem curve first, then the metadata account.
+    mocks.mockGetAccountInfo
+      .mockResolvedValueOnce({ data: buildCurveBuf(false) })
+      .mockResolvedValueOnce({ data: metadataBuffer });
     const nowSec = Math.floor(Date.now() / 1000);
     mocks.mockGetSignaturesForAddress.mockResolvedValue([
       { signature: 'a', blockTime: nowSec - 86400 },
@@ -570,7 +567,7 @@ describe('pump source', () => {
 
     expect(analysis.shouldBuy).toBe(false); // 65 < MIN_AI_SCORE=70 default
     expect(analysis.ai.score).toBe(65);
-    expect(mocks.mockGetAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.mockGetAccountInfo).toHaveBeenCalledTimes(2);
     expect(mocks.mockGetSignaturesForAddress).toHaveBeenCalledTimes(1);
 
     // Inspect the user prompt Claude actually saw.
@@ -595,12 +592,7 @@ describe('pump source', () => {
     // prompt, the LLM reads "0.04 days old" as "fresh disposable wallet"
     // and tanks the score on tokens that are actually launched by aged,
     // high-volume traders.
-    mocks.mockGetMint.mockResolvedValue({
-      mintAuthority: null,
-      freezeAuthority: null,
-      supply: 1_000_000n * 1_000_000n,
-      decimals: 6,
-    });
+    mockPassingMint();
     const nowSec = Math.floor(Date.now() / 1000);
     const oneHourAgo = nowSec - 3600;
     const sigs = Array.from({ length: 1000 }, (_, i) => ({
@@ -626,6 +618,22 @@ describe('pump source', () => {
     expect(userPrompt).toContain('1000+ recent txs');
     expect(userPrompt).toContain('true wallet age unknown');
     expect(userPrompt).not.toMatch(/oldest activity 0\.0 days ago/);
+  });
+
+  it('runSafetyChecks rejects a mayhem-mode pump coin', async () => {
+    mockPassingMint();
+    mocks.mockGetAccountInfo.mockResolvedValue({ data: buildCurveBuf(true) });
+    const result = await runSafetyChecks(fakeConnection(), VALID_MINT, 50, loadConfig());
+    expect(result.passed).toBe(false);
+    expect(result.failures.join(' ')).toMatch(/mayhem/i);
+  });
+
+  it('runSafetyChecks passes a non-mayhem pump coin', async () => {
+    mockPassingMint();
+    mocks.mockGetAccountInfo.mockResolvedValue({ data: buildCurveBuf(false) });
+    const result = await runSafetyChecks(fakeConnection(), VALID_MINT, 50, loadConfig());
+    expect(result.passed).toBe(true);
+    expect(result.failures).toEqual([]);
   });
 });
 
