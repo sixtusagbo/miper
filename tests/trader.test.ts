@@ -33,8 +33,13 @@ vi.mock('@solana/web3.js', async () => {
   return { ...actual, Connection: MockConnection };
 });
 
-import { resetConfigCache } from '../src/config';
-import { buyToken, sellToken } from '../src/trader';
+import { loadConfig, resetConfigCache } from '../src/config';
+import {
+  buyToken,
+  computePriorityMicrolamports,
+  confirmWithRebroadcast,
+  sellToken,
+} from '../src/trader';
 
 const VALID_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 
@@ -208,5 +213,104 @@ describe('sellToken (simulate)', () => {
     const result = await sellToken(VALID_MINT, 1_000_000);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/boom/);
+  });
+});
+
+describe('computePriorityMicrolamports', () => {
+  function cfgWith(floor: number, max: number) {
+    process.env.PUMP_PRIORITY_MICROLAMPORTS = String(floor);
+    process.env.PUMP_PRIORITY_MAX_MICROLAMPORTS = String(max);
+    resetConfigCache();
+    return loadConfig();
+  }
+  const conn = (fees: number[] | Error) =>
+    ({
+      getRecentPrioritizationFees:
+        fees instanceof Error
+          ? vi.fn().mockRejectedValue(fees)
+          : vi
+              .fn()
+              .mockResolvedValue(fees.map((f) => ({ slot: 0, prioritizationFee: f }))),
+    }) as any;
+
+  it('returns the floor when no recent fees are available', async () => {
+    const fee = await computePriorityMicrolamports(conn([]), cfgWith(100_000, 5_000_000));
+    expect(fee).toBe(100_000);
+  });
+
+  it('returns the floor when recent fees are all below it', async () => {
+    const fee = await computePriorityMicrolamports(
+      conn([100, 200, 300, 400]),
+      cfgWith(100_000, 5_000_000)
+    );
+    expect(fee).toBe(100_000);
+  });
+
+  it('targets the 75th percentile with headroom above the floor', async () => {
+    // p75 of [200000 x4] = 200000; x1.3 headroom = 260000
+    const fee = await computePriorityMicrolamports(
+      conn([200_000, 200_000, 200_000, 200_000]),
+      cfgWith(100_000, 5_000_000)
+    );
+    expect(fee).toBe(260_000);
+  });
+
+  it('caps the fee at the configured maximum during congestion', async () => {
+    const fee = await computePriorityMicrolamports(
+      conn([50_000_000]),
+      cfgWith(100_000, 5_000_000)
+    );
+    expect(fee).toBe(5_000_000);
+  });
+
+  it('falls back to the floor when the RPC fee lookup fails', async () => {
+    const fee = await computePriorityMicrolamports(
+      conn(new Error('rpc down')),
+      cfgWith(100_000, 5_000_000)
+    );
+    expect(fee).toBe(100_000);
+  });
+});
+
+describe('confirmWithRebroadcast', () => {
+  const bh = { blockhash: 'bh', lastValidBlockHeight: 100 };
+  const raw = new Uint8Array([1, 2, 3]);
+
+  it('returns the signature once the tx confirms', async () => {
+    const conn = {
+      sendRawTransaction: vi.fn().mockResolvedValue('SIG'),
+      confirmTransaction: vi.fn().mockResolvedValue({ value: { err: null } }),
+    } as any;
+    const sig = await confirmWithRebroadcast(conn, raw, bh, 5);
+    expect(sig).toBe('SIG');
+    expect(conn.sendRawTransaction).toHaveBeenCalled();
+  });
+
+  it('keeps rebroadcasting the tx while confirmation is pending', async () => {
+    let resolveConfirm: (v: unknown) => void = () => {};
+    const confirmP = new Promise((r) => {
+      resolveConfirm = r;
+    });
+    const conn = {
+      sendRawTransaction: vi.fn().mockResolvedValue('SIG'),
+      confirmTransaction: vi.fn().mockReturnValue(confirmP),
+    } as any;
+    const p = confirmWithRebroadcast(conn, raw, bh, 2);
+    await new Promise((r) => setTimeout(r, 16)); // ~8 rebroadcast intervals
+    expect(conn.sendRawTransaction.mock.calls.length).toBeGreaterThan(1);
+    resolveConfirm({ value: { err: null } });
+    await expect(p).resolves.toBe('SIG');
+  });
+
+  it('throws when the tx confirms with a program error', async () => {
+    const conn = {
+      sendRawTransaction: vi.fn().mockResolvedValue('SIG'),
+      confirmTransaction: vi.fn().mockResolvedValue({
+        value: { err: { InstructionError: [2, { Custom: 6002 }] } },
+      }),
+    } as any;
+    await expect(confirmWithRebroadcast(conn, raw, bh, 5)).rejects.toThrow(
+      /pump tx failed/
+    );
   });
 });

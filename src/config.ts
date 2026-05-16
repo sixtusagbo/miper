@@ -87,12 +87,13 @@ export interface Config {
   // Older archives are dropped when this cap is hit. Ignored when
   // logMaxBytes=0.
   logMaxFiles: number;
-  // Compute-unit priority fee (micro-lamports per CU) on pump.fun direct
-  // buy/sell transactions. Sniping needs front-of-line in the leader slot,
-  // so we set a non-zero default; tune up when you see consistent
-  // "transaction not landing" failures. 100_000 * 200k CU = 20k lamports
-  // (~$0.005 priority) per snipe.
+  // Compute-unit priority fee on pump.fun buy/sell txs (micro-lamports per
+  // CU). pumpPriorityMicrolamports is the FLOOR: the fee is set per-tx from
+  // recent network fees (see computePriorityMicrolamports) and clamped
+  // between this floor and pumpPriorityMaxMicrolamports. Raise the floor for
+  // a faster baseline; raise the max to stay competitive in congestion.
   pumpPriorityMicrolamports: number;
+  pumpPriorityMaxMicrolamports: number;
   // Consecutive failed buys that trip a graceful shutdown — a circuit
   // breaker for live runs where a systematic fault (bad instruction
   // encoding, dead RPC, drained wallet) fails every snipe and bleeds fees
@@ -236,6 +237,7 @@ export function loadConfig(): Config {
     logMaxBytes: numberFromEnv('LOG_MAX_BYTES', 100 * 1024 * 1024),
     logMaxFiles: numberFromEnv('LOG_MAX_FILES', 5),
     pumpPriorityMicrolamports: numberFromEnv('PUMP_PRIORITY_MICROLAMPORTS', 100_000),
+    pumpPriorityMaxMicrolamports: numberFromEnv('PUMP_PRIORITY_MAX_MICROLAMPORTS', 5_000_000),
     maxConsecutiveBuyFailures: numberFromEnv('MAX_CONSECUTIVE_BUY_FAILURES', 5),
   };
 
@@ -289,6 +291,11 @@ function validateConfig(c: Config): void {
   if (c.pumpPriorityMicrolamports < 0) {
     throw new Error(
       `PUMP_PRIORITY_MICROLAMPORTS must be >= 0, got ${c.pumpPriorityMicrolamports}`
+    );
+  }
+  if (c.pumpPriorityMaxMicrolamports < c.pumpPriorityMicrolamports) {
+    throw new Error(
+      `PUMP_PRIORITY_MAX_MICROLAMPORTS (${c.pumpPriorityMaxMicrolamports}) must be >= PUMP_PRIORITY_MICROLAMPORTS (${c.pumpPriorityMicrolamports})`
     );
   }
   if (c.maxConsecutiveBuyFailures < 0) {
