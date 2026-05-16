@@ -99,6 +99,21 @@ export interface Config {
   // encoding, dead RPC, drained wallet) fails every snipe and bleeds fees
   // until noticed. The counter resets on any successful buy. 0 disables.
   maxConsecutiveBuyFailures: number;
+  // Momentum entry (pump source): instead of sniping at launch, watch a
+  // freshly-detected token's bonding-curve price for momentumWindowMin
+  // minutes, sampling every momentumSampleSec, and buy only if it climbs
+  // into the [momentumEntryMultMin, momentumEntryMultMax] band — proof of
+  // real demand, but not already parabolic. momentumWatchCap bounds the
+  // concurrent watchlist (and the RPC load it costs).
+  momentumWindowMin: number;
+  momentumSampleSec: number;
+  momentumEntryMultMin: number;
+  momentumEntryMultMax: number;
+  momentumWatchCap: number;
+  // Veto a momentum-triggered token if >= this many distinct wallets bought
+  // in the launch slot — the signature of a bundled (manufactured) pump that
+  // a naive momentum entry would buy straight into. 0 disables the check.
+  momentumBundleThreshold: number;
 }
 
 function required(name: string): string {
@@ -239,6 +254,12 @@ export function loadConfig(): Config {
     pumpPriorityMicrolamports: numberFromEnv('PUMP_PRIORITY_MICROLAMPORTS', 100_000),
     pumpPriorityMaxMicrolamports: numberFromEnv('PUMP_PRIORITY_MAX_MICROLAMPORTS', 5_000_000),
     maxConsecutiveBuyFailures: numberFromEnv('MAX_CONSECUTIVE_BUY_FAILURES', 5),
+    momentumWindowMin: numberFromEnv('MOMENTUM_WINDOW_MIN', 3),
+    momentumSampleSec: numberFromEnv('MOMENTUM_SAMPLE_SEC', 25),
+    momentumEntryMultMin: numberFromEnv('MOMENTUM_ENTRY_MULT_MIN', 1.4),
+    momentumEntryMultMax: numberFromEnv('MOMENTUM_ENTRY_MULT_MAX', 2.5),
+    momentumWatchCap: numberFromEnv('MOMENTUM_WATCH_CAP', 40),
+    momentumBundleThreshold: numberFromEnv('MOMENTUM_BUNDLE_THRESHOLD', 3),
   };
 
   validateConfig(config);
@@ -296,6 +317,30 @@ function validateConfig(c: Config): void {
   if (c.pumpPriorityMaxMicrolamports < c.pumpPriorityMicrolamports) {
     throw new Error(
       `PUMP_PRIORITY_MAX_MICROLAMPORTS (${c.pumpPriorityMaxMicrolamports}) must be >= PUMP_PRIORITY_MICROLAMPORTS (${c.pumpPriorityMicrolamports})`
+    );
+  }
+  if (c.momentumWindowMin <= 0) {
+    throw new Error(`MOMENTUM_WINDOW_MIN must be > 0, got ${c.momentumWindowMin}`);
+  }
+  if (c.momentumSampleSec <= 0) {
+    throw new Error(`MOMENTUM_SAMPLE_SEC must be > 0, got ${c.momentumSampleSec}`);
+  }
+  if (c.momentumEntryMultMin <= 1) {
+    throw new Error(
+      `MOMENTUM_ENTRY_MULT_MIN must be > 1 (entry requires upward momentum), got ${c.momentumEntryMultMin}`
+    );
+  }
+  if (c.momentumEntryMultMax < c.momentumEntryMultMin) {
+    throw new Error(
+      `MOMENTUM_ENTRY_MULT_MAX (${c.momentumEntryMultMax}) must be >= MOMENTUM_ENTRY_MULT_MIN (${c.momentumEntryMultMin})`
+    );
+  }
+  if (c.momentumWatchCap < 1) {
+    throw new Error(`MOMENTUM_WATCH_CAP must be >= 1, got ${c.momentumWatchCap}`);
+  }
+  if (c.momentumBundleThreshold < 0) {
+    throw new Error(
+      `MOMENTUM_BUNDLE_THRESHOLD must be >= 0 (0 disables the bundle check), got ${c.momentumBundleThreshold}`
     );
   }
   if (c.maxConsecutiveBuyFailures < 0) {

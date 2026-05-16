@@ -18,8 +18,8 @@ import {
   updatePosition,
   closeDb,
 } from './db';
-import { PoolListener, PumpListener, LogListener } from './listener';
-import { analyzeToken } from './analyzer';
+import { PoolListener, PumpListener, LogListener, NewPool } from './listener';
+import { analyzeToken, runSafetyChecks } from './analyzer';
 import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } from './trader';
 import {
   closeAllOpenPositions,
@@ -32,6 +32,8 @@ import { reviewCommand } from './review';
 import { formatRpcCounts, getRpcCounts, instrumentConnection } from './rpcCounter';
 import { bannerHeadline, bannerLines } from './banner';
 import { setBondingCurveCacheTtl } from './bondingCurve';
+import { MomentumWatcher } from './momentum';
+import { checkLaunchBundle } from './bundleCheck';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -107,6 +109,18 @@ async function snipeCommand(options: {
   );
   const listener: LogListener =
     cfg.source === 'pump' ? new PumpListener(connection) : new PoolListener(connection);
+  // Pump uses momentum entry — watch a launch, buy only if it climbs into
+  // the band. Raydium keeps the analyze-at-launch flow (momentum is null).
+  const momentum =
+    cfg.source === 'pump'
+      ? new MomentumWatcher(connection, {
+          windowMs: cfg.momentumWindowMin * 60_000,
+          sampleMs: cfg.momentumSampleSec * 1_000,
+          entryMultMin: cfg.momentumEntryMultMin,
+          entryMultMax: cfg.momentumEntryMultMax,
+          watchCap: cfg.momentumWatchCap,
+        })
+      : null;
   const gate = new InflightGate(MAX_CONCURRENT_ANALYSES);
   // Guards against the same mint being analyzed by concurrent events (multiple
   // init signatures for one pool, or replay after reconnect). Without this,
@@ -114,8 +128,72 @@ async function snipeCommand(options: {
   const inflightMints = new Set<string>();
   // Consecutive failed buys; an unbroken run trips the circuit breaker below.
   let consecutiveBuyFailures = 0;
+  // Buys past the capacity gate but not yet recorded — counted so concurrent
+  // momentum entries can't collectively overshoot maxOpenPositions.
+  let buysInFlight = 0;
+
+  // Shared buy tail: buy, update the circuit breaker, record the position
+  // and trade. Used by both the Raydium analyze path and the pump momentum
+  // entry.
+  const executeBuy = async (
+    pool: NewPool,
+    meta: { aiScore: number | null; symbol: string | null }
+  ): Promise<void> => {
+    const buy = await buyToken(pool.tokenMint, cfg.buyAmountSol, cfg);
+    if (!buy.success) {
+      logger.error(`buy failed: ${buy.error}`);
+      recordRejection({
+        tokenMint: pool.tokenMint,
+        reason: `buy failed: ${buy.error}`,
+        aiScore: meta.aiScore,
+        poolAddress: pool.poolAddress,
+      });
+      consecutiveBuyFailures++;
+      if (
+        cfg.maxConsecutiveBuyFailures > 0 &&
+        consecutiveBuyFailures >= cfg.maxConsecutiveBuyFailures
+      ) {
+        logger.error(
+          `circuit breaker tripped: ${consecutiveBuyFailures} buys failed in a row — shutting down`
+        );
+        void shutdown('circuit breaker: consecutive buy failures');
+      }
+      return;
+    }
+    // A landed buy clears the streak — only an unbroken run trips the breaker.
+    consecutiveBuyFailures = 0;
+    const position = createPosition({
+      tokenMint: pool.tokenMint,
+      tokenSymbol: meta.symbol,
+      entryPriceSol: buy.pricePerToken,
+      amountTokens: buy.amountOut,
+      amountSolSpent: buy.amountIn,
+      aiScore: meta.aiScore,
+      poolAddress: pool.poolAddress,
+      entryTx: buy.txSignature,
+    });
+    recordTrade({
+      positionId: position.id,
+      type: 'buy',
+      amountTokens: buy.amountOut,
+      amountSol: buy.amountIn,
+      priceSol: buy.pricePerToken,
+      txSignature: buy.txSignature || null,
+      simulated: buy.simulated,
+    });
+  };
 
   listener.on('newPool', async (pool) => {
+    if (momentum) {
+      // Pump: hand the launch to the momentum watcher — it samples the
+      // curve and emits 'entry' only once the token shows real momentum.
+      if (!isTokenKnown(pool.tokenMint)) {
+        await momentum
+          .add(pool)
+          .catch((err) => logger.error(`momentum add failed: ${(err as Error).message}`));
+      }
+      return;
+    }
     // Cheapest checks first so a full bag short-circuits before we burn
     // an analyzer-gate slot or dirty the inflight dedup set.
     if (countOpenPositions() >= cfg.maxOpenPositions) {
@@ -166,49 +244,9 @@ async function snipeCommand(options: {
       logger.info(
         `BUYING ${pool.tokenMint} (score ${analysis.ai.score}): ${analysis.ai.reasoning}`
       );
-
-      const buy = await buyToken(pool.tokenMint, cfg.buyAmountSol, cfg);
-      if (!buy.success) {
-        logger.error(`buy failed: ${buy.error}`);
-        recordRejection({
-          tokenMint: pool.tokenMint,
-          reason: `buy failed: ${buy.error}`,
-          aiScore: analysis.ai.score,
-          poolAddress: pool.poolAddress,
-        });
-        consecutiveBuyFailures++;
-        if (
-          cfg.maxConsecutiveBuyFailures > 0 &&
-          consecutiveBuyFailures >= cfg.maxConsecutiveBuyFailures
-        ) {
-          logger.error(
-            `circuit breaker tripped: ${consecutiveBuyFailures} buys failed in a row — shutting down`
-          );
-          void shutdown('circuit breaker: consecutive buy failures');
-        }
-        return;
-      }
-      // A landed buy clears the streak — only an unbroken run trips the breaker.
-      consecutiveBuyFailures = 0;
-
-      const position = createPosition({
-        tokenMint: pool.tokenMint,
-        tokenSymbol: analysis.market.symbol,
-        entryPriceSol: buy.pricePerToken,
-        amountTokens: buy.amountOut,
-        amountSolSpent: buy.amountIn,
+      await executeBuy(pool, {
         aiScore: analysis.ai.score,
-        poolAddress: pool.poolAddress,
-        entryTx: buy.txSignature,
-      });
-      recordTrade({
-        positionId: position.id,
-        type: 'buy',
-        amountTokens: buy.amountOut,
-        amountSol: buy.amountIn,
-        priceSol: buy.pricePerToken,
-        txSignature: buy.txSignature || null,
-        simulated: buy.simulated,
+        symbol: analysis.market.symbol,
       });
     } catch (err) {
       logger.error(`newPool handler failed: ${(err as Error).message}`);
@@ -218,7 +256,68 @@ async function snipeCommand(options: {
     }
   });
 
+  if (momentum) {
+    momentum.on('entry', (pool: NewPool, mult: number) => {
+      void (async () => {
+        if (countOpenPositions() + buysInFlight >= cfg.maxOpenPositions) {
+          logger.debug(`max open positions reached, skipping ${pool.tokenMint}`);
+          return;
+        }
+        if (isTokenKnown(pool.tokenMint)) return;
+        buysInFlight++;
+        try {
+          // A bundled rug manufactures exactly this momentum shape — veto it.
+          if (cfg.momentumBundleThreshold > 0) {
+            const bundle = await checkLaunchBundle(
+              connection,
+              pool.txSignature,
+              pool.poolAddress,
+              cfg.momentumBundleThreshold
+            );
+            if (bundle.bundled) {
+              logger.info(`skipping ${pool.tokenMint}: ${bundle.reason}`);
+              recordRejection({
+                tokenMint: pool.tokenMint,
+                reason: bundle.reason,
+                aiScore: null,
+                poolAddress: pool.poolAddress,
+              });
+              return;
+            }
+          }
+          const safety = await runSafetyChecks(connection, pool.tokenMint, null, cfg);
+          if (!safety.passed) {
+            logger.info(
+              `skipping ${pool.tokenMint}: safety — ${safety.failures.join('; ')}`
+            );
+            recordRejection({
+              tokenMint: pool.tokenMint,
+              reason: `safety: ${safety.failures.join('; ')}`,
+              aiScore: null,
+              poolAddress: pool.poolAddress,
+            });
+            return;
+          }
+          logger.info(
+            `BUYING ${pool.tokenMint} — momentum +${((mult - 1) * 100).toFixed(0)}%`
+          );
+          await executeBuy(pool, { aiScore: null, symbol: null });
+        } catch (err) {
+          logger.error(`momentum entry failed: ${(err as Error).message}`);
+        } finally {
+          buysInFlight--;
+        }
+      })();
+    });
+  }
+
   await listener.start();
+  if (momentum) {
+    momentum.start();
+    logger.info(
+      `momentum entry: watching for +${((cfg.momentumEntryMultMin - 1) * 100).toFixed(0)}-${((cfg.momentumEntryMultMax - 1) * 100).toFixed(0)}% within ${cfg.momentumWindowMin}min`
+    );
+  }
   // Hand the connection to the monitor so pump positions can poll the
   // bonding curve directly instead of waiting for DexScreener to index.
   startMonitoring(undefined, connection);
@@ -252,6 +351,7 @@ async function snipeCommand(options: {
     clearInterval(statusTimer);
     if (autoStopTimer) clearTimeout(autoStopTimer);
     await listener.stop();
+    if (momentum) momentum.stop();
     stopMonitoring();
     if (cfg.closeOnShutdown) {
       const result = await closeAllOpenPositions(cfg, connection);
