@@ -561,6 +561,30 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-8 — first complete 2h run; the launch-snipe thesis has no edge
+**Date:** 2026-05-16
+**Code state:** listener hardened against a dead WebSocket (`2efd9dc`). Launched with `make snipe-pump-fresh LABEL=R-live-8`.
+**Config:** LIVE, `--source pump`. `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_HOLD_MINUTES=10`, `MAX_SLIPPAGE_BPS=1500`, dynamic priority fee, `MIN_AI_SCORE=70` (gpt-5-nano), `EXIT_MODE=all-in` 3×.
+**Duration:** full 2h — auto-stopped at the `MAX_RUN_HOURS` cap. First run to complete cleanly: no breaker, no connectivity abort.
+
+| Metric | Value |
+|---|---|
+| Positions | 31, all finished (#31 a buy that landed at the shutdown instant — sold manually for breakeven) |
+| Realized PnL | **−0.0074 SOL** — essentially flat |
+| Win rate | ~10% (3/31), best trade **1.12×** |
+| 3× target hit | **0 times** — every position time-exited at 10 min |
+
+**Outcome:** the plumbing held — first complete run, the engineering goal of R-live-3→8. But the strategy is net-flat with no real winners.
+
+**Post-mortem** (`scripts/exit-postmortem.ts`): all 31 tokens checked 1–3h after entry — **every one sits 0.99–1.09× our entry, all parked at a near-identical ~$2.4k market cap** (the bonding-curve floor). Zero reached 2×. They were dead-on-arrival launches; holding longer would not have helped — there was nothing to ride.
+
+**Learning:**
+- It's the **entry**, not the exit. miper buys tokens that never pump — 31/31 duds. The launch-time AI gate (dev deposit / creator history / metadata) shows no edge: it selects at the base rate, and the base rate for pump.fun launches is ~total death.
+- Paper looked good because simulation has no slippage or fees; live's ~2% per-trade drag exposed the absence of edge underneath.
+- **Decision: abandon the launch-snipe thesis.** Pivot to a momentum entry — watch a token's first minutes and buy only on demonstrated traction, not predicted potential. See R-live-9+.
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
