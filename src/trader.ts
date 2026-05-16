@@ -38,6 +38,16 @@ const JUPITER_BASE = 'https://quote-api.jup.ag/v6';
 // difference from a lower cap is a rounding error (~0.00001 SOL per tx).
 const PUMP_COMPUTE_UNIT_LIMIT = 400_000;
 
+// Buy/sell txs get dropped by validators under load; a single send often
+// just vanishes, then confirmTransaction waits out the full blockhash window
+// before reporting "block height exceeded". We rebroadcast the same signed
+// tx on this interval until it confirms or its blockhash truly expires.
+const PUMP_TX_REBROADCAST_INTERVAL_MS = 2000;
+// Dynamic priority fee: target this percentile of recent non-zero network
+// fees, with this much headroom on top, then clamp to the configured range.
+const PUMP_PRIORITY_PERCENTILE = 0.75;
+const PUMP_PRIORITY_HEADROOM = 1.3;
+
 // pump SDK's slippage arg is a whole-percent number (5 = 5%).
 function slippagePercent(cfg: Config): number {
   return cfg.maxSlippageBps / 100;
@@ -320,15 +330,99 @@ async function detectTokenProgram(
   return info.owner;
 }
 
+// Picks a competitive priority fee for the next pump tx. Reads recent
+// network prioritization fees and targets a high percentile with headroom,
+// clamped to [floor, max] from config. Falls back to the floor on any RPC
+// error so a fee-lookup hiccup never blocks a snipe.
+export async function computePriorityMicrolamports(
+  connection: Connection,
+  cfg: Config
+): Promise<number> {
+  const floor = cfg.pumpPriorityMicrolamports;
+  try {
+    const recent = await connection.getRecentPrioritizationFees();
+    const fees = recent
+      .map((r) => r.prioritizationFee)
+      .filter((f) => f > 0)
+      .sort((a, b) => a - b);
+    if (fees.length === 0) return floor;
+    const idx = Math.min(
+      fees.length - 1,
+      Math.floor(fees.length * PUMP_PRIORITY_PERCENTILE)
+    );
+    const target = Math.ceil(fees[idx] * PUMP_PRIORITY_HEADROOM);
+    return Math.min(Math.max(target, floor), cfg.pumpPriorityMaxMicrolamports);
+  } catch (err) {
+    logger.debug(`priority fee estimate failed: ${(err as Error).message}`);
+    return floor;
+  }
+}
+
+// Sends a signed raw tx and keeps rebroadcasting it on an interval until it
+// confirms or its blockhash expires. confirmTransaction owns the outcome;
+// the rebroadcast loop just keeps the tx in front of validators so it isn't
+// silently dropped under load. Returns the signature on success; throws on a
+// program error or block-height expiry so the caller books a failed swap.
+export async function confirmWithRebroadcast(
+  connection: Connection,
+  rawTx: Uint8Array,
+  blockhash: { blockhash: string; lastValidBlockHeight: number },
+  rebroadcastIntervalMs: number = PUMP_TX_REBROADCAST_INTERVAL_MS
+): Promise<string> {
+  const send = () =>
+    connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 0 });
+  const signature = await send();
+
+  let settled = false;
+  // wake() cancels the in-flight interval so the loop exits the instant the
+  // tx settles, instead of waiting out a full rebroadcast interval.
+  let wake: () => void = () => {};
+  const rebroadcast = (async () => {
+    while (!settled) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, rebroadcastIntervalMs);
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      if (settled) break;
+      try {
+        await send();
+      } catch {
+        // Already-processed or a transient RPC error — confirmTransaction
+        // remains the source of truth, so a failed resend is harmless.
+      }
+    }
+  })();
+
+  try {
+    const confirmation = await connection.confirmTransaction(
+      { signature, ...blockhash },
+      'confirmed'
+    );
+    if (confirmation.value.err) {
+      throw new Error(`pump tx failed: ${JSON.stringify(confirmation.value.err)}`);
+    }
+    return signature;
+  } finally {
+    settled = true;
+    wake();
+    await rebroadcast;
+  }
+}
+
 // Wraps the pump SDK instructions in a versioned transaction: prepends the
-// compute-budget ixs, signs, sends, confirms. Throws on a program-level
-// failure so the caller's try/catch books it as a failed swap.
+// compute-budget ixs (dynamic priority fee), signs, then sends with active
+// rebroadcast. Throws on a program-level failure so the caller's try/catch
+// books it as a failed swap.
 async function sendPumpTransaction(
   connection: Connection,
   wallet: Keypair,
   instructions: TransactionInstruction[],
   cfg: Config
 ): Promise<string> {
+  const priorityFee = await computePriorityMicrolamports(connection, cfg);
   const { blockhash, lastValidBlockHeight } =
     await connection.getLatestBlockhash('confirmed');
   const message = new TransactionMessage({
@@ -336,27 +430,18 @@ async function sendPumpTransaction(
     recentBlockhash: blockhash,
     instructions: [
       ComputeBudgetProgram.setComputeUnitLimit({ units: PUMP_COMPUTE_UNIT_LIMIT }),
-      ComputeBudgetProgram.setComputeUnitPrice({
-        microLamports: cfg.pumpPriorityMicrolamports,
-      }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }),
       ...instructions,
     ],
   }).compileToV0Message();
   const tx = new VersionedTransaction(message);
   tx.sign([wallet]);
+  logger.debug(`pump tx priority fee: ${priorityFee} µLamports/CU`);
 
-  const signature = await connection.sendTransaction(tx, {
-    skipPreflight: true,
-    maxRetries: 2,
+  return confirmWithRebroadcast(connection, tx.serialize(), {
+    blockhash,
+    lastValidBlockHeight,
   });
-  const confirmation = await connection.confirmTransaction(
-    { signature, blockhash, lastValidBlockHeight },
-    'confirmed'
-  );
-  if (confirmation.value.err) {
-    throw new Error(`pump tx failed: ${JSON.stringify(confirmation.value.err)}`);
-  }
-  return signature;
 }
 
 async function pumpBuyLive(
@@ -638,14 +723,10 @@ async function maybeCloseEmptyAta(
     const tx = new VersionedTransaction(message);
     tx.sign([wallet]);
 
-    const signature = await connection.sendTransaction(tx, {
-      skipPreflight: true,
-      maxRetries: 2,
+    const signature = await confirmWithRebroadcast(connection, tx.serialize(), {
+      blockhash,
+      lastValidBlockHeight,
     });
-    await connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      'confirmed'
-    );
     logger.info(
       `closed empty ATA for ${mint.toBase58()} — reclaimed rent (${signature.slice(0, 8)}...)`
     );

@@ -10,7 +10,9 @@ const mocks = vi.hoisted(() => ({
   mockGetAccountInfo: vi.fn(),
   mockGetLatestBlockhash: vi.fn(),
   mockSendTransaction: vi.fn(),
+  mockSendRawTransaction: vi.fn(),
   mockConfirmTransaction: vi.fn(),
+  mockGetRecentPrioritizationFees: vi.fn(),
   mockGetTokenAccountBalance: vi.fn(),
   mockFetchGlobal: vi.fn(),
   mockFetchFeeConfig: vi.fn(),
@@ -34,7 +36,9 @@ vi.mock('@solana/web3.js', async () => {
     getAccountInfo = mocks.mockGetAccountInfo;
     getLatestBlockhash = mocks.mockGetLatestBlockhash;
     sendTransaction = mocks.mockSendTransaction;
+    sendRawTransaction = mocks.mockSendRawTransaction;
     confirmTransaction = mocks.mockConfirmTransaction;
+    getRecentPrioritizationFees = mocks.mockGetRecentPrioritizationFees;
     getTokenAccountBalance = mocks.mockGetTokenAccountBalance;
     constructor(_url: string, _opts?: unknown) {}
   }
@@ -93,6 +97,7 @@ beforeEach(() => {
     lastValidBlockHeight: 100,
   });
   mocks.mockConfirmTransaction.mockResolvedValue({ value: { err: null } });
+  mocks.mockGetRecentPrioritizationFees.mockResolvedValue([]);
   mocks.mockFetchGlobal.mockResolvedValue({});
   mocks.mockFetchFeeConfig.mockResolvedValue({});
 });
@@ -106,7 +111,7 @@ function mockBuyHappyPath() {
   });
   mocks.mockGetBuyTokenAmount.mockReturnValue(new BN('1785357000000'));
   mocks.mockBuyV2Instructions.mockResolvedValue([]);
-  mocks.mockSendTransaction.mockResolvedValue('BUYSIG12345');
+  mocks.mockSendRawTransaction.mockResolvedValue('BUYSIG12345');
 }
 
 function mockSellHappyPath(remainingAtaBalance = '0') {
@@ -117,7 +122,7 @@ function mockSellHappyPath(remainingAtaBalance = '0') {
   mocks.mockGetMint.mockResolvedValue({ supply: 1_000_000_000_000_000n, decimals: 6 });
   mocks.mockGetSellSolAmount.mockReturnValue(new BN('49000000')); // ~0.049 SOL
   mocks.mockSellV2Instructions.mockResolvedValue([]);
-  mocks.mockSendTransaction.mockResolvedValue('SELLSIG12345');
+  mocks.mockSendRawTransaction.mockResolvedValue('SELLSIG12345');
   mocks.mockGetTokenAccountBalance.mockResolvedValue({
     value: { amount: remainingAtaBalance },
   });
@@ -143,7 +148,7 @@ describe('pump live buy', () => {
     mockBuyHappyPath();
     await buyToken(MINT, 0.05);
     expect(mocks.mockBuyV2Instructions).toHaveBeenCalledTimes(1);
-    expect(mocks.mockSendTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.mockSendRawTransaction).toHaveBeenCalledTimes(1);
     // slippage is passed to the SDK as a whole-percent number (500bps -> 5).
     expect(mocks.mockBuyV2Instructions.mock.calls[0][0].slippage).toBe(5);
   });
@@ -159,7 +164,7 @@ describe('pump live buy', () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/graduated/);
     expect(mocks.mockBuyV2Instructions).not.toHaveBeenCalled();
-    expect(mocks.mockSendTransaction).not.toHaveBeenCalled();
+    expect(mocks.mockSendRawTransaction).not.toHaveBeenCalled();
   });
 
   it('refuses the trade when the wallet would dip below the SOL reserve', async () => {
@@ -176,7 +181,7 @@ describe('pump live buy', () => {
     const result = await buyToken(MINT, 0.05);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/zero tokens/);
-    expect(mocks.mockSendTransaction).not.toHaveBeenCalled();
+    expect(mocks.mockSendRawTransaction).not.toHaveBeenCalled();
   });
 
   it('surfaces the program error when confirmation reports a runtime failure', async () => {
@@ -221,20 +226,20 @@ describe('pump live sell — direct bonding-curve path', () => {
   it('closes the emptied ATA after a full-exit sell', async () => {
     mockSellHappyPath('0'); // ATA drained to zero by the sell
     await sellToken(MINT, 1_000_000, undefined, null);
-    expect(mocks.mockSendTransaction).toHaveBeenCalledTimes(2); // sell + close
+    expect(mocks.mockSendRawTransaction).toHaveBeenCalledTimes(2); // sell + close
     expect(mocks.mockCreateCloseAccount).toHaveBeenCalledTimes(1);
   });
 
   it('leaves the ATA open when tokens remain after a partial sell', async () => {
     mockSellHappyPath('500000'); // 0.5 tokens still held
     await sellToken(MINT, 1_000_000, undefined, null);
-    expect(mocks.mockSendTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.mockSendRawTransaction).toHaveBeenCalledTimes(1);
     expect(mocks.mockCreateCloseAccount).not.toHaveBeenCalled();
   });
 
   it('still books the sell when the rent-reclaim close fails', async () => {
     mockSellHappyPath('0');
-    mocks.mockSendTransaction
+    mocks.mockSendRawTransaction
       .mockReset()
       .mockResolvedValueOnce('SELLSIG12345')
       .mockRejectedValueOnce(new Error('close tx dropped'));
