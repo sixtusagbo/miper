@@ -457,6 +457,32 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-4 — priority-fee fix lands buys; mayhem-mode coins block sells
+**Date:** 2026-05-15
+**Code state:** post-SDK migration; `PUMP_PRIORITY_MICROLAMPORTS` raised to `1000000` and `MAX_CONSECUTIVE_BUY_FAILURES` to `8` after R-live-3. Launched with `make snipe-pump-fresh LABEL=R-live-4`.
+**Config:** LIVE, `--source pump`. Validation sizing — `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_HOLD_MINUTES=10`, `MAX_SLIPPAGE_BPS=500`, `PUMP_PRIORITY_MICROLAMPORTS=1000000`, `MIN_AI_SCORE=70` (gpt-5-nano), `EXIT_MODE=all-in` 3×, `MAX_CONSECUTIVE_BUY_FAILURES=8`, `CLOSE_ON_SHUTDOWN=true`.
+**Duration:** ~45 min (20:27 → ~21:12; manually stopped when sells began reverting — did not reach the 2h cap).
+
+| Metric | Value |
+|---|---|
+| BUYING attempts | 14 |
+| Buys landed | 10 (71%) |
+| Buy failures | 4 |
+| Positions | 10 opened, all terminal — 8 sold, 2 unsellable |
+| Realized PnL | **−0.0703 SOL** (spent 0.200, received 0.130) |
+| Outcomes | 1 marginal win, 5 small slippage losses, 2 stop-losses, 2 mayhem-mode write-offs |
+
+**Outcome:** the priority-fee fix worked — buy landing jumped from 33% (R-live-3) to 71%. But a new blocker surfaced: 2 of the 10 coins were pump.fun **Mayhem Mode** coins, and their bonding-curve sells revert with `Custom:6024` ("Overflow", pump program `lib.rs:800`). The run was stopped manually when sells started failing. Strategy still unproven: 1 win / 10.
+
+**Learning:**
+- Priority fee fix validated — `1000000` micro-lamports lifted buy landing 33% → 71%. The breaker at 8 never tripped.
+- New blocker: **mayhem-mode coins are unsellable.** Confirmed *not* a miper bug — pump.fun's own UI hits the identical `6024` revert (tx `29wGTLC7…`). A mayhem coin can enter a "Paused" state where its curve sell overflows; the position becomes unsellable by anyone. Capital trapped: −0.04 SOL (positions 1 `73TYbJ…`, 7 `93dbzwSct…`/CHUB). Both reconciled in `pump.db` as `closed` write-offs (tokens still held, unsellable).
+- The 8 non-mayhem coins all sold fine — the sell path works for regular coins.
+- **Fix shipped post-run:** the analyzer now decodes the mayhem flag (byte 81 of the bonding curve) and `runSafetyChecks` rejects mayhem-mode coins at buy time. The bot will never buy one again.
+- Across R-live-2 → R-live-4: 21 landed buys, 2 winners. Buy-side latency is solved; the exit strategy is still unproven; no complete 2h run yet. Next: R-live-5 with the mayhem filter, full 2h, no manual intervention.
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
