@@ -118,6 +118,26 @@ describe('bannerLines', () => {
     expect(live.some((l) => l.startsWith('paper bag:'))).toBe(false);
   });
 
+  it('shows only pump-relevant filters for a pump run (no inert Raydium gates)', () => {
+    const lines = bannerLines(mkCfg({ source: 'pump', maxSlippageBps: 1500 }), FIXED_NOW);
+    const filters = lines.find((l) => l.startsWith('filters:'));
+    expect(filters).toContain('slippage 1500bps');
+    expect(filters).toContain('mayhem-mode');
+    expect(filters).not.toContain('min liq');
+    expect(filters).not.toContain('top holder');
+  });
+
+  it('shows the liquidity and top-holder gates for a raydium run', () => {
+    const lines = bannerLines(
+      mkCfg({ source: 'raydium', minLiquidityUsd: 5000, maxTopHolderPct: 25 }),
+      FIXED_NOW
+    );
+    const filters = lines.find((l) => l.startsWith('filters:'));
+    expect(filters).toContain('min liq $5000');
+    expect(filters).toContain('max top holder 25%');
+    expect(filters).toContain('slippage');
+  });
+
   it('omits the log-file segment when logFile is null', () => {
     const lines = bannerLines(mkCfg({ logFile: null }), FIXED_NOW);
     const dbLine = lines.find((l) => l.startsWith('db:'));

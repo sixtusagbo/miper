@@ -37,9 +37,17 @@ export function bannerLines(cfg: Config, now: Date = new Date()): string[] {
   lines.push(
     `buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open | min AI score ${cfg.minAiScore} (${cfg.aiModel})`
   );
-  lines.push(
-    `filters: min liq $${cfg.minLiquidityUsd} | max top holder ${cfg.maxTopHolderPct}% | slippage ${cfg.maxSlippageBps}bps`
-  );
+  if (cfg.source === 'pump') {
+    // The min-liquidity and top-holder gates are Raydium-only — the analyzer
+    // skips them for pump — so showing them on a pump run is just noise.
+    lines.push(
+      `filters: slippage ${cfg.maxSlippageBps}bps | mayhem-mode coins rejected`
+    );
+  } else {
+    lines.push(
+      `filters: min liq $${cfg.minLiquidityUsd} | max top holder ${cfg.maxTopHolderPct}% | slippage ${cfg.maxSlippageBps}bps`
+    );
+  }
 
   if (cfg.simulate) {
     lines.push(`paper bag: starting ${cfg.simulatedStartingSol} SOL`);
