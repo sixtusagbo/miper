@@ -10,11 +10,14 @@ vi.mock('../src/bondingCurve', () => ({
 import { MomentumWatcher, MomentumConfig } from '../src/momentum';
 import type { NewPool } from '../src/listener';
 
+// minAgeMs: 0 — the band tests sweep immediately, so the min-age filter is
+// disabled here and exercised in its own tests below.
 const CFG: MomentumConfig = {
   windowMs: 60_000,
   sampleMs: 1_000,
   entryMultMin: 1.4,
   entryMultMax: 2.5,
+  minAgeMs: 0,
   watchCap: 40,
 };
 
@@ -106,5 +109,59 @@ describe('MomentumWatcher', () => {
     const watcher = new MomentumWatcher({} as never, CFG);
     await watcher.add(fakePool('FFF'));
     expect(watcher.watchlistSize).toBe(0);
+  });
+
+  it('drops a token that hit the band faster than minAgeMs', async () => {
+    mocks.readBondingCurve
+      .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7)); // in band, but age ~0 << minAgeMs
+    const watcher = new MomentumWatcher({} as never, { ...CFG, minAgeMs: 60_000 });
+    const spy = vi.fn();
+    watcher.on('entry', spy);
+    await watcher.add(fakePool('GGG'));
+    await watcher.sweep();
+    expect(spy).not.toHaveBeenCalled();
+    expect(watcher.watchlistSize).toBe(0);
+  });
+
+  it('emits entry once a token is in the band and past minAgeMs', async () => {
+    mocks.readBondingCurve
+      .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7));
+    const watcher = new MomentumWatcher({} as never, { ...CFG, minAgeMs: 5 });
+    const spy = vi.fn();
+    watcher.on('entry', spy);
+    await watcher.add(fakePool('HHH'));
+    await new Promise((r) => setTimeout(r, 15)); // age > minAgeMs
+    await watcher.sweep();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits entry only after the pre-screen clears', async () => {
+    mocks.readBondingCurve
+      .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7));
+    const prescreen = vi.fn().mockResolvedValue(true);
+    const watcher = new MomentumWatcher({} as never, CFG, prescreen);
+    const spy = vi.fn();
+    watcher.on('entry', spy);
+    await watcher.add(fakePool('III'));
+    await watcher.sweep();
+    expect(prescreen).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not emit entry when the pre-screen rejects the token', async () => {
+    mocks.readBondingCurve
+      .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7));
+    const prescreen = vi.fn().mockResolvedValue(false);
+    const watcher = new MomentumWatcher({} as never, CFG, prescreen);
+    const spy = vi.fn();
+    watcher.on('entry', spy);
+    await watcher.add(fakePool('JJJ'));
+    await new Promise((r) => setTimeout(r, 0)); // let the failed screen drop it
+    await watcher.sweep();
+    expect(spy).not.toHaveBeenCalled();
   });
 });

@@ -114,6 +114,11 @@ export interface Config {
   // in the launch slot — the signature of a bundled (manufactured) pump that
   // a naive momentum entry would buy straight into. 0 disables the check.
   momentumBundleThreshold: number;
+  // Ignore a band-crossing that happened within this many seconds of first
+  // seeing the token — a move that fast is an un-catchable spike (entry
+  // latency would blow past slippage) and usually a manufactured pump.
+  // 0 disables the filter.
+  momentumMinAgeSec: number;
 }
 
 function required(name: string): string {
@@ -260,6 +265,7 @@ export function loadConfig(): Config {
     momentumEntryMultMax: numberFromEnv('MOMENTUM_ENTRY_MULT_MAX', 2.5),
     momentumWatchCap: numberFromEnv('MOMENTUM_WATCH_CAP', 40),
     momentumBundleThreshold: numberFromEnv('MOMENTUM_BUNDLE_THRESHOLD', 3),
+    momentumMinAgeSec: numberFromEnv('MOMENTUM_MIN_AGE_SEC', 60),
   };
 
   validateConfig(config);
@@ -341,6 +347,11 @@ function validateConfig(c: Config): void {
   if (c.momentumBundleThreshold < 0) {
     throw new Error(
       `MOMENTUM_BUNDLE_THRESHOLD must be >= 0 (0 disables the bundle check), got ${c.momentumBundleThreshold}`
+    );
+  }
+  if (c.momentumMinAgeSec < 0) {
+    throw new Error(
+      `MOMENTUM_MIN_AGE_SEC must be >= 0 (0 disables the filter), got ${c.momentumMinAgeSec}`
     );
   }
   if (c.maxConsecutiveBuyFailures < 0) {

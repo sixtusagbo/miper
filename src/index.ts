@@ -109,17 +109,58 @@ async function snipeCommand(options: {
   );
   const listener: LogListener =
     cfg.source === 'pump' ? new PumpListener(connection) : new PoolListener(connection);
+  // The momentum pre-screen — bundle veto + safety checks. Run during the
+  // watch window (kicked off when watching begins) so the entry path stays
+  // fast. Returns false (and logs/records the rejection) for a token to skip.
+  const momentumPrescreen = async (pool: NewPool): Promise<boolean> => {
+    if (cfg.momentumBundleThreshold > 0) {
+      const bundle = await checkLaunchBundle(
+        connection,
+        pool.txSignature,
+        pool.poolAddress,
+        cfg.momentumBundleThreshold
+      );
+      if (bundle.bundled) {
+        logger.info(`skipping ${pool.tokenMint}: ${bundle.reason}`);
+        recordRejection({
+          tokenMint: pool.tokenMint,
+          reason: bundle.reason,
+          aiScore: null,
+          poolAddress: pool.poolAddress,
+        });
+        return false;
+      }
+    }
+    const safety = await runSafetyChecks(connection, pool.tokenMint, null, cfg);
+    if (!safety.passed) {
+      logger.info(`skipping ${pool.tokenMint}: safety — ${safety.failures.join('; ')}`);
+      recordRejection({
+        tokenMint: pool.tokenMint,
+        reason: `safety: ${safety.failures.join('; ')}`,
+        aiScore: null,
+        poolAddress: pool.poolAddress,
+      });
+      return false;
+    }
+    return true;
+  };
+
   // Pump uses momentum entry — watch a launch, buy only if it climbs into
   // the band. Raydium keeps the analyze-at-launch flow (momentum is null).
   const momentum =
     cfg.source === 'pump'
-      ? new MomentumWatcher(connection, {
-          windowMs: cfg.momentumWindowMin * 60_000,
-          sampleMs: cfg.momentumSampleSec * 1_000,
-          entryMultMin: cfg.momentumEntryMultMin,
-          entryMultMax: cfg.momentumEntryMultMax,
-          watchCap: cfg.momentumWatchCap,
-        })
+      ? new MomentumWatcher(
+          connection,
+          {
+            windowMs: cfg.momentumWindowMin * 60_000,
+            sampleMs: cfg.momentumSampleSec * 1_000,
+            entryMultMin: cfg.momentumEntryMultMin,
+            entryMultMax: cfg.momentumEntryMultMax,
+            minAgeMs: cfg.momentumMinAgeSec * 1_000,
+            watchCap: cfg.momentumWatchCap,
+          },
+          momentumPrescreen
+        )
       : null;
   const gate = new InflightGate(MAX_CONCURRENT_ANALYSES);
   // Guards against the same mint being analyzed by concurrent events (multiple
@@ -257,6 +298,8 @@ async function snipeCommand(options: {
   });
 
   if (momentum) {
+    // The watcher only emits 'entry' for tokens that already cleared the
+    // pre-screen during the watch, so the handler just buys.
     momentum.on('entry', (pool: NewPool, mult: number) => {
       void (async () => {
         if (countOpenPositions() + buysInFlight >= cfg.maxOpenPositions) {
@@ -266,38 +309,6 @@ async function snipeCommand(options: {
         if (isTokenKnown(pool.tokenMint)) return;
         buysInFlight++;
         try {
-          // A bundled rug manufactures exactly this momentum shape — veto it.
-          if (cfg.momentumBundleThreshold > 0) {
-            const bundle = await checkLaunchBundle(
-              connection,
-              pool.txSignature,
-              pool.poolAddress,
-              cfg.momentumBundleThreshold
-            );
-            if (bundle.bundled) {
-              logger.info(`skipping ${pool.tokenMint}: ${bundle.reason}`);
-              recordRejection({
-                tokenMint: pool.tokenMint,
-                reason: bundle.reason,
-                aiScore: null,
-                poolAddress: pool.poolAddress,
-              });
-              return;
-            }
-          }
-          const safety = await runSafetyChecks(connection, pool.tokenMint, null, cfg);
-          if (!safety.passed) {
-            logger.info(
-              `skipping ${pool.tokenMint}: safety — ${safety.failures.join('; ')}`
-            );
-            recordRejection({
-              tokenMint: pool.tokenMint,
-              reason: `safety: ${safety.failures.join('; ')}`,
-              aiScore: null,
-              poolAddress: pool.poolAddress,
-            });
-            return;
-          }
           logger.info(
             `BUYING ${pool.tokenMint} — momentum +${((mult - 1) * 100).toFixed(0)}%`
           );
