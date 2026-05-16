@@ -536,6 +536,31 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-7 — first positive PnL; aborted by a connectivity gap
+**Date:** 2026-05-16
+**Code state:** `MAX_SLIPPAGE_BPS` raised to 1500 (15%). Launched with `make snipe-pump-fresh LABEL=R-live-7`.
+**Config:** LIVE, `--source pump`. `BUY_AMOUNT_SOL=0.02`, `MAX_OPEN_POSITIONS=3`, `MAX_RUN_HOURS=2`, `MAX_HOLD_MINUTES=10`, `MAX_SLIPPAGE_BPS=1500`, `PUMP_PRIORITY_MICROLAMPORTS=1000000` floor / `5000000` max, `MIN_AI_SCORE=70` (gpt-5-nano), `EXIT_MODE=all-in` 3×, `MAX_CONSECUTIVE_BUY_FAILURES=8`.
+**Duration:** ~35 min of trading (started 10:10; local internet data ran out ~10:35, killing the RPC WebSocket; hard-killed at 10:45). Did not reach the 2h cap.
+
+| Metric | Value |
+|---|---|
+| Positions | 5 opened, all 5 finished (closed) |
+| Realized PnL | **+0.0087 SOL** (spent 0.100, received 0.109) — first positive live run |
+| Win rate | 40% (2/5) |
+| Standout | #4 `3xozEyVu` time-exited at 1.52× for +0.01 SOL — the run's one real winner |
+| Buy slippage | 15% cap held — no `Custom:6002` reverts in the window observed |
+
+**Outcome:** first positive PnL across all live runs — but a 5-trade sample, aborted early, and the +0.0087 is essentially one 1.5× winner against an otherwise flat book. The 15% slippage cap stopped the `6002` reverts that broke R-live-6. The run ended when local internet data ran out: the WebSocket went dead at ~10:35, the bot detected it (`WS may be dead`) but did not self-heal, and the SIGINT shutdown then hung — the process had to be hard-killed.
+
+**Learning:**
+- First positive live run, but not significant — 5 trades, one winner. Still need a complete clean run.
+- 15% slippage held — no slippage reverts observed.
+- Two robustness bugs surfaced: (1) the listener detects a silently-dead WebSocket (zombie socket — open but delivering nothing) but only warns; it does not force a resubscribe or shut down, so the run goes blind. (2) Graceful shutdown hangs on SIGINT when the connection is dead.
+- `MAX_HOLD_MINUTES=10` did all the selling — even the winner time-exited at 1.5×; the 3× target never fired.
+- Next: fix the WS self-heal + the SIGINT hang, then R-live-8.
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
