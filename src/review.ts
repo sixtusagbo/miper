@@ -11,9 +11,10 @@ import {
   getTopRejectionReasons,
 } from './db';
 
-// Thresholds lifted from RUNNING.md "Going live" checklist. Tweaking them
-// should be a deliberate decision, not a reflex — they exist to stop the user
-// from flipping SIMULATE=false on a sample too small to mean anything.
+// Minimum sample before the PnL means anything: too few finished trades or
+// too short a window and the result is noise. The same gate covers going
+// live (from paper) and scaling up position size (once live). Tweaking these
+// should be a deliberate decision, not a reflex.
 const MIN_FINISHED_FOR_LIVE = 20;
 const MIN_DAYS_FOR_LIVE = 3;
 
@@ -50,7 +51,7 @@ export async function reviewCommand(): Promise<void> {
   const window = getActivityWindow();
   const days = daysBetween(window.first, window.last);
 
-  logger.banner(`PAPER TRADING REVIEW${cfg.simulate ? '' : ' (LIVE)'}`);
+  logger.banner(cfg.simulate ? 'PAPER TRADING REVIEW' : 'LIVE TRADING REVIEW');
 
   if (!window.first) {
     logger.info('No activity in the DB yet. Run `npm run simulate` to generate samples.');
@@ -106,7 +107,9 @@ export async function reviewCommand(): Promise<void> {
 
   // eslint-disable-next-line no-console
   console.log();
-  logger.banner('LIVE-READINESS CHECKLIST');
+  logger.banner(
+    cfg.simulate ? 'LIVE-READINESS CHECKLIST' : 'SCALE-UP READINESS CHECKLIST'
+  );
   const reasons: string[] = [];
   const finishedOk = finishedCount >= MIN_FINISHED_FOR_LIVE;
   const pnlOk = pnl.realizedPnlSol > 0;
@@ -131,7 +134,9 @@ export async function reviewCommand(): Promise<void> {
     '[INFO] Also confirm the log has no recurring RPC/WS errors or crashes.'
   );
   logger.info(
-    '[INFO] Going live: flip SIMULATE=false in .env and use a FRESH wallet with a small float (0.5-1 SOL), not your main wallet.'
+    cfg.simulate
+      ? '[INFO] Going live: flip SIMULATE=false in .env and use a FRESH wallet with a small float (0.5-1 SOL), not your main wallet.'
+      : '[INFO] Scaling up: raise BUY_AMOUNT_SOL / MAX_OPEN_POSITIONS only after these checks pass on a clean, complete run.'
   );
 
   // eslint-disable-next-line no-console
@@ -139,14 +144,17 @@ export async function reviewCommand(): Promise<void> {
   if (reasons.length === 0) {
     logger.info(
       chalk.green.bold(
-        'VERDICT: Data-driven checks PASSED. Review the log for stability, then consider going live.'
+        cfg.simulate
+          ? 'VERDICT: Data-driven checks PASSED. Review the log for stability, then consider going live.'
+          : 'VERDICT: Data-driven checks PASSED. Review the log for stability, then consider scaling up position size.'
       )
     );
   } else {
+    const tail = cfg.simulate
+      ? 'Keep paper trading.'
+      : 'Keep the run at validation sizing until these pass.';
     logger.info(
-      chalk.yellow.bold(
-        `VERDICT: NOT READY — ${reasons.join('; ')}. Keep paper trading.`
-      )
+      chalk.yellow.bold(`VERDICT: NOT READY — ${reasons.join('; ')}. ${tail}`)
     );
   }
 
