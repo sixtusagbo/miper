@@ -34,9 +34,14 @@ export function bannerLines(cfg: Config, now: Date = new Date()): string[] {
     );
   }
 
-  lines.push(
-    `buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open | min AI score ${cfg.minAiScore} (${cfg.aiModel})`
-  );
+  if (cfg.source === 'pump') {
+    // Pump uses momentum entry, not AI scoring — the AI knobs don't apply.
+    lines.push(`buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open`);
+  } else {
+    lines.push(
+      `buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open | min AI score ${cfg.minAiScore} (${cfg.aiModel})`
+    );
+  }
   if (cfg.source === 'pump') {
     // The min-liquidity and top-holder gates are Raydium-only — the analyzer
     // skips them for pump — so showing them on a pump run is just noise.

@@ -104,10 +104,20 @@ describe('bannerLines', () => {
     expect(exit).not.toContain('time-exit');
   });
 
-  it('includes the AI model name and min score on the strategy line', () => {
-    const lines = bannerLines(mkCfg({ aiModel: 'claude-haiku-4-5', minAiScore: 75 }), FIXED_NOW);
+  it('includes the AI model name and min score on a raydium run', () => {
+    const lines = bannerLines(
+      mkCfg({ source: 'raydium', aiModel: 'claude-haiku-4-5', minAiScore: 75 }),
+      FIXED_NOW
+    );
     const strat = lines.find((l) => l.startsWith('buy '));
     expect(strat).toContain('min AI score 75 (claude-haiku-4-5)');
+  });
+
+  it('omits the AI score from the strategy line on a pump run', () => {
+    const lines = bannerLines(mkCfg({ source: 'pump' }), FIXED_NOW);
+    const strat = lines.find((l) => l.startsWith('buy '));
+    expect(strat).toContain('max');
+    expect(strat).not.toContain('AI score');
   });
 
   it('includes the paper-bag line in simulate mode and omits it in live', () => {
