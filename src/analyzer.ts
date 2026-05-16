@@ -13,6 +13,7 @@ import { logger } from './logger';
 import { retry } from './concurrency';
 import { fetchTokenMetadata } from './metadata';
 import { fetchCreatorHistory } from './creatorHistory';
+import { bondingCurvePda, decodeBondingCurve } from './bondingCurve';
 
 // Fresh mints often aren't visible to every RPC node for a second or two
 // after creation. We sleep before the first getMint call so the common path
@@ -124,6 +125,7 @@ export async function runSafetyChecks(
   let freezeRevoked = false;
   let topHolderPct = 100;
   let holderCount = 0;
+  let mayhemMode = false;
 
   try {
     await sleep(getSafetyPreReadDelayMs());
@@ -155,6 +157,24 @@ export async function runSafetyChecks(
         topHolderPct = (topAmount / supply) * 100;
       }
     }
+
+    // Pump.fun "Mayhem Mode" coins can enter a Paused state where the
+    // bonding-curve sell reverts with Custom:6024 — capital gets trapped,
+    // unsellable even via pump.fun's own UI. The flag lives at byte 81 of
+    // the bonding-curve account; reject mayhem coins so we never buy one.
+    if (cfg.source === 'pump') {
+      const curveInfo = await retry(
+        () => connection.getAccountInfo(bondingCurvePda(tokenMint)),
+        {
+          attempts: SAFETY_RETRY_ATTEMPTS,
+          baseDelayMs: SAFETY_RETRY_BASE_MS,
+          label: `bondingCurve ${tokenMint.slice(0, 8)}`,
+        }
+      );
+      if (curveInfo?.data) {
+        mayhemMode = decodeBondingCurve(Buffer.from(curveInfo.data)).isMayhemMode;
+      }
+    }
   } catch (err) {
     const e = err as Error;
     // SPL's TokenAccountNotFoundError ships with an empty message and all the
@@ -177,6 +197,10 @@ export async function runSafetyChecks(
     failures.push(
       `liquidity ${fmtUsd(marketLiquidityUsd)} (below min ${fmtUsd(cfg.minLiquidityUsd)})`
     );
+  }
+
+  if (mayhemMode) {
+    failures.push('mayhem-mode coin (unsellable-trap risk)');
   }
 
   return {

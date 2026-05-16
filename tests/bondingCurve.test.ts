@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import {
+  bondingCurvePda,
   bondingCurvePriceSol,
   clearBondingCurveCache,
   decodeBondingCurve,
@@ -69,8 +70,29 @@ describe('decodeBondingCurve', () => {
     expect(state.creator!.toBase58()).toBe(creatorPk.toBase58());
   });
 
+  it('reads isMayhemMode off byte 81 of the extended layout', () => {
+    const creator = new PublicKey('11111111111111111111111111111113').toBuffer();
+    const withFlag = (on: boolean) =>
+      Buffer.concat([buildCurve({}), creator, Buffer.from([on ? 1 : 0])]);
+    expect(decodeBondingCurve(withFlag(true)).isMayhemMode).toBe(true);
+    expect(decodeBondingCurve(withFlag(false)).isMayhemMode).toBe(false);
+  });
+
+  it('defaults isMayhemMode to false on buffers too short to carry byte 81', () => {
+    expect(decodeBondingCurve(buildCurve({})).isMayhemMode).toBe(false);
+  });
+
   it('throws on a buffer too short for the layout', () => {
     expect(() => decodeBondingCurve(Buffer.alloc(40))).toThrow(/too short/);
+  });
+});
+
+describe('bondingCurvePda', () => {
+  it('derives a stable PDA from the mint', () => {
+    const mint = 'So11111111111111111111111111111111111111112';
+    const pda = bondingCurvePda(mint);
+    expect(pda).toBeInstanceOf(PublicKey);
+    expect(bondingCurvePda(mint).toBase58()).toBe(pda.toBase58());
   });
 });
 
