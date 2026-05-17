@@ -16,7 +16,7 @@ export const PROGRAM_IDS = {
 export const SOL_MINT_ADDRESS = PROGRAM_IDS.SOL_MINT.toBase58();
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'trade';
-export type Source = 'raydium' | 'pump' | 'trending';
+export type Source = 'raydium' | 'pump' | 'trending' | 'copytrade';
 export type AiProvider = 'anthropic' | 'openai';
 export type ExitMode = 'tiered' | 'all-in';
 
@@ -137,6 +137,13 @@ export interface Config {
   trendingMinVolumeUsd: number; // 24h volume floor — "VOL looks good"
   trendingMinAgeMin: number;
   trendingMaxAgeHours: number;
+  // Copy-trading (copytrade source): mirror a curated set of proven Solana
+  // wallets. Poll each wallet's on-chain activity; copy a buy when the leader
+  // spent at least copytradeMinLeaderSol; exit when the leader sells (with
+  // the stop-loss / time-exit as independent floors).
+  copytradeWallets: string[];
+  copytradePollSec: number;
+  copytradeMinLeaderSol: number;
 }
 
 function required(name: string): string {
@@ -166,6 +173,16 @@ function boolFromEnv(name: string, fallback: boolean): boolean {
   throw new Error(`Invalid boolean value for ${name}: ${raw}`);
 }
 
+// Parse a comma-separated env var into a trimmed, de-blanked list.
+function listFromEnv(name: string): string[] {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 function parseLogLevel(value: string | undefined): LogLevel {
   const normalized = (value ?? 'info').trim().toLowerCase();
   if (['debug', 'info', 'warn', 'error', 'trade'].includes(normalized)) {
@@ -176,11 +193,16 @@ function parseLogLevel(value: string | undefined): LogLevel {
 
 function parseSource(value: string | undefined): Source {
   const normalized = (value ?? 'raydium').trim().toLowerCase();
-  if (normalized === 'raydium' || normalized === 'pump' || normalized === 'trending') {
+  if (
+    normalized === 'raydium' ||
+    normalized === 'pump' ||
+    normalized === 'trending' ||
+    normalized === 'copytrade'
+  ) {
     return normalized;
   }
   throw new Error(
-    `Invalid SOURCE: ${value} (expected 'raydium', 'pump' or 'trending')`
+    `Invalid SOURCE: ${value} (expected 'raydium', 'pump', 'trending' or 'copytrade')`
   );
 }
 
@@ -269,10 +291,20 @@ export function loadConfig(): Config {
     // and never cross-contaminate each other's trade history.
     dbPath:
       process.env.DB_PATH?.trim() ||
-      (source === 'pump' ? './pump.db' : source === 'trending' ? './trending.db' : './sniper.db'),
+      ({
+        raydium: './sniper.db',
+        pump: './pump.db',
+        trending: './trending.db',
+        copytrade: './copytrade.db',
+      }[source]),
     logFile:
       process.env.LOG_FILE?.trim() ||
-      (source === 'pump' ? './pump.log' : source === 'trending' ? './trending.log' : null),
+      ({
+        raydium: null,
+        pump: './pump.log',
+        trending: './trending.log',
+        copytrade: './copytrade.log',
+      }[source]),
     source,
     exitMode: parseExitMode(process.env.EXIT_MODE),
     exitAtMult: numberFromEnv('EXIT_AT_MULT', 2),
@@ -301,6 +333,9 @@ export function loadConfig(): Config {
     trendingMinVolumeUsd: numberFromEnv('TRENDING_MIN_VOLUME_USD', 50_000),
     trendingMinAgeMin: numberFromEnv('TRENDING_MIN_AGE_MIN', 30),
     trendingMaxAgeHours: numberFromEnv('TRENDING_MAX_AGE_HOURS', 24),
+    copytradeWallets: listFromEnv('COPYTRADE_WALLETS'),
+    copytradePollSec: numberFromEnv('COPYTRADE_POLL_SEC', 12),
+    copytradeMinLeaderSol: numberFromEnv('COPYTRADE_MIN_LEADER_SOL', 0.5),
   };
 
   validateConfig(config);
@@ -418,6 +453,14 @@ function validateConfig(c: Config): void {
   if (c.trendingMaxAgeHours * 60 <= c.trendingMinAgeMin) {
     throw new Error(
       `TRENDING_MAX_AGE_HOURS (${c.trendingMaxAgeHours}h) must exceed TRENDING_MIN_AGE_MIN (${c.trendingMinAgeMin}min)`
+    );
+  }
+  if (c.copytradePollSec <= 0) {
+    throw new Error(`COPYTRADE_POLL_SEC must be > 0, got ${c.copytradePollSec}`);
+  }
+  if (c.copytradeMinLeaderSol < 0) {
+    throw new Error(
+      `COPYTRADE_MIN_LEADER_SOL must be >= 0, got ${c.copytradeMinLeaderSol}`
     );
   }
 }
