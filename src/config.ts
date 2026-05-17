@@ -101,14 +101,22 @@ export interface Config {
   maxConsecutiveBuyFailures: number;
   // Momentum entry (pump source): instead of sniping at launch, watch a
   // freshly-detected token's bonding-curve price for momentumWindowMin
-  // minutes, sampling every momentumSampleSec, and buy only if it climbs
-  // into the [momentumEntryMultMin, momentumEntryMultMax] band — proof of
-  // real demand, but not already parabolic. momentumWatchCap bounds the
-  // concurrent watchlist (and the RPC load it costs).
+  // minutes, sampling every momentumSampleSec. A token must first climb into
+  // the [momentumEntryMultMin, momentumEntryMultMax] band (proof of demand) —
+  // then, rather than buying the spike (a moving price won't fill inside the
+  // slippage cap), we wait for it to *settle*: momentumSettleSamples
+  // consecutive samples within ±momentumSettleTolerance. We buy the flat
+  // price. momentumWatchCap bounds the concurrent watchlist (and RPC load).
   momentumWindowMin: number;
   momentumSampleSec: number;
   momentumEntryMultMin: number;
   momentumEntryMultMax: number;
+  // The settle gate: a token in the band is bought only once this many
+  // consecutive price samples sit within this fractional spread (0.10 = the
+  // window's high is within 10% of its low) — i.e. the climb has plateaued
+  // and the price is calm enough for a buy to land.
+  momentumSettleSamples: number;
+  momentumSettleTolerance: number;
   momentumWatchCap: number;
   // Veto a momentum-triggered token if >= this many distinct wallets bought
   // in the launch slot — the signature of a bundled (manufactured) pump that
@@ -259,10 +267,12 @@ export function loadConfig(): Config {
     pumpPriorityMicrolamports: numberFromEnv('PUMP_PRIORITY_MICROLAMPORTS', 100_000),
     pumpPriorityMaxMicrolamports: numberFromEnv('PUMP_PRIORITY_MAX_MICROLAMPORTS', 5_000_000),
     maxConsecutiveBuyFailures: numberFromEnv('MAX_CONSECUTIVE_BUY_FAILURES', 5),
-    momentumWindowMin: numberFromEnv('MOMENTUM_WINDOW_MIN', 3),
-    momentumSampleSec: numberFromEnv('MOMENTUM_SAMPLE_SEC', 25),
+    momentumWindowMin: numberFromEnv('MOMENTUM_WINDOW_MIN', 5),
+    momentumSampleSec: numberFromEnv('MOMENTUM_SAMPLE_SEC', 10),
     momentumEntryMultMin: numberFromEnv('MOMENTUM_ENTRY_MULT_MIN', 1.4),
     momentumEntryMultMax: numberFromEnv('MOMENTUM_ENTRY_MULT_MAX', 2.5),
+    momentumSettleSamples: numberFromEnv('MOMENTUM_SETTLE_SAMPLES', 3),
+    momentumSettleTolerance: numberFromEnv('MOMENTUM_SETTLE_TOLERANCE', 0.1),
     momentumWatchCap: numberFromEnv('MOMENTUM_WATCH_CAP', 40),
     momentumBundleThreshold: numberFromEnv('MOMENTUM_BUNDLE_THRESHOLD', 3),
     momentumMinAgeSec: numberFromEnv('MOMENTUM_MIN_AGE_SEC', 60),
@@ -343,6 +353,16 @@ function validateConfig(c: Config): void {
   }
   if (c.momentumWatchCap < 1) {
     throw new Error(`MOMENTUM_WATCH_CAP must be >= 1, got ${c.momentumWatchCap}`);
+  }
+  if (c.momentumSettleSamples < 2) {
+    throw new Error(
+      `MOMENTUM_SETTLE_SAMPLES must be >= 2 (a settle needs at least two samples to compare), got ${c.momentumSettleSamples}`
+    );
+  }
+  if (c.momentumSettleTolerance <= 0) {
+    throw new Error(
+      `MOMENTUM_SETTLE_TOLERANCE must be > 0, got ${c.momentumSettleTolerance}`
+    );
   }
   if (c.momentumBundleThreshold < 0) {
     throw new Error(

@@ -9,14 +9,23 @@ export interface MomentumConfig {
   windowMs: number;
   // How often to re-price every watched token.
   sampleMs: number;
-  // Buy when price climbs into [entryMultMin, entryMultMax]x its baseline:
-  // the lower bound is proof of real demand, the upper bound stops us
-  // chasing a token that already went parabolic.
+  // A token must climb into [entryMultMin, entryMultMax]x its baseline: the
+  // lower bound is proof of real demand, the upper bound stops us chasing a
+  // token that already went parabolic. Reaching the band only *qualifies* a
+  // token — see the settle gate below for when we actually buy.
   entryMultMin: number;
   entryMultMax: number;
   // Ignore a band-crossing sooner than this after the token was first seen —
   // a move that fast is an un-catchable spike, not a climb we can ride.
   minAgeMs: number;
+  // The settle gate. R-live-9/10/11 proved a buy can't land while the price
+  // is spiking — every momentum buy reverted on slippage. So once a token is
+  // in the band we don't buy the spike: we wait for it to plateau. Buy only
+  // once the last settleSamples prices sit within settleTolerance of each
+  // other (the window's high within settleTolerance of its low) — a calm
+  // price a buy can actually fill against.
+  settleSamples: number;
+  settleTolerance: number;
   // Cap on the concurrent watchlist — bounds the RPC cost of sampling.
   watchCap: number;
 }
@@ -31,17 +40,24 @@ interface WatchEntry {
   pool: NewPool;
   baselinePriceSol: number;
   addedAt: number;
+  // 'climbing' until the price first enters the band; 'settling' after, while
+  // we wait for it to plateau enough to buy.
+  phase: 'climbing' | 'settling';
+  // Prices sampled since the token entered the settle phase. We buy once the
+  // last settleSamples of them are tight; older ones are discarded.
+  recentPrices: number[];
   // Pre-screen result, computed during the watch. Undefined when no
   // prescreen was supplied.
   screen?: Promise<boolean>;
 }
 
 // Watches freshly-detected pump.fun launches and emits 'entry' for the ones
-// that show real upward momentum in their first minutes. This replaces the
-// launch snipe: buy demonstrated demand, not predicted potential.
+// that climb into the band and then *settle* — proof of real demand that has
+// plateaued into a price a buy can fill against. This is momentum v2: buy the
+// base after the climb, not the spike (v1 chased the spike and never landed).
 //
-// Emits: 'entry' (pool: NewPool, multiple: number) when a watched token's
-// price enters the band after minAgeMs and clears its pre-screen.
+// Emits: 'entry' (pool: NewPool, multiple: number) when a watched token has
+// settled inside the band, is old enough, and cleared its pre-screen.
 export class MomentumWatcher extends EventEmitter {
   private readonly watching = new Map<string, WatchEntry>();
   private timer: NodeJS.Timeout | null = null;
@@ -105,6 +121,8 @@ export class MomentumWatcher extends EventEmitter {
       pool,
       baselinePriceSol: reading.priceSol,
       addedAt: Date.now(),
+      phase: 'climbing',
+      recentPrices: [],
       screen,
     });
     logger.debug(
@@ -112,9 +130,9 @@ export class MomentumWatcher extends EventEmitter {
     );
   }
 
-  // Re-price every watched token: emit 'entry' for ones inside the band that
-  // are old enough and cleared their pre-screen; drop ones that expired the
-  // window, ran clean past the band, or hit the band too fast to catch.
+  // Re-price every watched token and advance it through the climb -> settle
+  // -> buy lifecycle. Drops ones that expired the window, graduated, ran clean
+  // past the band, hit the band too fast, or fell back out of it.
   // Guarded so a slow sweep can never overlap the next interval tick.
   async sweep(): Promise<void> {
     if (this.sweeping) return;
@@ -135,27 +153,58 @@ export class MomentumWatcher extends EventEmitter {
         }
         if (reading.kind !== 'price') continue; // transient — retry next sweep
         const mult = reading.priceSol / entry.baselinePriceSol;
-        if (mult > this.cfg.entryMultMax) {
-          this.watching.delete(mint);
-          logger.debug(
-            `momentum: ${mint} ran past the band (${mult.toFixed(1)}x) — not chasing`
-          );
-          continue;
-        }
-        if (mult < this.cfg.entryMultMin) continue; // still below — keep watching
 
-        // In the band. Skip it if the move was too fast to catch.
-        const age = now - entry.addedAt;
-        if (age < this.cfg.minAgeMs) {
-          this.watching.delete(mint);
+        if (entry.phase === 'climbing') {
+          if (mult > this.cfg.entryMultMax) {
+            this.watching.delete(mint);
+            logger.debug(
+              `momentum: ${mint} ran past the band (${mult.toFixed(1)}x) — not chasing`
+            );
+            continue;
+          }
+          if (mult < this.cfg.entryMultMin) continue; // still below — keep watching
+
+          // In the band. Skip it if the move was too fast to catch.
+          const age = now - entry.addedAt;
+          if (age < this.cfg.minAgeMs) {
+            this.watching.delete(mint);
+            logger.debug(
+              `momentum: ${mint} hit the band in ${(age / 1000).toFixed(0)}s — too fast, dropped`
+            );
+            continue;
+          }
+          // Qualified: start the settle watch instead of buying the spike.
+          entry.phase = 'settling';
+          entry.recentPrices = [reading.priceSol];
           logger.debug(
-            `momentum: ${mint} hit the band in ${(age / 1000).toFixed(0)}s — too fast, dropped`
+            `momentum: ${mint} entered the band (+${((mult - 1) * 100).toFixed(0)}%) — watching for it to settle`
           );
           continue;
         }
+
+        // phase === 'settling'. If it fell back out of the band the demand
+        // faded — drop it. A token still climbing simply never goes tight
+        // (the window keeps moving), so the watch-window expiry retires it.
+        if (mult < this.cfg.entryMultMin) {
+          this.watching.delete(mint);
+          logger.debug(
+            `momentum: ${mint} fell out of the band while settling — demand faded`
+          );
+          continue;
+        }
+        entry.recentPrices.push(reading.priceSol);
+        if (entry.recentPrices.length > this.cfg.settleSamples) {
+          entry.recentPrices.shift();
+        }
+        if (entry.recentPrices.length < this.cfg.settleSamples) continue; // need more
+
+        const lo = Math.min(...entry.recentPrices);
+        const hi = Math.max(...entry.recentPrices);
+        if ((hi - lo) / lo > this.cfg.settleTolerance) continue; // still moving
+
+        // Settled inside the band. Honour the pre-screen (bundle + safety)
+        // that ran during the watch; a screen error fails closed.
         this.watching.delete(mint);
-        // The pre-screen (bundle + safety) ran during the watch; honour it.
-        // A screen error fails closed — don't buy what we couldn't verify.
         if (entry.screen) {
           let cleared = false;
           try {
@@ -170,8 +219,10 @@ export class MomentumWatcher extends EventEmitter {
             continue;
           }
         }
+        const age = now - entry.addedAt;
         logger.info(
-          `momentum entry: ${mint} +${((mult - 1) * 100).toFixed(0)}% in ${(age / 1000).toFixed(0)}s`
+          `momentum entry: ${mint} settled +${((mult - 1) * 100).toFixed(0)}% ` +
+            `(${this.cfg.settleSamples} samples within ${(this.cfg.settleTolerance * 100).toFixed(0)}%, ${(age / 1000).toFixed(0)}s)`
         );
         this.emit('entry', entry.pool, mult);
       }

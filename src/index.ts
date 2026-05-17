@@ -145,8 +145,9 @@ async function snipeCommand(options: {
     return true;
   };
 
-  // Pump uses momentum entry — watch a launch, buy only if it climbs into
-  // the band. Raydium keeps the analyze-at-launch flow (momentum is null).
+  // Pump uses momentum entry — watch a launch, buy only once it climbs into
+  // the band and settles. Raydium keeps the analyze-at-launch flow (momentum
+  // is null).
   const momentum =
     cfg.source === 'pump'
       ? new MomentumWatcher(
@@ -157,6 +158,8 @@ async function snipeCommand(options: {
             entryMultMin: cfg.momentumEntryMultMin,
             entryMultMax: cfg.momentumEntryMultMax,
             minAgeMs: cfg.momentumMinAgeSec * 1_000,
+            settleSamples: cfg.momentumSettleSamples,
+            settleTolerance: cfg.momentumSettleTolerance,
             watchCap: cfg.momentumWatchCap,
           },
           momentumPrescreen
@@ -326,7 +329,8 @@ async function snipeCommand(options: {
   if (momentum) {
     momentum.start();
     logger.info(
-      `momentum entry: watching for +${((cfg.momentumEntryMultMin - 1) * 100).toFixed(0)}-${((cfg.momentumEntryMultMax - 1) * 100).toFixed(0)}% within ${cfg.momentumWindowMin}min`
+      `momentum entry: buy a +${((cfg.momentumEntryMultMin - 1) * 100).toFixed(0)}-${((cfg.momentumEntryMultMax - 1) * 100).toFixed(0)}% climb once it settles ` +
+        `(${cfg.momentumSettleSamples} samples within ${(cfg.momentumSettleTolerance * 100).toFixed(0)}%), window ${cfg.momentumWindowMin}min`
     );
   }
   // Hand the connection to the monitor so pump positions can poll the

@@ -636,6 +636,26 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
 
+### DexScreener trending entry — a separate strategy, separate branch
+
+**Idea:** stop trading the pump.fun bonding curve entirely. Instead trade *graduated* AMM tokens the way the user picks them by hand on DexScreener: poll for new pairs, keep only those that clear a liquidity / market-cap / volume / age filter, score the survivors, buy via Jupiter.
+
+**The user's manual filter (proven by hand, screenshots 2026-05-17):**
+- Liquidity ≥ ~$10k–100k
+- Market cap ~$22k to ≥$100k
+- Appears under DexScreener's "New — Trending 6H"
+- Volume looks healthy relative to liquidity
+- The token name/ticker is appealing (a human gut call)
+
+**Why it's promising — it dodges every wall the bonding-curve runs hit:**
+- Graduated tokens sit in real AMM pools → deep liquidity → no `6002` slippage wall (R-live-9/10/11's killer).
+- They've already survived hours with real volume → none of the $2.4k dead-on-arrival duds that sank launch-snipe (R-live-8).
+- The launch-time AI gate had no edge because there's nothing to judge at $2k. Here there's a real chart, real volume, a real name — and an LLM is genuinely good at the "do I like this name/vibe" call.
+
+**Build sketch:** a DexScreener listener (poll `api.dexscreener.com` new-pairs / search, filter client-side to reconstruct "trending 6H") replacing the mint listener; reuse the Jupiter swap path and the exit engine; the AI score becomes a name/vibe judgement, not a stats gate.
+
+**Status:** queued. Own branch off `main` once the momentum-v2 line resolves. Possibly a stronger bet than copy-trading — no winning-wallet sourcing dependency, and it is the user's own demonstrated edge.
+
 ### Rollover mode (casino, not income)
 
 **Idea:** start with 1 SOL, take the FULL stack (capital + every prior win) into each next trade, exit fully at a target multiple, repeat until total pot reaches a stop target (e.g. 10 SOL) or a single trade SLs and the run ends.

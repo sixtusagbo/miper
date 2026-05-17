@@ -10,7 +10,7 @@ vi.mock('../src/bondingCurve', () => ({
 import { MomentumWatcher, MomentumConfig } from '../src/momentum';
 import type { NewPool } from '../src/listener';
 
-// minAgeMs: 0 — the band tests sweep immediately, so the min-age filter is
+// minAgeMs: 0 — most tests sweep immediately, so the min-age filter is
 // disabled here and exercised in its own tests below.
 const CFG: MomentumConfig = {
   windowMs: 60_000,
@@ -18,6 +18,8 @@ const CFG: MomentumConfig = {
   entryMultMin: 1.4,
   entryMultMax: 2.5,
   minAgeMs: 0,
+  settleSamples: 3,
+  settleTolerance: 0.1,
   watchCap: 40,
 };
 
@@ -36,48 +38,100 @@ function fakePool(mint: string): NewPool {
 
 const price = (priceSol: number) => ({ kind: 'price' as const, priceSol });
 
+// A token is bought only once it climbs into the band AND settles, so a
+// completed entry needs the baseline read plus settleSamples in-band sweeps.
+async function runToEntry(watcher: MomentumWatcher, mint: string): Promise<void> {
+  await watcher.add(fakePool(mint));
+  for (let i = 0; i < CFG.settleSamples; i++) await watcher.sweep();
+}
+
 beforeEach(() => {
   mocks.readBondingCurve.mockReset();
 });
 
 describe('MomentumWatcher', () => {
-  it('emits entry when price climbs into the band', async () => {
+  it('emits entry once a token climbs into the band and settles', async () => {
     mocks.readBondingCurve
       .mockResolvedValueOnce(price(1e-7)) // add — baseline
-      .mockResolvedValueOnce(price(2e-7)); // sweep — 2x, inside [1.4, 2.5]
+      .mockResolvedValueOnce(price(2e-7)) // sweep 1 — 2x, enters the band
+      .mockResolvedValueOnce(price(2e-7)) // sweep 2 — flat
+      .mockResolvedValueOnce(price(2e-7)); // sweep 3 — flat, settled → buy
     const watcher = new MomentumWatcher({} as never, CFG);
     const entries: NewPool[] = [];
     watcher.on('entry', (pool: NewPool) => entries.push(pool));
 
-    await watcher.add(fakePool('AAA'));
-    await watcher.sweep();
+    await runToEntry(watcher, 'AAA');
 
     expect(entries).toHaveLength(1);
     expect(entries[0].tokenMint).toBe('AAA');
     expect(watcher.watchlistSize).toBe(0);
   });
 
-  it('keeps watching when price is still below the band', async () => {
+  it('does not buy the spike — keeps watching while the price is still moving', async () => {
+    mocks.readBondingCurve
+      .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7)) // enters the band
+      .mockResolvedValueOnce(price(2e-7))
+      .mockResolvedValueOnce(price(2.5e-7)); // +25% spread — not settled
+    const watcher = new MomentumWatcher({} as never, CFG);
+    const spy = vi.fn();
+    watcher.on('entry', spy);
+    await runToEntry(watcher, 'BBB');
+    expect(spy).not.toHaveBeenCalled();
+    expect(watcher.watchlistSize).toBe(1); // still watching for it to settle
+  });
+
+  it('buys once the price plateaus after wandering inside the band', async () => {
+    mocks.readBondingCurve
+      .mockResolvedValueOnce(price(1e-7)) // baseline
+      .mockResolvedValueOnce(price(2e-7)) // enters the band
+      .mockResolvedValueOnce(price(1.6e-7)) // window [2, 1.6] — wide
+      .mockResolvedValueOnce(price(1.6e-7)) // window [2, 1.6, 1.6] — still wide
+      .mockResolvedValueOnce(price(1.6e-7)); // window [1.6, 1.6, 1.6] — settled
+    const watcher = new MomentumWatcher({} as never, CFG);
+    const spy = vi.fn();
+    watcher.on('entry', spy);
+    await watcher.add(fakePool('CCC'));
+    for (let i = 0; i < 4; i++) await watcher.sweep();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps watching while the price is still below the band', async () => {
     mocks.readBondingCurve
       .mockResolvedValueOnce(price(1e-7))
       .mockResolvedValueOnce(price(1.2e-7)); // 1.2x — under entryMultMin
     const watcher = new MomentumWatcher({} as never, CFG);
     const spy = vi.fn();
     watcher.on('entry', spy);
-    await watcher.add(fakePool('BBB'));
+    await watcher.add(fakePool('DDD'));
     await watcher.sweep();
     expect(spy).not.toHaveBeenCalled();
     expect(watcher.watchlistSize).toBe(1);
   });
 
-  it('drops a token that ran clean past the band without buying', async () => {
+  it('drops a token that ran clean past the band before settling', async () => {
     mocks.readBondingCurve
       .mockResolvedValueOnce(price(1e-7))
       .mockResolvedValueOnce(price(5e-7)); // 5x — past entryMultMax
     const watcher = new MomentumWatcher({} as never, CFG);
     const spy = vi.fn();
     watcher.on('entry', spy);
-    await watcher.add(fakePool('CCC'));
+    await watcher.add(fakePool('EEE'));
+    await watcher.sweep();
+    expect(spy).not.toHaveBeenCalled();
+    expect(watcher.watchlistSize).toBe(0);
+  });
+
+  it('drops a token that falls back out of the band while settling', async () => {
+    mocks.readBondingCurve
+      .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7)) // enters the band — settling
+      .mockResolvedValueOnce(price(1.2e-7)); // fell to 1.2x — demand faded
+    const watcher = new MomentumWatcher({} as never, CFG);
+    const spy = vi.fn();
+    watcher.on('entry', spy);
+    await watcher.add(fakePool('FFF'));
+    await watcher.sweep();
     await watcher.sweep();
     expect(spy).not.toHaveBeenCalled();
     expect(watcher.watchlistSize).toBe(0);
@@ -88,7 +142,7 @@ describe('MomentumWatcher', () => {
     const watcher = new MomentumWatcher({} as never, { ...CFG, windowMs: 1 });
     const spy = vi.fn();
     watcher.on('entry', spy);
-    await watcher.add(fakePool('DDD'));
+    await watcher.add(fakePool('GGG'));
     await new Promise((r) => setTimeout(r, 10));
     await watcher.sweep();
     expect(spy).not.toHaveBeenCalled();
@@ -98,16 +152,16 @@ describe('MomentumWatcher', () => {
   it('enforces the watchlist cap', async () => {
     mocks.readBondingCurve.mockResolvedValue(price(1e-7));
     const watcher = new MomentumWatcher({} as never, { ...CFG, watchCap: 2 });
-    await watcher.add(fakePool('E1'));
-    await watcher.add(fakePool('E2'));
-    await watcher.add(fakePool('E3')); // over cap — ignored
+    await watcher.add(fakePool('H1'));
+    await watcher.add(fakePool('H2'));
+    await watcher.add(fakePool('H3')); // over cap — ignored
     expect(watcher.watchlistSize).toBe(2);
   });
 
   it('skips a token whose curve cannot be priced', async () => {
     mocks.readBondingCurve.mockResolvedValueOnce({ kind: 'unavailable' });
     const watcher = new MomentumWatcher({} as never, CFG);
-    await watcher.add(fakePool('FFF'));
+    await watcher.add(fakePool('III'));
     expect(watcher.watchlistSize).toBe(0);
   });
 
@@ -118,35 +172,38 @@ describe('MomentumWatcher', () => {
     const watcher = new MomentumWatcher({} as never, { ...CFG, minAgeMs: 60_000 });
     const spy = vi.fn();
     watcher.on('entry', spy);
-    await watcher.add(fakePool('GGG'));
+    await watcher.add(fakePool('JJJ'));
     await watcher.sweep();
     expect(spy).not.toHaveBeenCalled();
     expect(watcher.watchlistSize).toBe(0);
   });
 
-  it('emits entry once a token is in the band and past minAgeMs', async () => {
+  it('emits entry once a token is in the band, past minAgeMs, and settled', async () => {
     mocks.readBondingCurve
       .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7))
+      .mockResolvedValueOnce(price(2e-7))
       .mockResolvedValueOnce(price(2e-7));
     const watcher = new MomentumWatcher({} as never, { ...CFG, minAgeMs: 5 });
     const spy = vi.fn();
     watcher.on('entry', spy);
-    await watcher.add(fakePool('HHH'));
+    await watcher.add(fakePool('KKK'));
     await new Promise((r) => setTimeout(r, 15)); // age > minAgeMs
-    await watcher.sweep();
+    for (let i = 0; i < 3; i++) await watcher.sweep();
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it('emits entry only after the pre-screen clears', async () => {
     mocks.readBondingCurve
       .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7))
+      .mockResolvedValueOnce(price(2e-7))
       .mockResolvedValueOnce(price(2e-7));
     const prescreen = vi.fn().mockResolvedValue(true);
     const watcher = new MomentumWatcher({} as never, CFG, prescreen);
     const spy = vi.fn();
     watcher.on('entry', spy);
-    await watcher.add(fakePool('III'));
-    await watcher.sweep();
+    await runToEntry(watcher, 'LLL');
     expect(prescreen).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledTimes(1);
   });
@@ -154,14 +211,16 @@ describe('MomentumWatcher', () => {
   it('does not emit entry when the pre-screen rejects the token', async () => {
     mocks.readBondingCurve
       .mockResolvedValueOnce(price(1e-7))
+      .mockResolvedValueOnce(price(2e-7))
+      .mockResolvedValueOnce(price(2e-7))
       .mockResolvedValueOnce(price(2e-7));
     const prescreen = vi.fn().mockResolvedValue(false);
     const watcher = new MomentumWatcher({} as never, CFG, prescreen);
     const spy = vi.fn();
     watcher.on('entry', spy);
-    await watcher.add(fakePool('JJJ'));
+    await watcher.add(fakePool('MMM'));
     await new Promise((r) => setTimeout(r, 0)); // let the failed screen drop it
-    await watcher.sweep();
+    for (let i = 0; i < 3; i++) await watcher.sweep();
     expect(spy).not.toHaveBeenCalled();
   });
 });
