@@ -23,6 +23,7 @@ import { analyzeToken, runSafetyChecks } from './analyzer';
 import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } from './trader';
 import {
   closeAllOpenPositions,
+  executeAllInExit,
   positionAgeMinutes,
   startMonitoring,
   stopMonitoring,
@@ -36,6 +37,7 @@ import { MomentumWatcher } from './momentum';
 import { checkLaunchBundle } from './bundleCheck';
 import { TrendingListener, TrendingCandidate } from './trendingListener';
 import { scoreTrendingCandidate } from './trendingAnalyzer';
+import { WalletListener, LeaderTrade } from './walletListener';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -65,9 +67,14 @@ function applyCliFlags(options: { simulate?: boolean; source?: string }): void {
   if (options.simulate) process.env.SIMULATE = 'true';
   if (options.source) {
     const normalized = options.source.trim().toLowerCase();
-    if (normalized !== 'raydium' && normalized !== 'pump' && normalized !== 'trending') {
+    if (
+      normalized !== 'raydium' &&
+      normalized !== 'pump' &&
+      normalized !== 'trending' &&
+      normalized !== 'copytrade'
+    ) {
       throw new Error(
-        `--source must be 'raydium', 'pump' or 'trending', got '${options.source}'`
+        `--source must be 'raydium', 'pump', 'trending' or 'copytrade', got '${options.source}'`
       );
     }
     process.env.SOURCE = normalized;
@@ -111,10 +118,10 @@ async function snipeCommand(options: {
       wsEndpoint: cfg.solanaWsUrl,
     })
   );
-  // 'trending' discovers tokens by polling GeckoTerminal, not on-chain logs,
-  // so it has no LogListener — the TrendingListener below stands in.
+  // 'trending' and 'copytrade' discover tokens off-chain (GeckoTerminal poll /
+  // leader-wallet poll), not from on-chain pool logs — no LogListener.
   const listener: LogListener | null =
-    cfg.source === 'trending'
+    cfg.source === 'trending' || cfg.source === 'copytrade'
       ? null
       : cfg.source === 'pump'
         ? new PumpListener(connection)
@@ -131,6 +138,15 @@ async function snipeCommand(options: {
             maxAgeHours: cfg.trendingMaxAgeHours,
           },
           cfg.trendingPollSec * 1000
+        )
+      : null;
+  const walletListener: WalletListener | null =
+    cfg.source === 'copytrade'
+      ? new WalletListener(
+          connection,
+          cfg.copytradeWallets,
+          cfg.copytradePollSec * 1000,
+          cfg.copytradeMinLeaderSol
         )
       : null;
   // The momentum pre-screen — bundle veto + safety checks. Run during the
@@ -392,8 +408,54 @@ async function snipeCommand(options: {
     });
   }
 
+  if (walletListener) {
+    // Copy a leader's buy — no AI score; the leader's track record is the
+    // signal. Buy our own fixed size (BUY_AMOUNT_SOL), not theirs.
+    walletListener.on('leaderBuy', (t: LeaderTrade) => {
+      void (async () => {
+        if (countOpenPositions() + buysInFlight >= cfg.maxOpenPositions) {
+          logger.debug(`max open positions reached, skipping ${t.tokenMint}`);
+          return;
+        }
+        if (isTokenKnown(t.tokenMint) || inflightMints.has(t.tokenMint)) return;
+        inflightMints.add(t.tokenMint);
+        buysInFlight++;
+        try {
+          logger.info(`BUYING ${t.tokenMint} — copying ${t.wallet.slice(0, 8)}...`);
+          await executeBuy(
+            { tokenMint: t.tokenMint, poolAddress: '' },
+            { aiScore: null, symbol: null }
+          );
+        } catch (err) {
+          logger.error(`copytrade buy handler failed: ${(err as Error).message}`);
+        } finally {
+          buysInFlight--;
+          inflightMints.delete(t.tokenMint);
+        }
+      })();
+    });
+    // Mirror a leader's sell — close any open position we hold in that token.
+    // The stop-loss and time-exit (monitor loop) remain independent floors.
+    walletListener.on('leaderSell', (t: LeaderTrade) => {
+      void (async () => {
+        const open = getOpenPositions().filter((p) => p.token_mint === t.tokenMint);
+        for (const position of open) {
+          try {
+            logger.info(
+              `copytrade: leader exited ${t.tokenMint} — closing position #${position.id}`
+            );
+            await executeAllInExit(position, cfg);
+          } catch (err) {
+            logger.error(`copytrade exit handler failed: ${(err as Error).message}`);
+          }
+        }
+      })();
+    });
+  }
+
   await listener?.start();
   trendingListener?.start();
+  walletListener?.start();
   if (momentum) {
     momentum.start();
     logger.info(
@@ -435,6 +497,7 @@ async function snipeCommand(options: {
     if (autoStopTimer) clearTimeout(autoStopTimer);
     await listener?.stop();
     trendingListener?.stop();
+    walletListener?.stop();
     if (momentum) momentum.stop();
     stopMonitoring();
     if (cfg.closeOnShutdown) {

@@ -34,15 +34,21 @@ export function bannerLines(cfg: Config, now: Date = new Date()): string[] {
     );
   }
 
-  if (cfg.source === 'pump') {
-    // Pump uses momentum entry, not AI scoring — the AI knobs don't apply.
+  if (cfg.source === 'pump' || cfg.source === 'copytrade') {
+    // Pump uses momentum entry and copytrade mirrors a wallet — neither uses
+    // AI scoring, so the AI knobs don't apply.
     lines.push(`buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open`);
   } else {
     lines.push(
       `buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open | min AI score ${cfg.minAiScore} (${cfg.aiModel})`
     );
   }
-  if (cfg.source === 'pump') {
+  if (cfg.source === 'copytrade') {
+    lines.push(
+      `filters: following ${cfg.copytradeWallets.length} wallet(s) | ` +
+        `min leader buy ${cfg.copytradeMinLeaderSol} SOL | slippage ${cfg.maxSlippageBps}bps`
+    );
+  } else if (cfg.source === 'pump') {
     // The min-liquidity and top-holder gates are Raydium-only — the analyzer
     // skips them for pump — so showing them on a pump run is just noise.
     lines.push(
