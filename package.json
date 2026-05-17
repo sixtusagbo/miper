@@ -23,6 +23,12 @@
     "review:pump": "ts-node src/index.ts review --source pump",
     "balance": "ts-node src/index.ts balance",
     "balance:pump": "ts-node src/index.ts balance --source pump",
+    "snipe:trending": "ts-node src/index.ts snipe --source trending",
+    "simulate:trending": "SIMULATE=true ts-node src/index.ts snipe --source trending",
+    "monitor:trending": "ts-node src/index.ts monitor --source trending",
+    "status:trending": "ts-node src/index.ts status --source trending",
+    "review:trending": "ts-node src/index.ts review --source trending",
+    "balance:trending": "ts-node src/index.ts balance --source trending",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

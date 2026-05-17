@@ -4,6 +4,8 @@
 
 .PHONY: help install build test test-watch typecheck check \
 	sim sim-pump sim-pump-fresh snipe-pump snipe-pump-fresh \
+	sim-trending sim-trending-fresh review-trending tail-trending \
+	archive-trending nuke-trending \
 	monitor-pump status-pump review-pump balance-pump \
 	stats-pump scores-pump exits-pump tail-pump \
 	archive-pump archive-raydium archive-all \
@@ -21,6 +23,8 @@ help:
 	@echo "                     (pass LABEL=Rxx to tag the archived dir)"
 	@echo "    sim-pump         start simulate:pump (keeps existing state)"
 	@echo "    sim              start simulate (raydium source)"
+	@echo "    sim-trending-fresh  archive trending state, then start simulate:trending"
+	@echo "    sim-trending     start simulate:trending (keeps existing state)"
 	@echo ""
 	@echo "  Run — LIVE (real SOL; needs SIMULATE=false in .env)"
 	@echo "    snipe-pump-fresh archive pump state under runs/, then start a live pump run"
@@ -78,6 +82,39 @@ snipe-pump:
 # Fresh live run: archive the prior run's DB+log first, same as sim-pump-fresh.
 snipe-pump-fresh: archive-pump
 	npm run snipe:pump
+
+# ---- run: trending (GeckoTerminal trending-token strategy) ----------------
+
+sim-trending:
+	npm run simulate:trending
+
+sim-trending-fresh: archive-trending
+	npm run simulate:trending
+
+review-trending:
+	npm run review:trending
+
+tail-trending:
+	tail -f trending.log
+
+archive-trending:
+	@if [ -f trending.db ] || [ -n "$$(ls trending.log* 2>/dev/null)" ]; then \
+		stamp=$$(date -u +%Y-%m-%dT%H-%M-%SZ); \
+		dir="runs/$${stamp}_$(LABEL)"; \
+		mkdir -p "$$dir"; \
+		for f in trending.db trending.db-shm trending.db-wal trending.db-journal trending.log; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		for f in trending.log.*; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		echo "archived trending state to $$dir"; \
+	else \
+		echo "no trending state to archive"; \
+	fi
+
+nuke-trending:
+	rm -f trending.db* trending.log*
 
 # ---- inspect -------------------------------------------------------------
 
