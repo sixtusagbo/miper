@@ -30,7 +30,10 @@ import { PUMP_INITIAL_PRICE_SOL } from './analyzer';
 import { PUMP_TOKEN_BASE_UNITS } from './bondingCurve';
 
 
-const JUPITER_BASE = 'https://quote-api.jup.ag/v6';
+// Jupiter retired the legacy quote-api.jup.ag/v6 host (now ECONNREFUSED).
+// lite-api.jup.ag/swap/v1 is the current free Swap API — same /quote and
+// /swap paths, same request params and response shape.
+const JUPITER_BASE = 'https://lite-api.jup.ag/swap/v1';
 
 // Compute-unit limit for pump buy/sell txs. buy_v2 carries 27 accounts and the
 // SDK prepends several init_if_needed ATA creates; pump's own docs budget
