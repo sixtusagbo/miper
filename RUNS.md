@@ -632,6 +632,49 @@ All four runs at `MIN_AI_SCORE=70`. R9 is tiered baseline; R10a/b/c are all-in a
 
 ---
 
+## Run R-live-11 — momentum v1.1 at 40% slippage; buys land 1-in-12, the fill is flat
+**Date:** 2026-05-16
+**Code state:** momentum v1.1 + `fetchGlobal`/`fetchFeeConfig` cache (`6162fe4`), `MAX_SLIPPAGE_BPS` raised to 4000 (40%). Launched with `make snipe-pump-fresh LABEL=R-live-11`.
+**Config:** LIVE, `--source pump`. Momentum v1.1, band [1.4×, 2.5×], window 3min, `MAX_SLIPPAGE_BPS=4000`, `EXIT_MODE=all-in` 3×.
+**Duration:** full 2h.
+
+| Stage | Count |
+|---|---|
+| Momentum entries | 12 |
+| Buys landed | **1** — the other 11 reverted `Custom:6002` even at the 40% cap |
+| Landed fill | `9RE2c598` — entered at +51%, time-exited at **0.98×**, −0.0005 SOL |
+
+**Outcome:** raising the cap to 40% did not solve it — 11 of 12 buys still reverted. A momentum token climbs >40% in the seconds a buy tx is airborne. The one fill that landed was caught at +51% and went nowhere — flat to 0.98× over the 10-min hold.
+
+**Learning:** detecting a 40%+ climb and then landing a buy at any sane slippage *while it is still climbing* is contradictory. Decision: momentum v2 — stop buying the spike; wait for the climb to *settle* into a plateau and buy the flat price. See R-live-12.
+
+---
+
+## Run R-live-12 — momentum v2 (buy the settled base); the bonding-curve line is dead
+**Date:** 2026-05-17
+**Code state:** momentum v2 — the settle gate (`c15a307`). `MAX_SLIPPAGE_BPS` back to 2000 (20%), sample 25s, window 5min. Launched with `make snipe-pump-fresh LABEL=R-live-12`.
+**Config:** LIVE, `--source pump`. Band [1.4×, 2.5×], settle = 3 samples within 10%, min-age 60s, `EXIT_MODE=all-in` 3×.
+**Duration:** full 2h.
+
+| Stage | Count |
+|---|---|
+| Tokens watched | 1542 |
+| Expired the window (never reached the band) | 616 |
+| Dropped — band hit too fast (min-age) | 24 |
+| Ran past the band while climbing | 3 |
+| Entered the settle phase | 10 |
+| — fell back out of the band | 5 |
+| — **settled and bought** | **4** |
+| Buys landed | **0** — all 4 reverted `Custom:6002` |
+
+**Outcome:** the settle gate worked exactly as designed — all 4 entries were provably flat (3 samples within 10%, settling 134–256s) before the buy. They *still* reverted on slippage. The buy round-trips ran 6–16s; in that window the consolidation ended and the next leg of the pump blew past the 20% cap. A pump.fun token that has run +55–101% and is briefly flat is not a stable asset.
+
+**Across all four momentum runs (R-live-9/10/11/12): 37 buy attempts, 2 landed, neither profitable.**
+
+**Learning:** momentum entry on the pump.fun bonding curve is **structurally dead** — three iterations (v1 spike-chase, v1.1 min-age, v2 settle-the-base) could not land a buy. The slippage wall is unbeatable for a latency-bound bot, and "buy the consolidation" fails because pump.fun consolidations are too brief to enter through. Combined with R-live-8 (launch-snipe has no edge), **both bonding-curve strategies are abandoned.** The pivot is off the curve: trade graduated tokens via Jupiter (deep liquidity, no slippage wall) — the trending strategy and copy-trading. The `pump-fun` branch preserves momentum as a shelved strategy.
+
+---
+
 ## Future ideas — non-priority experiments
 
 Things we've considered but explicitly *not* on the active roadmap. If we do build any of these, slot a numbered run for it; don't reorder R7-R11.
