@@ -6,7 +6,8 @@
 	sim sim-pump sim-pump-fresh snipe-pump snipe-pump-fresh \
 	sim-trending sim-trending-fresh review-trending tail-trending \
 	archive-trending nuke-trending \
-	sim-copytrade sim-copytrade-fresh review-copytrade status-copytrade \
+	sim-copytrade sim-copytrade-fresh snipe-copytrade snipe-copytrade-fresh \
+	review-copytrade status-copytrade \
 	tail-copytrade archive-copytrade nuke-copytrade \
 	monitor-pump status-pump review-pump balance-pump \
 	stats-pump scores-pump exits-pump tail-pump \
@@ -127,6 +128,13 @@ sim-copytrade:
 
 sim-copytrade-fresh: archive-copytrade
 	npm run simulate:copytrade
+
+# Live copytrade run — real SOL. Reads SIMULATE from .env (must be false).
+snipe-copytrade:
+	npm run snipe:copytrade
+
+snipe-copytrade-fresh: archive-copytrade
+	npm run snipe:copytrade
 
 review-copytrade:
 	npm run review:copytrade
