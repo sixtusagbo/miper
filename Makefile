@@ -6,8 +6,8 @@
 	sim sim-pump sim-pump-fresh snipe-pump snipe-pump-fresh \
 	sim-trending sim-trending-fresh review-trending tail-trending \
 	archive-trending nuke-trending \
-	sim-copytrade sim-copytrade-fresh review-copytrade tail-copytrade \
-	archive-copytrade nuke-copytrade \
+	sim-copytrade sim-copytrade-fresh review-copytrade status-copytrade \
+	tail-copytrade archive-copytrade nuke-copytrade \
 	monitor-pump status-pump review-pump balance-pump \
 	stats-pump scores-pump exits-pump tail-pump \
 	archive-pump archive-raydium archive-all \
@@ -130,6 +130,9 @@ sim-copytrade-fresh: archive-copytrade
 
 review-copytrade:
 	npm run review:copytrade
+
+status-copytrade:
+	npm run status:copytrade
 
 tail-copytrade:
 	tail -f copytrade.log
