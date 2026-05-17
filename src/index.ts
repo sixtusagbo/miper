@@ -409,6 +409,34 @@ async function snipeCommand(options: {
   }
 
   if (walletListener) {
+    // Tokens the leader sold while our copy-buy was still in flight — sold the
+    // instant the buy lands (orphaned-bag race fix).
+    const pendingSells = new Set<string>();
+    // Tokens with an exit already in progress — guards a leader who sells one
+    // token in chunks from firing several concurrent full exits of one
+    // position (the CT-paper-1 triple-sell bug).
+    const exitingMints = new Set<string>();
+
+    // Close every open position in a token, deduped per mint.
+    const exitToken = async (tokenMint: string): Promise<void> => {
+      if (exitingMints.has(tokenMint)) return;
+      const open = getOpenPositions().filter((p) => p.token_mint === tokenMint);
+      if (open.length === 0) return;
+      exitingMints.add(tokenMint);
+      try {
+        for (const position of open) {
+          logger.info(
+            `copytrade: leader exited ${tokenMint} — closing position #${position.id}`
+          );
+          await executeAllInExit(position, cfg, true);
+        }
+      } catch (err) {
+        logger.error(`copytrade exit handler failed: ${(err as Error).message}`);
+      } finally {
+        exitingMints.delete(tokenMint);
+      }
+    };
+
     // Copy a leader's buy — no AI score; the leader's track record is the
     // signal. Buy our own fixed size (BUY_AMOUNT_SOL), not theirs.
     walletListener.on('leaderBuy', (t: LeaderTrade) => {
@@ -426,6 +454,9 @@ async function snipeCommand(options: {
             { tokenMint: t.tokenMint, poolAddress: '' },
             { aiScore: null, symbol: null }
           );
+          // The leader sold this token while our buy was in flight — exit the
+          // freshly-opened position now.
+          if (pendingSells.delete(t.tokenMint)) await exitToken(t.tokenMint);
         } catch (err) {
           logger.error(`copytrade buy handler failed: ${(err as Error).message}`);
         } finally {
@@ -434,21 +465,17 @@ async function snipeCommand(options: {
         }
       })();
     });
-    // Mirror a leader's sell — close any open position we hold in that token.
-    // The stop-loss and time-exit (monitor loop) remain independent floors.
+    // Mirror a leader's sell — close any open position in that token. The
+    // stop-loss and time-exit (monitor loop) remain independent floors.
     walletListener.on('leaderSell', (t: LeaderTrade) => {
       void (async () => {
-        const open = getOpenPositions().filter((p) => p.token_mint === t.tokenMint);
-        for (const position of open) {
-          try {
-            logger.info(
-              `copytrade: leader exited ${t.tokenMint} — closing position #${position.id}`
-            );
-            await executeAllInExit(position, cfg);
-          } catch (err) {
-            logger.error(`copytrade exit handler failed: ${(err as Error).message}`);
-          }
+        const held = getOpenPositions().some((p) => p.token_mint === t.tokenMint);
+        if (!held && inflightMints.has(t.tokenMint)) {
+          // Leader exited before our copy-buy landed — sell on buy completion.
+          pendingSells.add(t.tokenMint);
+          return;
         }
+        await exitToken(t.tokenMint);
       })();
     });
   }

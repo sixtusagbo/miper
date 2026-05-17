@@ -359,17 +359,20 @@ export function isPastHoldLimit(
 // and executeTakeProfit (which handles the partial 40/30/30 ladder).
 export async function executeAllInExit(
   position: Position,
-  cfg: Config = loadConfig()
+  cfg: Config = loadConfig(),
+  leaderExit = false
 ): Promise<void> {
   const sold = await executePartialSell(position, position.amount_tokens, cfg);
   if (!sold) return;
 
+  // leaderExit: a copytrade mirror of the leader's own sell — not a take-
+  // profit. Its own label so the log reads truthfully.
   logger.position(
-    'TP3', // Re-using the TP3 label for parity with tiered logs; renaming
-           // would force a log-format break. The DB tp_level=3 below makes
-           // intent explicit.
+    leaderExit ? 'COPY-EXIT' : 'TP3',
     position.token_mint,
-    `all-in exit: sold ${position.amount_tokens.toFixed(2)} at ${cfg.exitAtMult}x`
+    leaderExit
+      ? `leader sold — closed ${position.amount_tokens.toFixed(2)} tokens`
+      : `all-in exit: sold ${position.amount_tokens.toFixed(2)} at ${cfg.exitAtMult}x`
   );
   updatePosition(position.id, {
     amountTokens: 0,
