@@ -13,7 +13,7 @@ vi.mock('node-fetch', () => ({ default: mocks.mockFetch }));
 
 vi.mock('@solana/spl-token', () => ({
   getMint: mocks.mockGetMint,
-  getAssociatedTokenAddress: vi.fn().mockResolvedValue({
+  getAssociatedTokenAddressSync: vi.fn().mockReturnValue({
     toBase58: () => 'ATA',
   }),
 }));
@@ -28,6 +28,8 @@ vi.mock('@solana/web3.js', async () => {
     confirmTransaction = mocks.mockConfirmTransaction;
     getLatestBlockhash = mocks.mockGetLatestBlockhash;
     getTokenAccountBalance = vi.fn().mockResolvedValue({ value: { uiAmount: 0 } });
+    // detectTokenProgram reads the mint's owning program off the account.
+    getAccountInfo = vi.fn().mockResolvedValue({ owner: 'TOKEN_PROGRAM' });
     constructor(_url: string, _opts?: unknown) {}
   }
   return { ...actual, Connection: MockConnection };

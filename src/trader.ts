@@ -10,7 +10,6 @@ import {
 } from '@solana/web3.js';
 import {
   createCloseAccountInstruction,
-  getAssociatedTokenAddress,
   getAssociatedTokenAddressSync,
   getMint,
 } from '@solana/spl-token';
@@ -153,9 +152,13 @@ export async function getTokenBalance(
 ): Promise<number> {
   const wallet = getWallet(cfg);
   const mintPk = new PublicKey(mint);
-  const ata = await getAssociatedTokenAddress(mintPk, wallet.publicKey);
   try {
-    const info = await getConnection(cfg).getTokenAccountBalance(ata);
+    const connection = getConnection(cfg);
+    // Derive the ATA under the mint's actual token program — a Token-2022
+    // mint's associated account differs from the classic SPL one.
+    const tokenProgram = await detectTokenProgram(connection, mintPk);
+    const ata = getAssociatedTokenAddressSync(mintPk, wallet.publicKey, false, tokenProgram);
+    const info = await connection.getTokenAccountBalance(ata);
     return Number(info.value.uiAmount ?? 0);
   } catch {
     return 0;
@@ -165,7 +168,14 @@ export async function getTokenBalance(
 async function getMintDecimals(mint: string, cfg: Config): Promise<number> {
   const cached = mintDecimalsCache.get(mint);
   if (cached !== undefined) return cached;
-  const info = await getMint(getConnection(cfg), new PublicKey(mint));
+  const connection = getConnection(cfg);
+  const mintPk = new PublicKey(mint);
+  // The mint may be classic SPL Token or Token-2022 — pump-graduated tokens
+  // (which the trending source surfaces heavily) are usually Token-2022.
+  // getMint must be told which program owns the mint, or it throws an
+  // empty-message TokenInvalidAccountOwnerError.
+  const tokenProgram = await detectTokenProgram(connection, mintPk);
+  const info = await getMint(connection, mintPk, undefined, tokenProgram);
   mintDecimalsCache.set(mint, info.decimals);
   return info.decimals;
 }
