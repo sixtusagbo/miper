@@ -35,6 +35,7 @@
     "status:copytrade": "ts-node src/index.ts status --source copytrade",
     "review:copytrade": "ts-node src/index.ts review --source copytrade",
     "balance:copytrade": "ts-node src/index.ts balance --source copytrade",
+    "vet-wallet": "ts-node scripts/vet-wallet.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
