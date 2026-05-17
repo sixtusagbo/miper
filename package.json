@@ -29,6 +29,12 @@
     "status:trending": "ts-node src/index.ts status --source trending",
     "review:trending": "ts-node src/index.ts review --source trending",
     "balance:trending": "ts-node src/index.ts balance --source trending",
+    "snipe:copytrade": "ts-node src/index.ts snipe --source copytrade",
+    "simulate:copytrade": "SIMULATE=true ts-node src/index.ts snipe --source copytrade",
+    "monitor:copytrade": "ts-node src/index.ts monitor --source copytrade",
+    "status:copytrade": "ts-node src/index.ts status --source copytrade",
+    "review:copytrade": "ts-node src/index.ts review --source copytrade",
+    "balance:copytrade": "ts-node src/index.ts balance --source copytrade",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

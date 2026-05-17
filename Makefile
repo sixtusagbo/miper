@@ -6,6 +6,8 @@
 	sim sim-pump sim-pump-fresh snipe-pump snipe-pump-fresh \
 	sim-trending sim-trending-fresh review-trending tail-trending \
 	archive-trending nuke-trending \
+	sim-copytrade sim-copytrade-fresh review-copytrade tail-copytrade \
+	archive-copytrade nuke-copytrade \
 	monitor-pump status-pump review-pump balance-pump \
 	stats-pump scores-pump exits-pump tail-pump \
 	archive-pump archive-raydium archive-all \
@@ -25,6 +27,8 @@ help:
 	@echo "    sim              start simulate (raydium source)"
 	@echo "    sim-trending-fresh  archive trending state, then start simulate:trending"
 	@echo "    sim-trending     start simulate:trending (keeps existing state)"
+	@echo "    sim-copytrade-fresh archive copytrade state, then start simulate:copytrade"
+	@echo "    sim-copytrade    start simulate:copytrade (keeps existing state)"
 	@echo ""
 	@echo "  Run — LIVE (real SOL; needs SIMULATE=false in .env)"
 	@echo "    snipe-pump-fresh archive pump state under runs/, then start a live pump run"
@@ -115,6 +119,39 @@ archive-trending:
 
 nuke-trending:
 	rm -f trending.db* trending.log*
+
+# ---- run: copytrade (mirror curated leader wallets) -----------------------
+
+sim-copytrade:
+	npm run simulate:copytrade
+
+sim-copytrade-fresh: archive-copytrade
+	npm run simulate:copytrade
+
+review-copytrade:
+	npm run review:copytrade
+
+tail-copytrade:
+	tail -f copytrade.log
+
+archive-copytrade:
+	@if [ -f copytrade.db ] || [ -n "$$(ls copytrade.log* 2>/dev/null)" ]; then \
+		stamp=$$(date -u +%Y-%m-%dT%H-%M-%SZ); \
+		dir="runs/$${stamp}_$(LABEL)"; \
+		mkdir -p "$$dir"; \
+		for f in copytrade.db copytrade.db-shm copytrade.db-wal copytrade.db-journal copytrade.log; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		for f in copytrade.log.*; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		echo "archived copytrade state to $$dir"; \
+	else \
+		echo "no copytrade state to archive"; \
+	fi
+
+nuke-copytrade:
+	rm -f copytrade.db* copytrade.log*
 
 # ---- inspect -------------------------------------------------------------
 
