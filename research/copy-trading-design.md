@@ -30,12 +30,28 @@ any Solana token. The wallet is the signal.
 - `src/index.ts` — wire the `copytrade` source.
 - buy / exit / persistence reused as-is.
 
-## Open decisions (need the user)
+## Resolved decisions
 
-- **Wallet sourcing** — who provides the seed list, and how it is vetted.
-- **Exit handling** — mirror the leader's sell, or run our own TP/SL exit.
-  Mirroring the sell is truer copy-trading but requires continuously watching
-  each leader for *sell* transactions too, not just buys.
+- **Wallet sourcing** — user pulls candidate addresses from Axiom Vision;
+  `scripts/vet-wallet.ts` verifies each on-chain. CT-paper-1 seed wallets:
+  clukz, Sebastian, Frost, Limfork.
+- **Exit handling** — hybrid: mirror the leader's sell, with the stop-loss
+  and `MAX_HOLD_MINUTES` time-exit as independent floors.
+
+## Known issues — fix in v1.1 (surfaced by CT-paper-1)
+
+- **Orphaned-bag race.** If a leader sells a token while our copy-buy for it
+  is still in flight, the `leaderSell` handler finds no position yet (the buy
+  hasn't created it) — so we end up holding a bag the leader has already
+  exited, and it only unwinds via the stop-loss / time-exit floor. Fix: when a
+  `leaderSell` arrives for a token currently in `inflightMints`, flag it, and
+  sell the position the instant the copy-buy completes. (Seen in CT-paper-1:
+  ESWAX — Sebastian bought and sold it within ~2s.)
+- **Misleading exit log label.** A leader-sell exit calls `executeAllInExit`,
+  which logs the `TP3` label and `all-in exit: sold ... at <EXIT_AT_MULT>x`
+  (e.g. "at 50x") — cosmetically wrong, it is not a take-profit. Fix: give the
+  copy-trade leader-sell exit its own log label/path (e.g. `COPY-EXIT`) so the
+  log reads truthfully. The DB record is already correct — log line only.
 
 ## Reused as-is
 
