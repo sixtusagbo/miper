@@ -34,6 +34,8 @@ import { bannerHeadline, bannerLines } from './banner';
 import { setBondingCurveCacheTtl } from './bondingCurve';
 import { MomentumWatcher } from './momentum';
 import { checkLaunchBundle } from './bundleCheck';
+import { TrendingListener, TrendingCandidate } from './trendingListener';
+import { scoreTrendingCandidate } from './trendingAnalyzer';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -63,8 +65,10 @@ function applyCliFlags(options: { simulate?: boolean; source?: string }): void {
   if (options.simulate) process.env.SIMULATE = 'true';
   if (options.source) {
     const normalized = options.source.trim().toLowerCase();
-    if (normalized !== 'raydium' && normalized !== 'pump') {
-      throw new Error(`--source must be 'raydium' or 'pump', got '${options.source}'`);
+    if (normalized !== 'raydium' && normalized !== 'pump' && normalized !== 'trending') {
+      throw new Error(
+        `--source must be 'raydium', 'pump' or 'trending', got '${options.source}'`
+      );
     }
     process.env.SOURCE = normalized;
     // An explicit --source takes ownership of path defaults. Without this,
@@ -107,8 +111,28 @@ async function snipeCommand(options: {
       wsEndpoint: cfg.solanaWsUrl,
     })
   );
-  const listener: LogListener =
-    cfg.source === 'pump' ? new PumpListener(connection) : new PoolListener(connection);
+  // 'trending' discovers tokens by polling GeckoTerminal, not on-chain logs,
+  // so it has no LogListener — the TrendingListener below stands in.
+  const listener: LogListener | null =
+    cfg.source === 'trending'
+      ? null
+      : cfg.source === 'pump'
+        ? new PumpListener(connection)
+        : new PoolListener(connection);
+  const trendingListener: TrendingListener | null =
+    cfg.source === 'trending'
+      ? new TrendingListener(
+          {
+            minLiquidityUsd: cfg.trendingMinLiquidityUsd,
+            maxLiquidityUsd: cfg.trendingMaxLiquidityUsd,
+            minMcapUsd: cfg.trendingMinMcapUsd,
+            minVolumeUsd: cfg.trendingMinVolumeUsd,
+            minAgeMin: cfg.trendingMinAgeMin,
+            maxAgeHours: cfg.trendingMaxAgeHours,
+          },
+          cfg.trendingPollSec * 1000
+        )
+      : null;
   // The momentum pre-screen — bundle veto + safety checks. Run during the
   // watch window (kicked off when watching begins) so the entry path stays
   // fast. Returns false (and logs/records the rejection) for a token to skip.
@@ -180,7 +204,7 @@ async function snipeCommand(options: {
   // and trade. Used by both the Raydium analyze path and the pump momentum
   // entry.
   const executeBuy = async (
-    pool: NewPool,
+    pool: { tokenMint: string; poolAddress: string },
     meta: { aiScore: number | null; symbol: string | null }
   ): Promise<void> => {
     const buy = await buyToken(pool.tokenMint, cfg.buyAmountSol, cfg);
@@ -227,7 +251,7 @@ async function snipeCommand(options: {
     });
   };
 
-  listener.on('newPool', async (pool) => {
+  listener?.on('newPool', async (pool) => {
     if (momentum) {
       // Pump: hand the launch to the momentum watcher — it samples the
       // curve and emits 'entry' only once the token shows real momentum.
@@ -325,7 +349,51 @@ async function snipeCommand(options: {
     });
   }
 
-  await listener.start();
+  if (trendingListener) {
+    // A trending candidate already cleared the liquidity/mcap/volume/age
+    // filter in the listener; here we score its name + metrics and buy.
+    trendingListener.on('candidate', (c: TrendingCandidate) => {
+      void (async () => {
+        if (countOpenPositions() + buysInFlight >= cfg.maxOpenPositions) {
+          logger.debug(`max open positions reached, skipping ${c.symbol}`);
+          return;
+        }
+        if (isTokenKnown(c.tokenMint) || inflightMints.has(c.tokenMint)) return;
+        inflightMints.add(c.tokenMint);
+        buysInFlight++;
+        try {
+          const ai = await scoreTrendingCandidate(c, cfg);
+          if (ai.error) {
+            // Transient (rate limit, timeout) — don't blocklist; retry later.
+            logger.debug(`trending: scoring errored for ${c.symbol} — will retry`);
+            return;
+          }
+          if (ai.score < cfg.minAiScore) {
+            logger.info(
+              `skipping ${c.symbol} (score ${ai.score}): below min AI score ${cfg.minAiScore}`
+            );
+            recordRejection({
+              tokenMint: c.tokenMint,
+              reason: `AI score ${ai.score} < ${cfg.minAiScore}`,
+              aiScore: ai.score,
+              poolAddress: c.poolAddress,
+            });
+            return;
+          }
+          logger.info(`BUYING ${c.symbol} (score ${ai.score}): ${ai.reasoning}`);
+          await executeBuy(c, { aiScore: ai.score, symbol: c.symbol });
+        } catch (err) {
+          logger.error(`trending candidate handler failed: ${(err as Error).message}`);
+        } finally {
+          buysInFlight--;
+          inflightMints.delete(c.tokenMint);
+        }
+      })();
+    });
+  }
+
+  await listener?.start();
+  trendingListener?.start();
   if (momentum) {
     momentum.start();
     logger.info(
@@ -365,7 +433,8 @@ async function snipeCommand(options: {
     forceExit.unref();
     clearInterval(statusTimer);
     if (autoStopTimer) clearTimeout(autoStopTimer);
-    await listener.stop();
+    await listener?.stop();
+    trendingListener?.stop();
     if (momentum) momentum.stop();
     stopMonitoring();
     if (cfg.closeOnShutdown) {

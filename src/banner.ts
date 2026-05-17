@@ -48,6 +48,13 @@ export function bannerLines(cfg: Config, now: Date = new Date()): string[] {
     lines.push(
       `filters: slippage ${cfg.maxSlippageBps}bps | mayhem-mode coins rejected`
     );
+  } else if (cfg.source === 'trending') {
+    const k = (n: number) => `$${Math.round(n / 1000)}k`;
+    lines.push(
+      `filters: liq ${k(cfg.trendingMinLiquidityUsd)}-${k(cfg.trendingMaxLiquidityUsd)} | ` +
+        `mcap >=${k(cfg.trendingMinMcapUsd)} | vol >=${k(cfg.trendingMinVolumeUsd)} | ` +
+        `age ${cfg.trendingMinAgeMin}min-${cfg.trendingMaxAgeHours}h`
+    );
   } else {
     lines.push(
       `filters: min liq $${cfg.minLiquidityUsd} | max top holder ${cfg.maxTopHolderPct}% | slippage ${cfg.maxSlippageBps}bps`

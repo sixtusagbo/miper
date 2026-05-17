@@ -593,6 +593,20 @@ async function scoreWithOpenAI(
   return parsed;
 }
 
+// Dispatch a system+user prompt to the configured AI provider. The label is
+// used only for debug logging. Shared by the launch-time gate and the
+// trending-token score so the provider plumbing lives in one place.
+export async function scoreWithModel(
+  cfg: Config,
+  systemPrompt: string,
+  userPrompt: string,
+  label: string
+): Promise<AiScore> {
+  return cfg.aiProvider === 'anthropic'
+    ? scoreWithAnthropic(cfg, systemPrompt, userPrompt, label)
+    : scoreWithOpenAI(cfg, systemPrompt, userPrompt, label);
+}
+
 export async function scoreWithAi(
   pool: NewPool,
   market: MarketData,
@@ -607,10 +621,7 @@ export async function scoreWithAi(
     const userPrompt = isPump
       ? buildPumpUserPrompt(pool, pumpCtx)
       : buildRaydiumUserPrompt(pool, market, safety);
-    const result =
-      cfg.aiProvider === 'anthropic'
-        ? await scoreWithAnthropic(cfg, systemPrompt, userPrompt, pool.tokenMint)
-        : await scoreWithOpenAI(cfg, systemPrompt, userPrompt, pool.tokenMint);
+    const result = await scoreWithModel(cfg, systemPrompt, userPrompt, pool.tokenMint);
     if (result.error) return result;
     logger.info(`AI scored ${pool.tokenMint}: ${result.score}/100 — ${result.reasoning}`);
     return result;
