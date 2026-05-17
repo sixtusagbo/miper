@@ -16,7 +16,7 @@ export const PROGRAM_IDS = {
 export const SOL_MINT_ADDRESS = PROGRAM_IDS.SOL_MINT.toBase58();
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'trade';
-export type Source = 'raydium' | 'pump';
+export type Source = 'raydium' | 'pump' | 'trending';
 export type AiProvider = 'anthropic' | 'openai';
 export type ExitMode = 'tiered' | 'all-in';
 
@@ -127,6 +127,16 @@ export interface Config {
   // latency would blow past slippage) and usually a manufactured pump.
   // 0 disables the filter.
   momentumMinAgeSec: number;
+  // Trending entry (trending source): poll GeckoTerminal's trending pools and
+  // buy graduated AMM tokens that clear a liquidity / market-cap / volume /
+  // age filter — the user's hand-proven DexScreener routine, automated.
+  trendingPollSec: number;
+  trendingMinLiquidityUsd: number;
+  trendingMaxLiquidityUsd: number;
+  trendingMinMcapUsd: number;
+  trendingMinVolumeUsd: number; // 24h volume floor — "VOL looks good"
+  trendingMinAgeMin: number;
+  trendingMaxAgeHours: number;
 }
 
 function required(name: string): string {
@@ -166,8 +176,12 @@ function parseLogLevel(value: string | undefined): LogLevel {
 
 function parseSource(value: string | undefined): Source {
   const normalized = (value ?? 'raydium').trim().toLowerCase();
-  if (normalized === 'raydium' || normalized === 'pump') return normalized;
-  throw new Error(`Invalid SOURCE: ${value} (expected 'raydium' or 'pump')`);
+  if (normalized === 'raydium' || normalized === 'pump' || normalized === 'trending') {
+    return normalized;
+  }
+  throw new Error(
+    `Invalid SOURCE: ${value} (expected 'raydium', 'pump' or 'trending')`
+  );
 }
 
 function parseExitMode(value: string | undefined): ExitMode {
@@ -253,8 +267,12 @@ export function loadConfig(): Config {
     maxOpenPositions: numberFromEnv('MAX_OPEN_POSITIONS', 10),
     // Per-source defaults so Raydium and pump.fun runs write to separate files
     // and never cross-contaminate each other's trade history.
-    dbPath: process.env.DB_PATH?.trim() || (source === 'pump' ? './pump.db' : './sniper.db'),
-    logFile: process.env.LOG_FILE?.trim() || (source === 'pump' ? './pump.log' : null),
+    dbPath:
+      process.env.DB_PATH?.trim() ||
+      (source === 'pump' ? './pump.db' : source === 'trending' ? './trending.db' : './sniper.db'),
+    logFile:
+      process.env.LOG_FILE?.trim() ||
+      (source === 'pump' ? './pump.log' : source === 'trending' ? './trending.log' : null),
     source,
     exitMode: parseExitMode(process.env.EXIT_MODE),
     exitAtMult: numberFromEnv('EXIT_AT_MULT', 2),
@@ -276,6 +294,13 @@ export function loadConfig(): Config {
     momentumWatchCap: numberFromEnv('MOMENTUM_WATCH_CAP', 40),
     momentumBundleThreshold: numberFromEnv('MOMENTUM_BUNDLE_THRESHOLD', 3),
     momentumMinAgeSec: numberFromEnv('MOMENTUM_MIN_AGE_SEC', 60),
+    trendingPollSec: numberFromEnv('TRENDING_POLL_SEC', 45),
+    trendingMinLiquidityUsd: numberFromEnv('TRENDING_MIN_LIQUIDITY_USD', 10_000),
+    trendingMaxLiquidityUsd: numberFromEnv('TRENDING_MAX_LIQUIDITY_USD', 250_000),
+    trendingMinMcapUsd: numberFromEnv('TRENDING_MIN_MCAP_USD', 22_000),
+    trendingMinVolumeUsd: numberFromEnv('TRENDING_MIN_VOLUME_USD', 50_000),
+    trendingMinAgeMin: numberFromEnv('TRENDING_MIN_AGE_MIN', 30),
+    trendingMaxAgeHours: numberFromEnv('TRENDING_MAX_AGE_HOURS', 24),
   };
 
   validateConfig(config);
@@ -377,6 +402,22 @@ function validateConfig(c: Config): void {
   if (c.maxConsecutiveBuyFailures < 0) {
     throw new Error(
       `MAX_CONSECUTIVE_BUY_FAILURES must be >= 0 (0 disables), got ${c.maxConsecutiveBuyFailures}`
+    );
+  }
+  if (c.trendingPollSec <= 0) {
+    throw new Error(`TRENDING_POLL_SEC must be > 0, got ${c.trendingPollSec}`);
+  }
+  if (c.trendingMaxLiquidityUsd < c.trendingMinLiquidityUsd) {
+    throw new Error(
+      `TRENDING_MAX_LIQUIDITY_USD (${c.trendingMaxLiquidityUsd}) must be >= TRENDING_MIN_LIQUIDITY_USD (${c.trendingMinLiquidityUsd})`
+    );
+  }
+  if (c.trendingMinAgeMin < 0) {
+    throw new Error(`TRENDING_MIN_AGE_MIN must be >= 0, got ${c.trendingMinAgeMin}`);
+  }
+  if (c.trendingMaxAgeHours * 60 <= c.trendingMinAgeMin) {
+    throw new Error(
+      `TRENDING_MAX_AGE_HOURS (${c.trendingMaxAgeHours}h) must exceed TRENDING_MIN_AGE_MIN (${c.trendingMinAgeMin}min)`
     );
   }
 }
