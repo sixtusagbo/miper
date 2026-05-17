@@ -268,7 +268,7 @@ export function loadConfig(): Config {
     pumpPriorityMaxMicrolamports: numberFromEnv('PUMP_PRIORITY_MAX_MICROLAMPORTS', 5_000_000),
     maxConsecutiveBuyFailures: numberFromEnv('MAX_CONSECUTIVE_BUY_FAILURES', 5),
     momentumWindowMin: numberFromEnv('MOMENTUM_WINDOW_MIN', 5),
-    momentumSampleSec: numberFromEnv('MOMENTUM_SAMPLE_SEC', 10),
+    momentumSampleSec: numberFromEnv('MOMENTUM_SAMPLE_SEC', 25),
     momentumEntryMultMin: numberFromEnv('MOMENTUM_ENTRY_MULT_MIN', 1.4),
     momentumEntryMultMax: numberFromEnv('MOMENTUM_ENTRY_MULT_MAX', 2.5),
     momentumSettleSamples: numberFromEnv('MOMENTUM_SETTLE_SAMPLES', 3),
