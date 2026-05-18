@@ -34,16 +34,21 @@ export function bannerLines(cfg: Config, now: Date = new Date()): string[] {
     );
   }
 
-  lines.push(
-    `buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open | min AI score ${cfg.minAiScore} (${cfg.aiModel})`
-  );
   if (cfg.source === 'pump') {
-    // The min-liquidity and top-holder gates are Raydium-only — the analyzer
-    // skips them for pump — so showing them on a pump run is just noise.
+    // Launch-snipe v2: no LLM gate — entry is on-chain traction, so the AI
+    // score is irrelevant here. The min-liquidity / top-holder gates are
+    // Raydium-only too, so a pump run only shows what actually applies.
+    lines.push(`buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open`);
+    lines.push(
+      `launch-snipe v2: observe ${cfg.tractionWindowSec}s, enter on >=${cfg.tractionMinBuyers} holders & <=${cfg.tractionMaxEntryMult}x floor, top holder <${cfg.tractionMaxClusterPct}%`
+    );
     lines.push(
       `filters: slippage ${cfg.maxSlippageBps}bps | mayhem-mode coins rejected`
     );
   } else {
+    lines.push(
+      `buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open | min AI score ${cfg.minAiScore} (${cfg.aiModel})`
+    );
     lines.push(
       `filters: min liq $${cfg.minLiquidityUsd} | max top holder ${cfg.maxTopHolderPct}% | slippage ${cfg.maxSlippageBps}bps`
     );

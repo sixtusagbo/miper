@@ -37,6 +37,12 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     maxRunHours: 24,
     closeOnShutdown: true,
     maxHoldMinutes: 0,
+    tractionWindowSec: 60,
+    tractionSampleSec: 20,
+    tractionMinBuyers: 20,
+    tractionMaxEntryMult: 2,
+    tractionMaxClusterPct: 25,
+    tractionWatchCap: 40,
     ...overrides,
   } as Config;
 }
@@ -104,10 +110,33 @@ describe('bannerLines', () => {
     expect(exit).not.toContain('time-exit');
   });
 
-  it('includes the AI model name and min score on the strategy line', () => {
-    const lines = bannerLines(mkCfg({ aiModel: 'claude-haiku-4-5', minAiScore: 75 }), FIXED_NOW);
+  it('includes the AI model name and min score on the raydium strategy line', () => {
+    const lines = bannerLines(
+      mkCfg({ source: 'raydium', aiModel: 'claude-haiku-4-5', minAiScore: 75 }),
+      FIXED_NOW
+    );
     const strat = lines.find((l) => l.startsWith('buy '));
     expect(strat).toContain('min AI score 75 (claude-haiku-4-5)');
+  });
+
+  it('omits the AI score on a pump run and shows the launch-snipe v2 line', () => {
+    const lines = bannerLines(
+      mkCfg({
+        source: 'pump',
+        tractionWindowSec: 90,
+        tractionMinBuyers: 25,
+        tractionMaxEntryMult: 2.5,
+        tractionMaxClusterPct: 20,
+      }),
+      FIXED_NOW
+    );
+    const strat = lines.find((l) => l.startsWith('buy '));
+    expect(strat).not.toContain('min AI score');
+    const v2 = lines.find((l) => l.startsWith('launch-snipe v2:'));
+    expect(v2).toContain('observe 90s');
+    expect(v2).toContain('>=25 holders');
+    expect(v2).toContain('<=2.5x floor');
+    expect(v2).toContain('top holder <20%');
   });
 
   it('includes the paper-bag line in simulate mode and omits it in live', () => {
