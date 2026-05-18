@@ -37,32 +37,40 @@ function makePool(mint: string): NewPool {
 const baseCfg: TractionConfig = {
   windowMs: 0, // every entry is immediately past the observation window
   sampleMs: 1000,
-  minBuyers: 20,
+  minTrades: 5,
   maxEntryMult: 2.0,
-  maxClusterPct: 25,
   watchCap: 40,
 };
 
-// A connection whose getAccountInfo always returns a (dummy) curve buffer —
-// decodeBondingCurve is mocked, so the bytes don't matter.
-function makeConnection(accountInfo: unknown = { data: Buffer.alloc(64) }) {
+// A connection mock. `signatures` is the list returned by
+// getSignaturesForAddress; `sigsThrow` makes that call reject.
+function makeConnection(opts: {
+  accountInfo?: unknown;
+  signatures?: { signature: string; err: unknown }[];
+  sigsThrow?: boolean;
+} = {}) {
+  const sigs =
+    opts.signatures ??
+    Array.from({ length: 8 }, (_, i) => ({ signature: `s${i}`, err: null }));
   return {
-    getAccountInfo: vi.fn().mockResolvedValue(accountInfo),
-  } as unknown as Parameters<typeof TractionWatcher.prototype.constructor>[0];
+    getAccountInfo: vi
+      .fn()
+      .mockResolvedValue(
+        'accountInfo' in opts ? opts.accountInfo : { data: Buffer.alloc(64) }
+      ),
+    getSignaturesForAddress: opts.sigsThrow
+      ? vi.fn().mockRejectedValue(new Error('rpc down'))
+      : vi.fn().mockResolvedValue(sigs),
+  } as never;
 }
 
 const appConfig = {} as Config;
 
-// Defaults that clear every gate; individual tests override one at a time.
-function passingCurve() {
+// Curve + safety defaults that clear every gate; tests override one at a time.
+function passingGates() {
   mockDecode.mockReturnValue({ complete: false, isMayhemMode: false } as never);
   mockPrice.mockReturnValue(PUMP_INITIAL_PRICE_SOL * 1.5);
-  mockSafety.mockResolvedValue({
-    passed: true,
-    failures: [],
-    holderCount: 30,
-    topHolderPct: 10,
-  } as never);
+  mockSafety.mockResolvedValue({ passed: true, failures: [] } as never);
 }
 
 beforeEach(() => {
@@ -71,7 +79,7 @@ beforeEach(() => {
 
 describe('TractionWatcher.add', () => {
   it('adds a launch to the watchlist without buying', () => {
-    const w = new TractionWatcher(makeConnection() as never, baseCfg, appConfig);
+    const w = new TractionWatcher(makeConnection(), baseCfg, appConfig);
     const entry = vi.fn();
     w.on('entry', entry);
     w.add(makePool('mintA'));
@@ -80,18 +88,14 @@ describe('TractionWatcher.add', () => {
   });
 
   it('dedupes a launch already on the watchlist', () => {
-    const w = new TractionWatcher(makeConnection() as never, baseCfg, appConfig);
+    const w = new TractionWatcher(makeConnection(), baseCfg, appConfig);
     w.add(makePool('mintA'));
     w.add(makePool('mintA'));
     expect(w.watchlistSize).toBe(1);
   });
 
   it('respects the watch cap', () => {
-    const w = new TractionWatcher(
-      makeConnection() as never,
-      { ...baseCfg, watchCap: 2 },
-      appConfig
-    );
+    const w = new TractionWatcher(makeConnection(), { ...baseCfg, watchCap: 2 }, appConfig);
     w.add(makePool('mintA'));
     w.add(makePool('mintB'));
     w.add(makePool('mintC'));
@@ -102,7 +106,7 @@ describe('TractionWatcher.add', () => {
 describe('TractionWatcher.sweep — observation window', () => {
   it('leaves a launch on the watchlist until its window elapses', async () => {
     const w = new TractionWatcher(
-      makeConnection() as never,
+      makeConnection(),
       { ...baseCfg, windowMs: 60_000 },
       appConfig
     );
@@ -112,8 +116,8 @@ describe('TractionWatcher.sweep — observation window', () => {
   });
 
   it('assesses and removes a launch once its window has elapsed', async () => {
-    passingCurve();
-    const w = new TractionWatcher(makeConnection() as never, baseCfg, appConfig);
+    passingGates();
+    const w = new TractionWatcher(makeConnection(), baseCfg, appConfig);
     w.add(makePool('mintA'));
     await w.sweep();
     expect(w.watchlistSize).toBe(0);
@@ -122,8 +126,8 @@ describe('TractionWatcher.sweep — observation window', () => {
 });
 
 describe('TractionWatcher.assess — entry gate', () => {
-  async function sweepOne(mint = 'mintA') {
-    const w = new TractionWatcher(makeConnection() as never, baseCfg, appConfig);
+  async function sweepOne(connection = makeConnection(), mint = 'mintA') {
+    const w = new TractionWatcher(connection, baseCfg, appConfig);
     const entry = vi.fn();
     w.on('entry', entry);
     w.add(makePool(mint));
@@ -131,86 +135,82 @@ describe('TractionWatcher.assess — entry gate', () => {
     return entry;
   }
 
-  it('emits entry when every gate passes', async () => {
-    passingCurve();
+  it('emits entry with the curve-trade count when every gate passes', async () => {
+    passingGates();
     const entry = await sweepOne();
     expect(entry).toHaveBeenCalledOnce();
-    expect(entry.mock.calls[0][1]).toBe(30); // holder count
+    expect(entry.mock.calls[0][1]).toBe(8); // eight curve trades
   });
 
   it('does not emit when the curve is unreadable', async () => {
-    passingCurve();
-    const w = new TractionWatcher(
-      makeConnection({ data: null }) as never,
-      baseCfg,
-      appConfig
-    );
-    const entry = vi.fn();
-    w.on('entry', entry);
-    w.add(makePool('mintA'));
-    await w.sweep();
+    passingGates();
+    const entry = await sweepOne(makeConnection({ accountInfo: { data: null } }));
     expect(entry).not.toHaveBeenCalled();
   });
 
   it('does not emit when the launch graduated during the window', async () => {
-    passingCurve();
+    passingGates();
     mockDecode.mockReturnValue({ complete: true, isMayhemMode: false } as never);
     const entry = await sweepOne();
     expect(entry).not.toHaveBeenCalled();
   });
 
   it('does not emit for a mayhem-mode coin', async () => {
-    passingCurve();
+    passingGates();
     mockDecode.mockReturnValue({ complete: false, isMayhemMode: true } as never);
     const entry = await sweepOne();
     expect(entry).not.toHaveBeenCalled();
   });
 
   it('does not emit when the price ran past the landable cap', async () => {
-    passingCurve();
+    passingGates();
     mockPrice.mockReturnValue(PUMP_INITIAL_PRICE_SOL * 3); // 3x > 2x cap
     const entry = await sweepOne();
     expect(entry).not.toHaveBeenCalled();
   });
 
   it('does not emit when the price is unreadable', async () => {
-    passingCurve();
+    passingGates();
     mockPrice.mockReturnValue(null);
     const entry = await sweepOne();
     expect(entry).not.toHaveBeenCalled();
   });
 
+  it('does not emit when too few curve trades (no traction)', async () => {
+    passingGates();
+    const entry = await sweepOne(
+      makeConnection({
+        signatures: [
+          { signature: 's0', err: null },
+          { signature: 's1', err: null },
+        ],
+      })
+    );
+    expect(entry).not.toHaveBeenCalled();
+  });
+
+  it('excludes failed transactions from the trade count', async () => {
+    passingGates();
+    // 8 signatures but 5 failed — only 3 successful trades, below minTrades 5.
+    const signatures = Array.from({ length: 8 }, (_, i) => ({
+      signature: `s${i}`,
+      err: i < 5 ? { InstructionError: [0, 'Custom'] } : null,
+    }));
+    const entry = await sweepOne(makeConnection({ signatures }));
+    expect(entry).not.toHaveBeenCalled();
+  });
+
+  it('does not emit when the curve history is unreadable', async () => {
+    passingGates();
+    const entry = await sweepOne(makeConnection({ sigsThrow: true }));
+    expect(entry).not.toHaveBeenCalled();
+  });
+
   it('does not emit when safety checks fail', async () => {
-    passingCurve();
+    passingGates();
     mockSafety.mockResolvedValue({
       passed: false,
       failures: ['mint authority not revoked'],
-      holderCount: 30,
-      topHolderPct: 10,
-    } as never);
-    const entry = await sweepOne();
-    expect(entry).not.toHaveBeenCalled();
-  });
-
-  it('does not emit when there are too few holders (no traction)', async () => {
-    passingCurve();
-    mockSafety.mockResolvedValue({
-      passed: true,
-      failures: [],
-      holderCount: 5, // < minBuyers 20
-      topHolderPct: 10,
-    } as never);
-    const entry = await sweepOne();
-    expect(entry).not.toHaveBeenCalled();
-  });
-
-  it('does not emit when supply is too concentrated', async () => {
-    passingCurve();
-    mockSafety.mockResolvedValue({
-      passed: true,
-      failures: [],
-      holderCount: 30,
-      topHolderPct: 40, // > maxClusterPct 25
     } as never);
     const entry = await sweepOne();
     expect(entry).not.toHaveBeenCalled();
@@ -221,7 +221,7 @@ describe('TractionWatcher start/stop', () => {
   it('stop clears the watchlist and the sweep timer', () => {
     vi.useFakeTimers();
     try {
-      const w = new TractionWatcher(makeConnection() as never, baseCfg, appConfig);
+      const w = new TractionWatcher(makeConnection(), baseCfg, appConfig);
       w.add(makePool('mintA'));
       w.start();
       w.stop();

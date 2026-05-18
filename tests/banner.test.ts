@@ -39,9 +39,8 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     maxHoldMinutes: 0,
     tractionWindowSec: 60,
     tractionSampleSec: 20,
-    tractionMinBuyers: 20,
+    tractionMinTrades: 20,
     tractionMaxEntryMult: 2,
-    tractionMaxClusterPct: 25,
     tractionWatchCap: 40,
     ...overrides,
   } as Config;
@@ -124,9 +123,8 @@ describe('bannerLines', () => {
       mkCfg({
         source: 'pump',
         tractionWindowSec: 90,
-        tractionMinBuyers: 25,
+        tractionMinTrades: 25,
         tractionMaxEntryMult: 2.5,
-        tractionMaxClusterPct: 20,
       }),
       FIXED_NOW
     );
@@ -134,9 +132,8 @@ describe('bannerLines', () => {
     expect(strat).not.toContain('min AI score');
     const v2 = lines.find((l) => l.startsWith('launch-snipe v2:'));
     expect(v2).toContain('observe 90s');
-    expect(v2).toContain('>=25 holders');
+    expect(v2).toContain('>=25 curve trades');
     expect(v2).toContain('<=2.5x floor');
-    expect(v2).toContain('top holder <20%');
   });
 
   it('includes the paper-bag line in simulate mode and omits it in live', () => {

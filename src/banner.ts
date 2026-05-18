@@ -40,7 +40,7 @@ export function bannerLines(cfg: Config, now: Date = new Date()): string[] {
     // Raydium-only too, so a pump run only shows what actually applies.
     lines.push(`buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open`);
     lines.push(
-      `launch-snipe v2: observe ${cfg.tractionWindowSec}s, enter on >=${cfg.tractionMinBuyers} holders & <=${cfg.tractionMaxEntryMult}x floor, top holder <${cfg.tractionMaxClusterPct}%`
+      `launch-snipe v2: observe ${cfg.tractionWindowSec}s, enter on >=${cfg.tractionMinTrades} curve trades & <=${cfg.tractionMaxEntryMult}x floor`
     );
     lines.push(
       `filters: slippage ${cfg.maxSlippageBps}bps | mayhem-mode coins rejected`

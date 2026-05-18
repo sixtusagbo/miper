@@ -118,9 +118,8 @@ async function snipeCommand(options: {
           {
             windowMs: cfg.tractionWindowSec * 1000,
             sampleMs: cfg.tractionSampleSec * 1000,
-            minBuyers: cfg.tractionMinBuyers,
+            minTrades: cfg.tractionMinTrades,
             maxEntryMult: cfg.tractionMaxEntryMult,
-            maxClusterPct: cfg.tractionMaxClusterPct,
             watchCap: cfg.tractionWatchCap,
           },
           cfg
@@ -259,7 +258,7 @@ async function snipeCommand(options: {
   if (tractionWatcher) {
     // A launch that cleared the watcher's observation window with real
     // traction — buy it. No AI score; the on-chain traction is the signal.
-    tractionWatcher.on('entry', (pool: NewPool, holders: number) => {
+    tractionWatcher.on('entry', (pool: NewPool, trades: number) => {
       void (async () => {
         if (countOpenPositions() + buysInFlight >= cfg.maxOpenPositions) {
           logger.debug(`max open positions reached, skipping ${pool.tokenMint}`);
@@ -269,7 +268,7 @@ async function snipeCommand(options: {
         buysInFlight++;
         try {
           logger.info(
-            `BUYING ${pool.tokenMint} — ${holders} holders, traction confirmed`
+            `BUYING ${pool.tokenMint} — ${trades} curve trades, traction confirmed`
           );
           await executeBuy(pool, { aiScore: null, symbol: null });
         } catch (err) {
