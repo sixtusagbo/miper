@@ -99,6 +99,18 @@ export interface Config {
   // encoding, dead RPC, drained wallet) fails every snipe and bleeds fees
   // until noticed. The counter resets on any successful buy. 0 disables.
   maxConsecutiveBuyFailures: number;
+  // Launch-snipe v2 (early-traction entry): instead of buying at t=0, watch a
+  // new launch for tractionWindowSec, then buy only if it drew at least
+  // tractionMinBuyers distinct buyer wallets while its price is still within
+  // tractionMaxEntryMult of the launch floor (landable). tractionMaxClusterPct
+  // vetoes a launch where the dev + early co-buyers hold too much supply.
+  // tractionWatchCap bounds the concurrent watchlist (and its RPC cost).
+  tractionWindowSec: number;
+  tractionSampleSec: number;
+  tractionMinBuyers: number;
+  tractionMaxEntryMult: number;
+  tractionMaxClusterPct: number;
+  tractionWatchCap: number;
 }
 
 function required(name: string): string {
@@ -239,6 +251,12 @@ export function loadConfig(): Config {
     pumpPriorityMicrolamports: numberFromEnv('PUMP_PRIORITY_MICROLAMPORTS', 100_000),
     pumpPriorityMaxMicrolamports: numberFromEnv('PUMP_PRIORITY_MAX_MICROLAMPORTS', 5_000_000),
     maxConsecutiveBuyFailures: numberFromEnv('MAX_CONSECUTIVE_BUY_FAILURES', 5),
+    tractionWindowSec: numberFromEnv('TRACTION_WINDOW_SEC', 60),
+    tractionSampleSec: numberFromEnv('TRACTION_SAMPLE_SEC', 20),
+    tractionMinBuyers: numberFromEnv('TRACTION_MIN_BUYERS', 20),
+    tractionMaxEntryMult: numberFromEnv('TRACTION_MAX_ENTRY_MULT', 2.0),
+    tractionMaxClusterPct: numberFromEnv('TRACTION_MAX_CLUSTER_PCT', 25),
+    tractionWatchCap: numberFromEnv('TRACTION_WATCH_CAP', 40),
   };
 
   validateConfig(config);
@@ -302,6 +320,28 @@ function validateConfig(c: Config): void {
     throw new Error(
       `MAX_CONSECUTIVE_BUY_FAILURES must be >= 0 (0 disables), got ${c.maxConsecutiveBuyFailures}`
     );
+  }
+  if (c.tractionWindowSec <= 0) {
+    throw new Error(`TRACTION_WINDOW_SEC must be > 0, got ${c.tractionWindowSec}`);
+  }
+  if (c.tractionSampleSec <= 0) {
+    throw new Error(`TRACTION_SAMPLE_SEC must be > 0, got ${c.tractionSampleSec}`);
+  }
+  if (c.tractionMinBuyers < 1) {
+    throw new Error(`TRACTION_MIN_BUYERS must be >= 1, got ${c.tractionMinBuyers}`);
+  }
+  if (c.tractionMaxEntryMult < 1) {
+    throw new Error(
+      `TRACTION_MAX_ENTRY_MULT must be >= 1 (price never below the launch floor), got ${c.tractionMaxEntryMult}`
+    );
+  }
+  if (c.tractionMaxClusterPct <= 0 || c.tractionMaxClusterPct > 100) {
+    throw new Error(
+      `TRACTION_MAX_CLUSTER_PCT must be in (0, 100], got ${c.tractionMaxClusterPct}`
+    );
+  }
+  if (c.tractionWatchCap < 1) {
+    throw new Error(`TRACTION_WATCH_CAP must be >= 1, got ${c.tractionWatchCap}`);
   }
 }
 
