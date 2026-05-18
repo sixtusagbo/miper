@@ -60,6 +60,14 @@ the bot buying mechanically-identifiable duds — they do not manufacture edge.
 v2.0's realistic outcome is *less-losing*; the buyer-diversity signal is the
 one shot at *positively* finding a runner. Iterate from the data.
 
+## Logging — make misses legible
+
+A skipped or failed entry must read as a **miss**, not a cryptic code. Log
+`entry missed: <token> — <reason>` for: a launch that ran past
+`TRACTION_MAX_ENTRY_MULT` before we could buy, a buy that reverted on
+slippage (`6002`), and a launch dropped for too few buyers. The run log
+should let you scan and count the misses at a glance.
+
 ## Config knobs
 
 `TRACTION_WINDOW_SEC`, `TRACTION_SAMPLE_SEC`, `TRACTION_MIN_BUYERS`,
