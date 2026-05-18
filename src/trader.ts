@@ -487,11 +487,17 @@ async function pumpBuyLive(
     }
 
     // SOL budget -> the fee-aware token amount the buy should request.
+    // mintSupply must be the real supply: getBuyTokenAmountFromSolAmount
+    // silently discards the live bondingCurve and quotes against a fresh
+    // launch-floor curve when mintSupply is null — so every buy would request
+    // the same floor-priced token amount no matter how far the curve has run,
+    // and the exact-out buy then overspends the SOL budget on a moved curve.
+    const mintInfo = await getMint(connection, mintPk, undefined, tokenProgram);
     const quoteAmount = new BN(Math.floor(amountSol * LAMPORTS_PER_SOL));
     const amount = getBuyTokenAmountFromSolAmount({
       global,
       feeConfig,
-      mintSupply: null,
+      mintSupply: new BN(mintInfo.supply.toString()),
       bondingCurve,
       amount: quoteAmount,
     });
