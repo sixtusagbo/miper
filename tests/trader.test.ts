@@ -28,6 +28,11 @@ vi.mock('@solana/web3.js', async () => {
     confirmTransaction = mocks.mockConfirmTransaction;
     getLatestBlockhash = mocks.mockGetLatestBlockhash;
     getTokenAccountBalance = vi.fn().mockResolvedValue({ value: { uiAmount: 0 } });
+    // detectTokenProgram reads the mint account's owner; default to classic
+    // SPL Token so getMintDecimals resolves.
+    getAccountInfo = vi.fn().mockResolvedValue({
+      owner: new actual.PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
+    });
     constructor(_url: string, _opts?: unknown) {}
   }
   return { ...actual, Connection: MockConnection };
