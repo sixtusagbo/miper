@@ -5,6 +5,7 @@ import {
   bondingCurvePriceSol,
   clearBondingCurveCache,
   decodeBondingCurve,
+  isMayhemToken,
   readBondingCurve,
 } from '../src/bondingCurve';
 
@@ -237,5 +238,34 @@ describe('readBondingCurve cache', () => {
     await readBondingCurve(conn, ADDR);
 
     expect(getAccountInfo).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('isMayhemToken', () => {
+  const MINT = 'So11111111111111111111111111111111111111112';
+  // Extended layout: base curve + 32-byte creator + the mayhem flag at byte 81.
+  const creator = new PublicKey('11111111111111111111111111111113').toBuffer();
+  const curveWithMayhem = (on: boolean) =>
+    Buffer.concat([buildCurve({}), creator, Buffer.from([on ? 1 : 0])]);
+  const conn = (impl: { getAccountInfo: ReturnType<typeof vi.fn> }) => impl as any;
+
+  it('returns true for a pump.fun bonding-curve token in mayhem mode', async () => {
+    const c = conn({ getAccountInfo: vi.fn().mockResolvedValue({ data: curveWithMayhem(true) }) });
+    expect(await isMayhemToken(c, MINT)).toBe(true);
+  });
+
+  it('returns false for a non-mayhem bonding-curve token', async () => {
+    const c = conn({ getAccountInfo: vi.fn().mockResolvedValue({ data: curveWithMayhem(false) }) });
+    expect(await isMayhemToken(c, MINT)).toBe(false);
+  });
+
+  it('returns false when there is no bonding-curve account (not a pump token)', async () => {
+    const c = conn({ getAccountInfo: vi.fn().mockResolvedValue(null) });
+    expect(await isMayhemToken(c, MINT)).toBe(false);
+  });
+
+  it('returns false on an RPC error (best-effort veto, never blocks on a blip)', async () => {
+    const c = conn({ getAccountInfo: vi.fn().mockRejectedValue(new Error('rpc down')) });
+    expect(await isMayhemToken(c, MINT)).toBe(false);
   });
 });

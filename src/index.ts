@@ -32,7 +32,7 @@ import { InflightGate, withTimeout } from './concurrency';
 import { reviewCommand } from './review';
 import { formatRpcCounts, getRpcCounts, instrumentConnection } from './rpcCounter';
 import { bannerHeadline, bannerLines } from './banner';
-import { setBondingCurveCacheTtl } from './bondingCurve';
+import { setBondingCurveCacheTtl, isMayhemToken } from './bondingCurve';
 import { MomentumWatcher } from './momentum';
 import { checkLaunchBundle } from './bundleCheck';
 import { TrendingListener, TrendingCandidate } from './trendingListener';
@@ -449,6 +449,20 @@ async function snipeCommand(options: {
         inflightMints.add(t.tokenMint);
         buysInFlight++;
         try {
+          // Never copy a leader into a pump.fun Mayhem-mode coin — the sell
+          // can revert (Custom:6024) and trap the capital.
+          if (await isMayhemToken(connection, t.tokenMint)) {
+            logger.info(
+              `skipping ${t.tokenMint}: mayhem-mode coin (unsellable-trap risk)`
+            );
+            recordRejection({
+              tokenMint: t.tokenMint,
+              reason: 'mayhem-mode coin (unsellable-trap risk)',
+              aiScore: null,
+              poolAddress: '',
+            });
+            return;
+          }
           logger.info(`BUYING ${t.tokenMint} — copying ${t.wallet.slice(0, 8)}...`);
           await executeBuy(
             { tokenMint: t.tokenMint, poolAddress: '' },

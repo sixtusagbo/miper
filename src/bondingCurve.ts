@@ -158,3 +158,21 @@ export async function readBondingCurve(
     return { kind: 'unavailable' };
   }
 }
+
+// True only if `tokenMint` is a pump.fun bonding-curve token currently in
+// Mayhem Mode. Mayhem coins can enter a Paused state where the sell reverts
+// (Custom:6024) and capital is trapped — never buy one. A non-pump token, a
+// graduated curve, or an unreadable account all return false: nothing to veto.
+export async function isMayhemToken(
+  connection: Connection,
+  tokenMint: string
+): Promise<boolean> {
+  try {
+    const info = await connection.getAccountInfo(bondingCurvePda(tokenMint));
+    if (!info?.data) return false;
+    return decodeBondingCurve(Buffer.from(info.data)).isMayhemMode;
+  } catch (err) {
+    logger.debug(`isMayhemToken ${tokenMint}: ${(err as Error).message}`);
+    return false;
+  }
+}
