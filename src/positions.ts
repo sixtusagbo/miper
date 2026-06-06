@@ -97,7 +97,7 @@ export async function fetchPositionPriceSol(
   connection: Connection | null
 ): Promise<number | null> {
   if (
-    cfg.source === 'pump' &&
+    (cfg.source === 'pump' || cfg.source === 'copytrade') &&
     connection &&
     position.pool_address &&
     !graduatedCurves.has(position.pool_address)
@@ -284,6 +284,13 @@ export async function checkPosition(
   const currentPrice = await fetchPositionPriceSol(position, cfg, connection);
   if (currentPrice === null) {
     logger.debug(`No price for ${position.token_mint} this cycle`);
+    // Price-based exits (SL/TP) can't evaluate without a price, but the
+    // time-exit must still fire on age — otherwise a copytrade position whose
+    // token is unpriceable (on-curve pump not indexed by DexScreener, or a
+    // de-indexed token) could camp forever with no risk management at all.
+    if (isPastHoldLimit(position, cfg)) {
+      await executeTimeExit(position, cfg);
+    }
     return;
   }
 

@@ -32,7 +32,7 @@ import { InflightGate, withTimeout } from './concurrency';
 import { reviewCommand } from './review';
 import { formatRpcCounts, getRpcCounts, instrumentConnection } from './rpcCounter';
 import { bannerHeadline, bannerLines } from './banner';
-import { setBondingCurveCacheTtl, isMayhemToken } from './bondingCurve';
+import { setBondingCurveCacheTtl, isMayhemToken, bondingCurvePda } from './bondingCurve';
 import { MomentumWatcher } from './momentum';
 import { checkLaunchBundle } from './bundleCheck';
 import { TrendingListener, TrendingCandidate } from './trendingListener';
@@ -257,6 +257,13 @@ async function snipeCommand(options: {
     }
     // A landed buy clears the streak — only an unbroken run trips the breaker.
     consecutiveBuyFailures = 0;
+    // When a copytrade buy lands on the pump bonding curve, the caller passed
+    // no pool address (it doesn't know the venue ahead of time). Store the
+    // curve PDA so the position monitor can price it directly — DexScreener
+    // doesn't index on-curve pumps, which would otherwise leave it price-blind.
+    const poolAddress =
+      pool.poolAddress ||
+      (buy.venue === 'pump' ? bondingCurvePda(pool.tokenMint).toBase58() : '');
     const position = createPosition({
       tokenMint: pool.tokenMint,
       tokenSymbol: meta.symbol,
@@ -264,7 +271,7 @@ async function snipeCommand(options: {
       amountTokens: buy.amountOut,
       amountSolSpent: buy.amountIn,
       aiScore: meta.aiScore,
-      poolAddress: pool.poolAddress,
+      poolAddress,
       entryTx: buy.txSignature,
     });
     recordTrade({

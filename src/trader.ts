@@ -93,6 +93,10 @@ export interface SwapResult {
   pricePerToken: number; // SOL per token
   simulated: boolean;
   error?: string;
+  // Which venue executed the trade. Lets the caller store the bonding-curve
+  // PDA as a position's price source when the buy went through the pump curve
+  // (copytrade only learns the venue per-token at trade time).
+  venue?: 'pump' | 'jupiter';
 }
 
 interface JupiterQuote {
@@ -278,7 +282,8 @@ export async function buyToken(
   cfg: Config = loadConfig()
 ): Promise<SwapResult> {
   if (await usePumpVenue(tokenMint, cfg)) {
-    return pumpBuy(tokenMint, amountSol, cfg);
+    const r = await pumpBuy(tokenMint, amountSol, cfg);
+    return { ...r, venue: 'pump' };
   }
 
   const lamports = Math.floor(amountSol * LAMPORTS_PER_SOL);
@@ -319,6 +324,7 @@ export async function buyToken(
         amountOut: tokensOut,
         pricePerToken,
         simulated: true,
+        venue: 'jupiter',
       };
     }
 
@@ -331,6 +337,7 @@ export async function buyToken(
       amountOut: tokensOut,
       pricePerToken,
       simulated: false,
+      venue: 'jupiter',
     };
   } catch (err) {
     const message = (err as Error).message;
