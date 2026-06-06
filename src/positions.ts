@@ -4,6 +4,7 @@ import { Config, loadConfig } from './config';
 import {
   Position,
   getOpenPositions,
+  getPosition,
   getTradesForPosition,
   recordTrade,
   updatePosition,
@@ -36,6 +37,11 @@ const SHUTDOWN_PER_POSITION_TIMEOUT_MS = 30_000;
 export const TIME_EXIT_TP_LEVEL = 4;
 
 const sellFailureCount = new Map<number, number>();
+// Per-position sell lock. ALL exit paths (monitor stop-loss / take-profit /
+// time-exit AND the copytrade leader-sell via executeAllInExit) funnel through
+// executePartialSell, so guarding it here is the single chokepoint that kills
+// the double-sell race between the monitor and the leader-sell handler.
+const sellingPositions = new Set<number>();
 const lastFetchAt = new Map<string, number>();
 // Bonding curves that have graduated (complete=true or reserves drained).
 // Once we observe a definitive 'graduated' reading from readBondingCurve,
@@ -125,6 +131,34 @@ function tpMultiplier(cfg: Config, level: 1 | 2 | 3): number {
 }
 
 async function executePartialSell(
+  position: Position,
+  tokensToSell: number,
+  cfg: Config
+): Promise<boolean> {
+  // Concurrency guard: if another exit path is already selling this position,
+  // skip. Prevents the monitor (SL/TP/time-exit) and the copytrade leader-sell
+  // from both submitting a sell for the same bag.
+  if (sellingPositions.has(position.id)) {
+    logger.debug(`position ${position.id} already selling; skipping concurrent exit`);
+    return false;
+  }
+  sellingPositions.add(position.id);
+  try {
+    // Re-read fresh DB state inside the lock: a concurrent path may have closed
+    // or emptied this position since this tick's snapshot was taken. Bail so we
+    // never sell a closed/empty bag (a wasted, failing second transaction).
+    const fresh = getPosition(position.id);
+    if (!fresh || !['open', 'partial'].includes(fresh.status) || fresh.amount_tokens <= 0) {
+      logger.debug(`position ${position.id} no longer sellable; skipping`);
+      return false;
+    }
+    return await doPartialSell(position, tokensToSell, cfg);
+  } finally {
+    sellingPositions.delete(position.id);
+  }
+}
+
+async function doPartialSell(
   position: Position,
   tokensToSell: number,
   cfg: Config
