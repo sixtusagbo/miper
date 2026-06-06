@@ -4,15 +4,39 @@ Target: a fresh Hetzner Cloud CX23 (2 vCPU, IPv4 on), Ubuntu 24.04, SSH-key
 auth. The bot is one Node process managed by systemd, so it restarts on crash
 and on reboot. No tmux, no caffeinate.
 
+## How git auth works on the server (no GitHub Actions)
+
+The server pulls code with a read-only **SSH deploy key**, generated on the box
+in step 2 and added to the repo. `git clone` uses the SSH remote, and
+`update.sh` reuses the same key for `git fetch`/`git pull`. Two separate keys
+are in play:
+
+- `~/.ssh/miper` on your Mac: admin access (Mac -> server), passphrase-protected.
+- the server's `~/.ssh/id_ed25519`: read-only deploy key (server -> GitHub), no
+  passphrase so updates run non-interactively.
+
+A server breach therefore cannot push to the repo (read-only) and cannot reach
+GitHub beyond this one repo.
+
 ## 0. Before you touch the server (on your Mac)
 
-The server clones from `origin`, so push the branch first:
+Push the branch (the server clones from `origin`):
 
 ```
 git push origin copy-trading
 ```
 
 Confirm `origin/copy-trading` includes the mayhem veto and the trader fixes.
+
+Then generate the admin SSH key and grab its public half to attach at box
+creation:
+
+```
+bash deploy/mac-prep.sh
+```
+
+This writes `~/.ssh/miper` (passphrase-protected) and prints the public key to
+paste into Hetzner's "SSH keys" section when you create the box.
 
 ## 1. System setup (as root on the server)
 
