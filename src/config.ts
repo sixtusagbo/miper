@@ -144,6 +144,14 @@ export interface Config {
   copytradeWallets: string[];
   copytradePollSec: number;
   copytradeMinLeaderSol: number;
+  // Optional Telegram alerting. When both are set, the bot pushes startup,
+  // circuit-breaker, and no-activity alerts to the chat. Empty = no-op.
+  telegramBotToken: string;
+  telegramChatId: string;
+  // Minutes of zero leader activity after which the copytrade run sends a
+  // "still alive but quiet" heartbeat alert (a silent bot is invisible
+  // otherwise). 0 disables.
+  alertHeartbeatMinutes: number;
 }
 
 function required(name: string): string {
@@ -339,6 +347,9 @@ export function loadConfig(): Config {
     copytradeWallets: listFromEnv('COPYTRADE_WALLETS'),
     copytradePollSec: numberFromEnv('COPYTRADE_POLL_SEC', 12),
     copytradeMinLeaderSol: numberFromEnv('COPYTRADE_MIN_LEADER_SOL', 0.5),
+    telegramBotToken: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? '',
+    telegramChatId: process.env.TELEGRAM_CHAT_ID?.trim() ?? '',
+    alertHeartbeatMinutes: numberFromEnv('ALERT_HEARTBEAT_MINUTES', 60),
   };
 
   validateConfig(config);

@@ -38,6 +38,7 @@ import { checkLaunchBundle } from './bundleCheck';
 import { TrendingListener, TrendingCandidate } from './trendingListener';
 import { scoreTrendingCandidate } from './trendingAnalyzer';
 import { WalletListener, LeaderTrade } from './walletListener';
+import { Notifier } from './notifier';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -210,6 +211,11 @@ async function snipeCommand(options: {
   // init signatures for one pool, or replay after reconnect). Without this,
   // several analyses for one mint hit Claude in parallel and trigger 429s.
   const inflightMints = new Set<string>();
+  // Optional Telegram push alerts (no-op unless configured). A live unattended
+  // bot is invisible otherwise.
+  const notifier = new Notifier(cfg);
+  // Last time a leader trade was seen; drives the no-activity heartbeat alert.
+  let lastLeaderActivityAt = Date.now();
   // Consecutive failed buys; an unbroken run trips the circuit breaker below.
   let consecutiveBuyFailures = 0;
   // Buys past the capacity gate but not yet recorded — counted so concurrent
@@ -240,7 +246,12 @@ async function snipeCommand(options: {
         logger.error(
           `circuit breaker tripped: ${consecutiveBuyFailures} buys failed in a row — shutting down`
         );
-        void shutdown('circuit breaker: consecutive buy failures');
+        // Exit 2 so the systemd unit's RestartPreventExitStatus=2 keeps the bot
+        // DOWN. A systematic buy fault must not be undone by an auto-restart.
+        void notifier.alert(
+          `CIRCUIT BREAKER tripped: ${consecutiveBuyFailures} buys failed in a row. Bot shutting down and staying down.`
+        );
+        void shutdown('circuit breaker: consecutive buy failures', 2);
       }
       return;
     }
@@ -440,6 +451,7 @@ async function snipeCommand(options: {
     // Copy a leader's buy — no AI score; the leader's track record is the
     // signal. Buy our own fixed size (BUY_AMOUNT_SOL), not theirs.
     walletListener.on('leaderBuy', (t: LeaderTrade) => {
+      lastLeaderActivityAt = Date.now();
       void (async () => {
         if (countOpenPositions() + buysInFlight >= cfg.maxOpenPositions) {
           logger.debug(`max open positions reached, skipping ${t.tokenMint}`);
@@ -482,6 +494,7 @@ async function snipeCommand(options: {
     // Mirror a leader's sell — close any open position in that token. The
     // stop-loss and time-exit (monitor loop) remain independent floors.
     walletListener.on('leaderSell', (t: LeaderTrade) => {
+      lastLeaderActivityAt = Date.now();
       void (async () => {
         const held = getOpenPositions().some((p) => p.token_mint === t.tokenMint);
         if (!held && inflightMints.has(t.tokenMint)) {
@@ -508,6 +521,29 @@ async function snipeCommand(options: {
   // bonding curve directly instead of waiting for DexScreener to index.
   startMonitoring(undefined, connection);
 
+  // Push a startup ping so a silent crash-loop is distinguishable from a
+  // healthy boot (no-op unless Telegram is configured).
+  void notifier.alert(
+    `started: ${cfg.simulate ? 'SIMULATION' : 'LIVE'} ${cfg.source} | wallet ${getWallet(cfg).publicKey.toBase58().slice(0, 8)}... | buy ${cfg.buyAmountSol} SOL, max ${cfg.maxOpenPositions}`
+  );
+
+  // No-activity heartbeat: a copytrade run that boots fine but never sees a
+  // leader trade (bad COPYTRADE_WALLETS, broken poll, dead RPC) looks identical
+  // to a quiet market. Periodically alert if no leader activity for the window.
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  if (cfg.alertHeartbeatMinutes > 0 && notifier.enabled) {
+    const everyMs = cfg.alertHeartbeatMinutes * 60 * 1000;
+    heartbeatTimer = setInterval(() => {
+      const quietMin = Math.round((Date.now() - lastLeaderActivityAt) / 60000);
+      if (quietMin >= cfg.alertHeartbeatMinutes) {
+        void notifier.alert(
+          `still alive, but no leader trades seen in ${quietMin}min (${countOpenPositions()} open positions)`
+        );
+      }
+    }, everyMs);
+    heartbeatTimer.unref();
+  }
+
   const statusTimer = setInterval(() => {
     try {
       printStatus();
@@ -520,7 +556,10 @@ async function snipeCommand(options: {
   // or SIGINT during the MAX_RUN_HOURS auto-stop) force-exits instead of
   // starting a second close-positions loop.
   let shuttingDown = false;
-  const shutdown = async (reason: string) => {
+  // exitCode lets a deliberate, do-not-restart shutdown (the circuit breaker)
+  // exit with a distinct code the systemd unit refuses to restart on
+  // (RestartPreventExitStatus). A normal Ctrl-C / SIGTERM exits 0.
+  const shutdown = async (reason: string, exitCode = 0) => {
     if (shuttingDown) {
       logger.warn('second interrupt — force-exiting');
       process.exit(130);
@@ -535,6 +574,7 @@ async function snipeCommand(options: {
     }, SHUTDOWN_HARD_TIMEOUT_MS);
     forceExit.unref();
     clearInterval(statusTimer);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (autoStopTimer) clearTimeout(autoStopTimer);
     await listener?.stop();
     trendingListener?.stop();
@@ -550,7 +590,7 @@ async function snipeCommand(options: {
     printStatus();
     closeDb();
     clearTimeout(forceExit);
-    process.exit(0);
+    process.exit(exitCode);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));

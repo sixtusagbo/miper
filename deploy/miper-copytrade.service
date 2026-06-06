@@ -2,6 +2,14 @@
 Description=miper copy-trading bot
 After=network-online.target
 Wants=network-online.target
+# If the unit hits the start-limit (a real crash-loop) or fails, run the
+# alert helper so a dead bot is not silent. OnFailure is best-effort.
+OnFailure=miper-alert@%n.service
+# A genuine crash-loop should surface, not restart forever. 5 starts in 5 min
+# trips the limit and stops the unit (StartLimitAction=none leaves it dead so
+# the operator/alert notices, rather than rebooting endlessly).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -13,7 +21,27 @@ WorkingDirectory=/home/miper/miper
 ExecStart=/usr/bin/node dist/index.js snipe --source copytrade
 Restart=always
 RestartSec=10
+# The circuit breaker exits 2 on a systematic buy fault. Do NOT restart on it:
+# auto-restart would undo the breaker and bleed fees forever.
+RestartPreventExitStatus=2
 Environment=NODE_ENV=production
+# Give the graceful shutdown room to finish (the in-process backstop is 180s).
+TimeoutStopSec=240
+
+# --- sandboxing: this process holds a live wallet key, so contain it ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The bot needs to write its DB and log inside the repo dir only.
+ReadWritePaths=/home/miper/miper
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target
