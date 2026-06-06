@@ -1,0 +1,19 @@
+[Unit]
+Description=miper copy-trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=miper
+WorkingDirectory=/home/miper/miper
+# Run the built JS directly. Because systemd does not source a login shell,
+# there is no WALLET_PRIVATE_KEY shell export to override .env: dotenv reads
+# .env from WorkingDirectory cleanly. This is the trap that bit the Mac runs.
+ExecStart=/usr/bin/node dist/index.js snipe --source copytrade
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
