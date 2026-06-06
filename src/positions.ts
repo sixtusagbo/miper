@@ -56,6 +56,13 @@ export function clearGraduatedCurves(): void {
   graduatedCurves.clear();
 }
 
+// Test helper: clear the per-position sell lock between tests. In production
+// the lock self-releases (executePartialSell's finally), since sellToken
+// always settles; this only matters for tests that mock an unsettling sell.
+export function clearSellLocks(): void {
+  sellingPositions.clear();
+}
+
 interface DexScreenerPair {
   priceNative?: string;
   baseToken?: { address?: string };

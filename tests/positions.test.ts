@@ -28,7 +28,9 @@ import {
   TIME_EXIT_TP_LEVEL,
   checkPosition,
   clearGraduatedCurves,
+  clearSellLocks,
   closeAllOpenPositions,
+  executeAllInExit,
   executeStopLoss,
   executeTakeProfit,
   executeTimeExit,
@@ -61,6 +63,7 @@ beforeEach(() => {
   delete process.env.EXIT_AT_MULT;
   resetConfigCache();
   clearGraduatedCurves();
+  clearSellLocks();
   clearBondingCurveCache();
   mocks.mockFetch.mockReset();
   mocks.mockSellToken.mockReset();
@@ -837,5 +840,50 @@ describe('closeAllOpenPositions', () => {
     expect(result.closed).toBe(0);
     expect(result.failed).toBe(1);
     expect(getPosition(a.id)!.status).toBe('open');
+  });
+});
+
+describe('per-position sell lock (double-sell guard)', () => {
+  it('skips a concurrent second exit on the same position (only one sell tx)', async () => {
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition({ amountTokens: 1_000_000 });
+    // Slow sell so both exits overlap: the first holds the lock across the await.
+    mocks.mockSellToken.mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                success: true,
+                txSignature: 'SIM-1',
+                amountIn: 0,
+                amountOut: 0.06,
+                pricePerToken: 0.00006,
+                simulated: true,
+              }),
+            15
+          )
+        )
+    );
+
+    await Promise.all([
+      executeAllInExit(p, loadConfig()),
+      executeAllInExit(p, loadConfig()),
+    ]);
+
+    // The lock let only one exit through; the concurrent one was skipped.
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+    expect(getPosition(p.id)!.status).toBe('closed');
+  });
+
+  it('bails without selling when the position is already closed', async () => {
+    const { loadConfig } = await import('../src/config');
+    const p = mkPosition({ amountTokens: 1_000_000 });
+    updatePosition(p.id, { status: 'closed', amountTokens: 0 });
+
+    await executeAllInExit(p, loadConfig());
+
+    // Fresh DB re-read inside the lock saw it closed and skipped the sell.
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
   });
 });

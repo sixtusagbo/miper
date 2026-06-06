@@ -262,12 +262,16 @@ async function executeSwap(
 // routes it). So for copytrade we detect per token: an active, un-graduated
 // curve -> direct pump path; anything else (graduated, non-pump, unreadable)
 // -> Jupiter. Other sources never use the pump path here.
-async function usePumpVenue(tokenMint: string, cfg: Config): Promise<boolean> {
+export async function usePumpVenue(
+  tokenMint: string,
+  cfg: Config,
+  connection: Connection = getConnection(cfg)
+): Promise<boolean> {
   if (cfg.source === 'pump') return true;
   if (cfg.source !== 'copytrade') return false;
   try {
     const reading = await readBondingCurve(
-      getConnection(cfg),
+      connection,
       bondingCurvePda(tokenMint).toBase58()
     );
     return reading.kind === 'price'; // active, un-graduated bonding curve
