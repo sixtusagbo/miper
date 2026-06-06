@@ -26,7 +26,7 @@ import fetch from 'node-fetch';
 import { Config, loadConfig, MIN_SOL_RESERVE, SOL_MINT_ADDRESS } from './config';
 import { logger } from './logger';
 import { PUMP_INITIAL_PRICE_SOL } from './analyzer';
-import { PUMP_TOKEN_BASE_UNITS } from './bondingCurve';
+import { PUMP_TOKEN_BASE_UNITS, bondingCurvePda, readBondingCurve } from './bondingCurve';
 
 
 // Jupiter retired the legacy quote-api.jup.ag/v6 host (now ECONNREFUSED).
@@ -251,12 +251,33 @@ async function executeSwap(
   return signature;
 }
 
+// Pick the execution venue for a token. The pump source is always the direct
+// bonding-curve path. Copytrade mirrors a leader into whatever they bought,
+// which may be a token still on its pump.fun bonding curve (Jupiter cannot
+// price or route an active curve) or an already-graduated AMM token (Jupiter
+// routes it). So for copytrade we detect per token: an active, un-graduated
+// curve -> direct pump path; anything else (graduated, non-pump, unreadable)
+// -> Jupiter. Other sources never use the pump path here.
+async function usePumpVenue(tokenMint: string, cfg: Config): Promise<boolean> {
+  if (cfg.source === 'pump') return true;
+  if (cfg.source !== 'copytrade') return false;
+  try {
+    const reading = await readBondingCurve(
+      getConnection(cfg),
+      bondingCurvePda(tokenMint).toBase58()
+    );
+    return reading.kind === 'price'; // active, un-graduated bonding curve
+  } catch {
+    return false; // any error -> default to Jupiter
+  }
+}
+
 export async function buyToken(
   tokenMint: string,
   amountSol: number,
   cfg: Config = loadConfig()
 ): Promise<SwapResult> {
-  if (cfg.source === 'pump') {
+  if (await usePumpVenue(tokenMint, cfg)) {
     return pumpBuy(tokenMint, amountSol, cfg);
   }
 
@@ -853,7 +874,7 @@ export async function sellToken(
   // Jupiter path because the quote's outAmount is the source of truth.
   currentPriceSol: number | null = null
 ): Promise<SwapResult> {
-  if (cfg.source === 'pump') {
+  if (await usePumpVenue(tokenMint, cfg)) {
     return pumpSell(tokenMint, amountTokens, cfg, currentPriceSol);
   }
   return jupiterSell(tokenMint, amountTokens, cfg);

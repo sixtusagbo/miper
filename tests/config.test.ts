@@ -136,6 +136,20 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).not.toThrow();
   });
 
+  it('does not require any AI key for the copytrade source (no LLM scoring)', () => {
+    // copytrade never scores with the LLM, so a missing key must not block boot
+    // (it previously threw and sent the live unit into a restart loop). Live
+    // mode + no AI keys at all should still load.
+    setEnv({
+      SOURCE: 'copytrade',
+      SIMULATE: 'false',
+      WALLET_PRIVATE_KEY: '5JZ...placeholder', // presence-only; not decoded here
+      OPENAI_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
+    });
+    expect(() => loadConfig()).not.toThrow();
+  });
+
   it("defaults EXIT_MODE to 'tiered'", () => {
     expect(loadConfig().exitMode).toBe('tiered');
   });

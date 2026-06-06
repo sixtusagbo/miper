@@ -251,13 +251,16 @@ export function loadConfig(): Config {
   if (!simulate && !walletKey) {
     throw new Error('WALLET_PRIVATE_KEY is required when SIMULATE=false');
   }
-  // Only the active provider's key is required. Switching providers via
-  // AI_PROVIDER shouldn't force the user to also have a key for the one
-  // they're not using.
-  if (aiProvider === 'anthropic' && !anthropicKey) {
+  // The copytrade source never scores with the LLM (the leader's action is the
+  // only signal), so it must not require an AI key. Requiring one sent the live
+  // unit into a silent restart loop when the key was reasonably omitted. Only
+  // the AI-scoring sources (raydium, pump, trending) need the active provider's
+  // key, and only the active provider's, not both.
+  const usesAi = source !== 'copytrade';
+  if (usesAi && aiProvider === 'anthropic' && !anthropicKey) {
     throw new Error('ANTHROPIC_API_KEY is required when AI_PROVIDER=anthropic');
   }
-  if (aiProvider === 'openai' && !openaiKey) {
+  if (usesAi && aiProvider === 'openai' && !openaiKey) {
     throw new Error('OPENAI_API_KEY is required when AI_PROVIDER=openai');
   }
 
