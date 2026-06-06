@@ -464,7 +464,12 @@ async function snipeCommand(options: {
           logger.debug(`max open positions reached, skipping ${t.tokenMint}`);
           return;
         }
-        if (isTokenKnown(t.tokenMint) || inflightMints.has(t.tokenMint)) return;
+        // Gate on a currently-OPEN position (not any historical row): a leader
+        // re-entering a token they previously exited should be copied again.
+        // isTokenKnown would block re-buys forever and let a stale mayhem
+        // rejection suppress a legitimate later entry.
+        const alreadyHeld = getOpenPositions().some((p) => p.token_mint === t.tokenMint);
+        if (alreadyHeld || inflightMints.has(t.tokenMint)) return;
         inflightMints.add(t.tokenMint);
         buysInFlight++;
         try {
@@ -498,11 +503,21 @@ async function snipeCommand(options: {
         }
       })();
     });
-    // Mirror a leader's sell — close any open position in that token. The
-    // stop-loss and time-exit (monitor loop) remain independent floors.
+    // Mirror a leader's sell — full-exit our position when the leader sold a
+    // meaningful fraction of their holding. A small trim (below
+    // copytradeSellExitFraction) is treated as "leader still in" and ignored,
+    // so a dust/test-sell can't dump our whole bag. The stop-loss and
+    // time-exit (monitor loop) remain independent floors.
     walletListener.on('leaderSell', (t: LeaderTrade) => {
       lastLeaderActivityAt = Date.now();
       void (async () => {
+        const fraction = t.sellFraction ?? 1;
+        if (fraction < cfg.copytradeSellExitFraction) {
+          logger.info(
+            `copytrade: leader trimmed ${(fraction * 100).toFixed(0)}% of ${t.tokenMint} (< ${(cfg.copytradeSellExitFraction * 100).toFixed(0)}%) — holding`
+          );
+          return;
+        }
         const held = getOpenPositions().some((p) => p.token_mint === t.tokenMint);
         if (!held && inflightMints.has(t.tokenMint)) {
           // Leader exited before our copy-buy landed — sell on buy completion.

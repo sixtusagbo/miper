@@ -57,7 +57,7 @@ describe('extractLeaderTrade', () => {
     expect(trade!.solAmount).toBeCloseTo(2);
   });
 
-  it('detects a sell — token balance down, SOL up', () => {
+  it('detects a sell — token balance down, SOL up — and reports a full-exit fraction', () => {
     const trade = extractLeaderTrade(
       parsedTx({
         solDelta: 1_500_000_000,
@@ -69,6 +69,21 @@ describe('extractLeaderTrade', () => {
     );
     expect(trade!.kind).toBe('sell');
     expect(trade!.tokenMint).toBe(TOKEN);
+    expect(trade!.sellFraction).toBeCloseTo(1); // sold 1000 of 1000
+  });
+
+  it('reports the fraction sold for a partial trim', () => {
+    const trade = extractLeaderTrade(
+      parsedTx({
+        solDelta: 400_000_000,
+        preToken: [{ mint: TOKEN, owner: WALLET, ui: 1000 }],
+        postToken: [{ mint: TOKEN, owner: WALLET, ui: 750 }],
+      }),
+      WALLET,
+      'sig2b'
+    );
+    expect(trade!.kind).toBe('sell');
+    expect(trade!.sellFraction).toBeCloseTo(0.25); // sold 250 of 1000
   });
 
   it('ignores quote-asset (WSOL) balance changes and picks the real token', () => {

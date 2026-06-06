@@ -144,6 +144,11 @@ export interface Config {
   copytradeWallets: string[];
   copytradePollSec: number;
   copytradeMinLeaderSol: number;
+  // A leader sell only mirrors as our full exit when they sold at least this
+  // fraction of their holding. Smaller trims are treated as "leader still in"
+  // and ignored, so a dust/test-sell can't dump our whole bag. 1 = only a full
+  // leader exit triggers ours.
+  copytradeSellExitFraction: number;
   // Optional Telegram alerting. When both are set, the bot pushes startup,
   // circuit-breaker, and no-activity alerts to the chat. Empty = no-op.
   telegramBotToken: string;
@@ -347,6 +352,7 @@ export function loadConfig(): Config {
     copytradeWallets: listFromEnv('COPYTRADE_WALLETS'),
     copytradePollSec: numberFromEnv('COPYTRADE_POLL_SEC', 12),
     copytradeMinLeaderSol: numberFromEnv('COPYTRADE_MIN_LEADER_SOL', 0.5),
+    copytradeSellExitFraction: numberFromEnv('COPYTRADE_SELL_EXIT_FRACTION', 0.5),
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? '',
     telegramChatId: process.env.TELEGRAM_CHAT_ID?.trim() ?? '',
     alertHeartbeatMinutes: numberFromEnv('ALERT_HEARTBEAT_MINUTES', 60),
@@ -475,6 +481,11 @@ function validateConfig(c: Config): void {
   if (c.copytradeMinLeaderSol < 0) {
     throw new Error(
       `COPYTRADE_MIN_LEADER_SOL must be >= 0, got ${c.copytradeMinLeaderSol}`
+    );
+  }
+  if (c.copytradeSellExitFraction <= 0 || c.copytradeSellExitFraction > 1) {
+    throw new Error(
+      `COPYTRADE_SELL_EXIT_FRACTION must be in (0, 1], got ${c.copytradeSellExitFraction}`
     );
   }
 }

@@ -1,12 +1,27 @@
 import { EventEmitter } from 'events';
 import {
   Connection,
+  ConfirmedSignatureInfo,
   LAMPORTS_PER_SOL,
   ParsedTransactionWithMeta,
   PublicKey,
 } from '@solana/web3.js';
 import { logger } from './logger';
 import { trimSeen } from './listener';
+
+const SIG_PAGE = 25;
+// Cap pagination so one hyperactive leader can't make a poll cycle unbounded.
+// SIG_PAGE * MAX_SIG_PAGES new transactions in a single poll window is already
+// far more than a discretionary leader produces; beyond that we log and drop.
+const MAX_SIG_PAGES = 6;
+// Space sequential getParsedTransaction calls so a busy poll cycle stays under
+// the RPC plan's burst (429) limit. The plan also rejects batched requests, so
+// these must be one-at-a-time anyway.
+const PARSE_SPACING_MS = 120;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -23,6 +38,10 @@ export interface LeaderTrade {
   solAmount: number;
   kind: 'buy' | 'sell';
   signature: string;
+  // For a sell: the fraction (0..1) of the leader's pre-sale holding they sold.
+  // 1.0 = full exit, 0.25 = trimmed a quarter. Lets the handler ignore tiny
+  // trims instead of dumping our whole bag on any sell. Undefined for buys.
+  sellFraction?: number;
 }
 
 function short(addr: string): string {
@@ -75,7 +94,14 @@ export function extractLeaderTrade(
     return { wallet, tokenMint, solAmount, kind: 'buy', signature };
   }
   if (bestDelta < 0 && solDeltaLamports > 0) {
-    return { wallet, tokenMint, solAmount, kind: 'sell', signature };
+    // What fraction of the leader's holding did they sell? pre = their balance
+    // before the tx; sold = -bestDelta. A full exit -> 1.0; a trim -> < 1.
+    const preAmount = (meta.preTokenBalances ?? [])
+      .filter((b) => b.owner === wallet && b.mint === tokenMint)
+      .reduce((s, b) => s + (b.uiTokenAmount.uiAmount ?? 0), 0);
+    const sold = -bestDelta;
+    const sellFraction = preAmount > 0 ? Math.min(1, sold / preAmount) : 1;
+    return { wallet, tokenMint, solAmount, kind: 'sell', signature, sellFraction };
   }
   return null; // token and SOL moved the same way — not a clean swap
 }
@@ -138,13 +164,40 @@ export class WalletListener extends EventEmitter {
     }
   }
 
+  // Fetch every NEW signature since the baseline, paging with `before` so a
+  // leader who did more than one page of transactions in a single poll window
+  // doesn't have older trades silently dropped (the old single-page fetch lost
+  // anything past the newest 25, including sells we needed to mirror).
+  private async fetchNewSignatures(
+    wallet: string,
+    lastSignature: string | null
+  ): Promise<ConfirmedSignatureInfo[]> {
+    const pk = new PublicKey(wallet);
+    const acc: ConfirmedSignatureInfo[] = [];
+    let before: string | undefined = undefined;
+    for (let page = 0; page < MAX_SIG_PAGES; page++) {
+      const batch = await this.connection.getSignaturesForAddress(pk, {
+        limit: SIG_PAGE,
+        before,
+        until: lastSignature ?? undefined,
+      });
+      if (batch.length === 0) break;
+      acc.push(...batch);
+      if (batch.length < SIG_PAGE) break; // reached the end of new history
+      before = batch[batch.length - 1].signature;
+      if (page === MAX_SIG_PAGES - 1) {
+        logger.warn(
+          `copytrade: ${short(wallet)} produced >=${MAX_SIG_PAGES * SIG_PAGE} txs in one poll window — older trades may be dropped`
+        );
+      }
+    }
+    return acc; // newest-first overall
+  }
+
   private async pollWallet(wallet: string): Promise<void> {
     const st = this.state.get(wallet);
     if (!st) return;
-    const sigs = await this.connection.getSignaturesForAddress(new PublicKey(wallet), {
-      limit: 25,
-      until: st.lastSignature ?? undefined,
-    });
+    const sigs = await this.fetchNewSignatures(wallet, st.lastSignature);
     if (sigs.length === 0) return;
     st.lastSignature = sigs[0].signature;
     // First poll just fixes the baseline — don't copy pre-startup history.
@@ -154,10 +207,14 @@ export class WalletListener extends EventEmitter {
     }
 
     // Oldest-first so trades surface in the order the leader made them.
+    let parsed = 0;
     for (const s of [...sigs].reverse()) {
       if (s.err || this.seen.has(s.signature)) continue;
       this.seen.add(s.signature);
       trimSeen(this.seen);
+      // Space the per-tx fetches to stay under the RPC burst limit.
+      if (parsed > 0) await sleep(PARSE_SPACING_MS);
+      parsed++;
       const tx = await this.connection.getParsedTransaction(s.signature, {
         maxSupportedTransactionVersion: 0,
         commitment: 'confirmed',
