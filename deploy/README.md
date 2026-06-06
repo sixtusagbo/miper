@@ -117,6 +117,19 @@ gas/rent headroom):
 Optional alerting (recommended, free): set `TELEGRAM_BOT_TOKEN` and
 `TELEGRAM_CHAT_ID` for startup / circuit-breaker / no-activity pushes.
 
+## Pre-launch checklist (do before enabling the service)
+
+- [ ] **Vet the leaders** on-chain and put the survivors in `COPYTRADE_WALLETS`:
+      `npx ts-node scripts/vet-wallet.ts <addr> ...` (bar: >=15 round-trips,
+      >=55% win rate, active within 14d; prefer minutes-to-hours avg hold, not
+      seconds, our poll latency can't mirror scalpers).
+- [ ] **Fund the wallet:** send ~0.5 SOL to
+      `EcehC76ATmta8RBiYnMwSTDTGYCxSzodCq7XQbeBuQL2`. Peak exposure is
+      `BUY_AMOUNT_SOL x MAX_OPEN_POSITIONS` (0.25 SOL at the defaults), the rest
+      is gas/rent headroom.
+- [ ] Confirm the balance check below shows `EcehC76...` and the funded amount.
+- [ ] Confirm the banner reads `MIPER (LIVE)` once the service starts.
+
 Sanity-check the wallet the bot actually resolves before going live:
 
 ```
