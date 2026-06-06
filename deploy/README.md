@@ -159,10 +159,31 @@ echo 'miper ALL=(root) NOPASSWD: /usr/bin/systemctl restart miper-copytrade' \
 chmod 440 /etc/sudoers.d/miper-restart
 ```
 
+## Config: the prod env workflow
+
+The server's `~/miper/.env` is a copy of `.env.prod`, which lives on the Mac
+(gitignored, full secrets) and is the single source of truth. To change any
+config or secret, edit `.env.prod` locally and push:
+
+```
+bash deploy/push-env.sh            # default host: miper.server
+```
+
+It scp's the file, installs it as `~/miper/.env` (owned by miper, 600), and
+restarts the unit. It refuses to push unless `SIMULATE=false`, the wallet key,
+the Helius RPC URL, and `COPYTRADE_WALLETS` are all populated, so a paper-mode
+or placeholder config can't go live by accident. Code updates are separate:
+`update.sh` (git pull) on the box for code, `push-env.sh` from the Mac for env.
+
+On first deploy you can either run `push-env.sh` instead of step 3's manual
+`.env` editing, or do step 3 by hand once and use `push-env.sh` for changes
+thereafter.
+
 ## Day-to-day
 
 - Logs: `journalctl -fu miper-copytrade` (or the app's own `copytrade.log`)
-- Update to latest code: `bash ~/miper/deploy/update.sh` (as miper)
+- Update code: `bash ~/miper/deploy/update.sh` (as miper)
+- Update config/secrets: edit `.env.prod` on the Mac, `bash deploy/push-env.sh`
 - Stop: `sudo systemctl stop miper-copytrade`
 - Status: `systemctl status miper-copytrade`
 
