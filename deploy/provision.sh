@@ -18,6 +18,11 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
+# Ubuntu 24.04 ships needrestart, which can open an interactive whiptail prompt
+# during library upgrades that DEBIAN_FRONTEND alone does not suppress, hanging
+# the (set -e) provision. Force it fully automatic.
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
 
 # --- packages -------------------------------------------------------------
 apt-get update
@@ -68,14 +73,29 @@ backend = systemd
 maxretry = 4
 bantime = 1h
 EOF
-systemctl enable --now fail2ban
+systemctl enable fail2ban
 systemctl restart fail2ban
+# Verify the jail actually came up watching sshd (a misconfigured backend can
+# leave fail2ban "running" but banning nothing).
+if fail2ban-client status sshd >/dev/null 2>&1; then
+  echo "fail2ban sshd jail active."
+else
+  echo "WARNING: fail2ban sshd jail is NOT active — check 'fail2ban-client status'." >&2
+fi
 
 # --- automatic security updates ------------------------------------------
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
+# Activate the unattended-upgrades unit and prove it can resolve allowed
+# origins (installing the package + writing the timer config is not enough).
+systemctl enable --now unattended-upgrades 2>/dev/null || true
+if unattended-upgrade --dry-run >/dev/null 2>&1; then
+  echo "unattended-upgrades active."
+else
+  echo "WARNING: unattended-upgrades dry-run failed — security patches may not apply." >&2
+fi
 
 # --- unprivileged service account ----------------------------------------
 # Password-disabled and NOT in sudo: reached via 'sudo -iu miper' from root.
@@ -83,6 +103,9 @@ EOF
 if ! id miper >/dev/null 2>&1; then
   adduser --disabled-password --gecos "" miper
 fi
+# Lock down the home dir so a (future) other unprivileged account can't read
+# the wallet key in ~/miper/.env.
+chmod 700 /home/miper
 
 echo
 echo "system ready and hardened. next: follow deploy/README.md as the miper user."

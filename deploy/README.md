@@ -86,21 +86,36 @@ npm run build
 
 ## 3. Configure (as the miper user)
 
+Create the file already private (so the live key is never in a world-readable
+file during the edit), then fill it in:
+
 ```
-cp .env.example .env
+install -m 600 /dev/null .env
+cat .env.example >> .env
 nano .env
-chmod 600 .env
 ```
 
 Set at least:
 
 - `SOURCE=copytrade`
 - `SIMULATE=false`
-- `WALLET_PRIVATE_KEY=` the copy-trading wallet (`HFQJHZd2n5...`), funded with 0.5 SOL
-- `SOLANA_RPC_URL=` your Helius URL
-- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` as needed
-- `COPYTRADE_WALLETS=` the leaders
-- `BUY_AMOUNT_SOL`, `MAX_OPEN_POSITIONS`, exit knobs as desired
+- `WALLET_PRIVATE_KEY=` the copy-trading wallet `EcehC76ATmta8RBiYnMwSTDTGYCxSzodCq7XQbeBuQL2`, funded with ~0.5 SOL
+- `SOLANA_RPC_URL=` your Helius URL (the trade-confirmation WebSocket is derived from it)
+- `COPYTRADE_WALLETS=` the vetted leader addresses (comma-separated)
+- No AI key is needed for copytrade.
+
+Exposure and exit policy (keep peak exposure under ~60% of funding so there's
+gas/rent headroom):
+
+- `BUY_AMOUNT_SOL=0.05` and `MAX_OPEN_POSITIONS=5` -> 0.25 SOL peak on 0.5 funded
+- `CLOSE_ON_SHUTDOWN=false` (so an `update.sh` restart does NOT market-sell the
+  whole book; positions persist in the DB and the monitor resumes them)
+- `MAX_HOLD_MINUTES=720` as a time floor for a leader who never sells
+- `STOP_LOSS=0.4` stays as the loss floor
+- `MAX_RUN_HOURS=0` (run unbounded; systemd manages restarts)
+
+Optional alerting (recommended, free): set `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` for startup / circuit-breaker / no-activity pushes.
 
 Sanity-check the wallet the bot actually resolves before going live:
 
@@ -108,20 +123,27 @@ Sanity-check the wallet the bot actually resolves before going live:
 node dist/index.js balance --source copytrade
 ```
 
-The printed address must be the copy-trading wallet. If it is not, a stale env
-var is overriding `.env`; fix it before starting.
+The printed address MUST be `EcehC76...`. If it is not, a stale env var is
+overriding `.env`; fix it before starting. Confirm the printed balance is the
+~0.5 SOL you funded and that the wallet has no large leftover token bags.
 
 ## 4. Install the service (as root)
 
+Install both the bot unit and the failure-alert helper (so a hard crash pushes
+a Telegram alert via the unit's `OnFailure`):
+
 ```
 cp /home/miper/miper/deploy/miper-copytrade.service /etc/systemd/system/
+cp /home/miper/miper/deploy/miper-alert@.service /etc/systemd/system/
+chmod +x /home/miper/miper/deploy/alert-failure.sh
 systemctl daemon-reload
 systemctl enable --now miper-copytrade
 journalctl -fu miper-copytrade
 ```
 
-The banner's `wallet:` line must show the copy-trading wallet. If it does not,
-stop the service and fix `.env`.
+The banner's `wallet:` line must show `EcehC76...`. If it does not, stop the
+service and fix `.env`. A clean boot also pushes a Telegram "started" alert if
+Telegram is configured.
 
 ## 5. Let miper restart the service without a root password
 
@@ -140,16 +162,31 @@ chmod 440 /etc/sudoers.d/miper-restart
 - Stop: `sudo systemctl stop miper-copytrade`
 - Status: `systemctl status miper-copytrade`
 
+## Monitoring
+
+- The bot pushes Telegram alerts on startup, a tripped circuit breaker, and a
+  no-leader-activity heartbeat (if `TELEGRAM_*` are set).
+- A hard crash that puts the unit in the failed state fires `OnFailure` ->
+  `miper-alert@.service` -> a Telegram "unit failed" push.
+- The circuit breaker exits code 2 and the unit's `RestartPreventExitStatus=2`
+  keeps it down (it does not auto-restart into the same fault). A real
+  crash-loop trips the `StartLimit` and stops, rather than looping silently.
+- Watch logs anytime: `journalctl -fu miper-copytrade`.
+
 ## Security notes
 
 - Hardening is applied by `provision.sh`: key-only SSH (no passwords), root
-  login key-only, `fail2ban`, automatic security updates, inbound-deny firewall.
-- The wallet key lives only in `~/miper/.env` (chmod 600), owned by miper.
+  login key-only, `fail2ban` (verified), automatic security updates (verified),
+  inbound-deny firewall, `/home/miper` chmod 700.
+- The systemd unit is sandboxed: `NoNewPrivileges`, `ProtectSystem=strict`,
+  `ProtectHome=read-only` (+ `ReadWritePaths`), `PrivateTmp`, dropped caps.
+- The wallet key lives only in `~/miper/.env` (created 600), owned by miper.
 - `miper` is not in `sudo`; it gets one narrow grant to restart the service.
 - Deploy key is read-only, so a server compromise cannot push to the repo.
 - The bot is outbound-only; nothing listens for inbound connections.
 - Never commit `.env`. It is gitignored.
 
-Optional extra: fund the wallet with only what you can lose, and treat the box
-as compromised-able. If the server is breached the key is exposed, so keep the
-copy-trading wallet separate from any wallet holding meaningful balance.
+The box is a hot wallet: the key is plaintext in `.env` on a shared-CPU VPS, so
+fund `EcehC76...` with only the validation amount and keep it separate from any
+wallet holding real balance. On a suspected breach: revoke the GitHub deploy
+key, move the funds, and rebuild the box.
