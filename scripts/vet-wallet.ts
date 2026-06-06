@@ -31,7 +31,10 @@ const MAX_SIGNATURES = 250;
 // Advisory PASS bar. Looser than the canonical 30-trades/60-day rule because
 // the sample is bounded — the printed raw numbers are the real decision input.
 const MIN_TRADES = 15;
-const MIN_WIN_RATE = 0.55;
+// Realistic floor: good memecoin traders run 30-50% win rates (they cut losers
+// fast and let winners pay for everything), so net realized PnL is the real
+// gate, not win rate. 0.55 rejected every genuinely-profitable wallet.
+const MIN_WIN_RATE = 0.3;
 const MAX_LAST_TRADE_DAYS = 14;
 
 interface WalletReport {
