@@ -37,9 +37,17 @@ const MIN_TRADES = 15;
 const MIN_WIN_RATE = 0.3;
 const MAX_LAST_TRADE_DAYS = 14;
 
+// Above this failed-tx fraction the wallet is almost certainly an HFT/MEV bot
+// spamming reverting buys, not a discretionary trader. Its edge is speed we
+// can't replicate, and our copy listener skips errored txs anyway, so it is
+// not a copyable leader regardless of headline PnL.
+const MAX_FAILED_FRACTION = 0.6;
+
 interface WalletReport {
   wallet: string;
-  sampleTxs: number;
+  fetchedTxs: number; // total signatures pulled (incl. failed)
+  failedFraction: number;
+  sampleTxs: number; // non-errored signatures actually parsed
   spanDays: number;
   trades: number; // completed round-trips
   winRate: number;
@@ -61,6 +69,7 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
     limit: MAX_SIGNATURES,
   });
   const sigs = sigInfos.filter((s) => !s.err);
+  const failedFraction = sigInfos.length > 0 ? (sigInfos.length - sigs.length) / sigInfos.length : 0;
 
   const byToken = new Map<string, TokenAgg>();
   const tradeTimes: number[] = [];
@@ -107,6 +116,10 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
     tradeTimes.length > 0 ? (now - Math.max(...tradeTimes)) / 3_600 : Infinity;
 
   const reasons: string[] = [];
+  if (failedFraction > MAX_FAILED_FRACTION)
+    reasons.push(
+      `${(failedFraction * 100).toFixed(0)}% of recent txs failed — likely an HFT/MEV bot, not copyable`
+    );
   if (trades < MIN_TRADES) reasons.push(`only ${trades} round-trips (want >=${MIN_TRADES})`);
   if (winRate < MIN_WIN_RATE)
     reasons.push(`win rate ${(winRate * 100).toFixed(0)}% (want >=${MIN_WIN_RATE * 100}%)`);
@@ -116,6 +129,8 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
 
   return {
     wallet,
+    fetchedTxs: sigInfos.length,
+    failedFraction,
     sampleTxs: sigs.length,
     spanDays,
     trades,
@@ -135,7 +150,10 @@ function printReport(r: WalletReport): void {
         ? `${r.lastTradeAgoH.toFixed(0)}h ago`
         : `${(r.lastTradeAgoH / 24).toFixed(0)}d ago`;
   console.log(`\n=== ${r.wallet} ===`);
-  console.log(`  sample:       ${r.sampleTxs} txs over ${r.spanDays.toFixed(1)} days`);
+  console.log(
+    `  sample:       ${r.sampleTxs} ok txs over ${r.spanDays.toFixed(1)} days ` +
+      `(${r.fetchedTxs} fetched, ${(r.failedFraction * 100).toFixed(0)}% failed)`
+  );
   console.log(`  round-trips:  ${r.trades}  (last trade ${ago})`);
   console.log(`  win rate:     ${(r.winRate * 100).toFixed(0)}%`);
   console.log(`  realized PnL: ${r.realizedPnlSol >= 0 ? '+' : ''}${r.realizedPnlSol.toFixed(2)} SOL`);
