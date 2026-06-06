@@ -128,6 +128,16 @@ export function isTokenKnown(mint: string): boolean {
   return !!rej;
 }
 
+// True if we previously stop-lossed this mint. Copytrade uses it to avoid
+// re-buying a token our own risk management already cut at a loss, even if a
+// leader buys it again (which would otherwise bleed via repeated SL exits).
+export function hasStoppedPosition(mint: string): boolean {
+  const row = getDb()
+    .prepare("SELECT 1 FROM positions WHERE token_mint = ? AND status = 'stopped' LIMIT 1")
+    .get(mint);
+  return !!row;
+}
+
 export interface CreatePositionInput {
   tokenMint: string;
   tokenSymbol: string | null;

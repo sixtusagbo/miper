@@ -8,8 +8,10 @@ ENV_FILE="/home/miper/miper/.env"
 UNIT="${1:-miper}"
 
 [ -r "$ENV_FILE" ] || exit 0
-TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2-)
-CHAT=$(grep -E '^TELEGRAM_CHAT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2-)
+# Strip optional surrounding single/double quotes that dotenv would also strip.
+unquote() { sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"; }
+TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- | unquote)
+CHAT=$(grep -E '^TELEGRAM_CHAT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2- | unquote)
 [ -n "$TOKEN" ] && [ -n "$CHAT" ] || exit 0
 
 curl -s -m 10 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \

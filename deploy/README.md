@@ -127,6 +127,10 @@ The printed address MUST be `EcehC76...`. If it is not, a stale env var is
 overriding `.env`; fix it before starting. Confirm the printed balance is the
 ~0.5 SOL you funded and that the wallet has no large leftover token bags.
 
+When the service is running (step 4), the banner's first line MUST read
+`MIPER (LIVE) ...`. If it says `(SIMULATION)`, `SIMULATE` is not `false` and the
+bot is paper-trading, not trading real SOL. Stop and fix `.env`.
+
 ## 4. Install the service (as root)
 
 Install both the bot unit and the failure-alert helper (so a hard crash pushes

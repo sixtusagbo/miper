@@ -159,7 +159,10 @@ async function executePartialSell(
       logger.debug(`position ${position.id} no longer sellable; skipping`);
       return false;
     }
-    return await doPartialSell(position, tokensToSell, cfg);
+    // Clamp to what's actually left: a prior partial may have reduced the bag
+    // since this tick's snapshot, so never request more than the fresh balance.
+    const amount = Math.min(tokensToSell, fresh.amount_tokens);
+    return await doPartialSell(position, amount, cfg);
   } finally {
     sellingPositions.delete(position.id);
   }

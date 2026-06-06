@@ -352,7 +352,7 @@ export function loadConfig(): Config {
     copytradeWallets: listFromEnv('COPYTRADE_WALLETS'),
     copytradePollSec: numberFromEnv('COPYTRADE_POLL_SEC', 12),
     copytradeMinLeaderSol: numberFromEnv('COPYTRADE_MIN_LEADER_SOL', 0.5),
-    copytradeSellExitFraction: numberFromEnv('COPYTRADE_SELL_EXIT_FRACTION', 0.5),
+    copytradeSellExitFraction: numberFromEnv('COPYTRADE_SELL_EXIT_FRACTION', 0.34),
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? '',
     telegramChatId: process.env.TELEGRAM_CHAT_ID?.trim() ?? '',
     alertHeartbeatMinutes: numberFromEnv('ALERT_HEARTBEAT_MINUTES', 60),

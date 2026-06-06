@@ -197,14 +197,20 @@ export class WalletListener extends EventEmitter {
   private async pollWallet(wallet: string): Promise<void> {
     const st = this.state.get(wallet);
     if (!st) return;
-    const sigs = await this.fetchNewSignatures(wallet, st.lastSignature);
-    if (sigs.length === 0) return;
-    st.lastSignature = sigs[0].signature;
-    // First poll just fixes the baseline — don't copy pre-startup history.
+    // First poll only needs the newest signature to set the baseline — fetch a
+    // single page, not the full paginated history (which would waste up to
+    // MAX_SIG_PAGES calls and fire a spurious "trades dropped" warning).
     if (!st.primed) {
+      const head = await this.connection.getSignaturesForAddress(new PublicKey(wallet), {
+        limit: 1,
+      });
+      if (head.length > 0) st.lastSignature = head[0].signature;
       st.primed = true;
       return;
     }
+    const sigs = await this.fetchNewSignatures(wallet, st.lastSignature);
+    if (sigs.length === 0) return;
+    st.lastSignature = sigs[0].signature;
 
     // Oldest-first so trades surface in the order the leader made them.
     let parsed = 0;

@@ -15,6 +15,7 @@ import {
   getRejectionCount,
   getTopRejectionReasons,
   getTradesForPosition,
+  hasStoppedPosition,
   isTokenKnown,
   recordRejection,
   recordTrade,
@@ -143,6 +144,25 @@ describe('db: rejections and isTokenKnown', () => {
 
   it('returns false for an unknown mint', () => {
     expect(isTokenKnown('UNSEEN_MINT')).toBe(false);
+  });
+});
+
+describe('db: hasStoppedPosition', () => {
+  it('is true only after a position in the mint was stop-lossed', () => {
+    const p = mkPosition({ tokenMint: 'MINT_SL' });
+    expect(hasStoppedPosition('MINT_SL')).toBe(false); // still open
+    updatePosition(p.id, { status: 'stopped' });
+    expect(hasStoppedPosition('MINT_SL')).toBe(true);
+  });
+
+  it('is false for a cleanly closed (non-stopped) position, so leader re-entries are allowed', () => {
+    const p = mkPosition({ tokenMint: 'MINT_CLOSED' });
+    updatePosition(p.id, { status: 'closed' });
+    expect(hasStoppedPosition('MINT_CLOSED')).toBe(false);
+  });
+
+  it('is false for an unknown mint', () => {
+    expect(hasStoppedPosition('NOPE')).toBe(false);
   });
 });
 

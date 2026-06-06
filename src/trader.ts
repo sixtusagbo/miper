@@ -97,6 +97,10 @@ export interface SwapResult {
   // PDA as a position's price source when the buy went through the pump curve
   // (copytrade only learns the venue per-token at trade time).
   venue?: 'pump' | 'jupiter';
+  // True when the failure happened BEFORE any transaction was submitted (no
+  // quote / no route / venue-detection RPC blip): no fee was paid and it is
+  // not a systematic fault, so the circuit breaker must NOT count it.
+  softFailure?: boolean;
 }
 
 interface JupiterQuote {
@@ -269,15 +273,24 @@ export async function usePumpVenue(
 ): Promise<boolean> {
   if (cfg.source === 'pump') return true;
   if (cfg.source !== 'copytrade') return false;
-  try {
-    const reading = await readBondingCurve(
-      connection,
-      bondingCurvePda(tokenMint).toBase58()
-    );
-    return reading.kind === 'price'; // active, un-graduated bonding curve
-  } catch {
-    return false; // any error -> default to Jupiter
+  const addr = bondingCurvePda(tokenMint).toBase58();
+  // readBondingCurve returns 'unavailable' on a transient RPC blip (it does not
+  // cache that), the same value it returns for a genuinely non-pump token. A
+  // misclassification here routes an on-curve token to Jupiter, which cannot
+  // route an active bonding curve, so retry a few times before concluding it is
+  // not a pump token. 'price' -> pump, 'graduated' -> Jupiter, persistently
+  // 'unavailable' -> treat as non-pump (Jupiter).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const reading = await readBondingCurve(connection, addr);
+      if (reading.kind === 'price') return true;
+      if (reading.kind === 'graduated') return false;
+    } catch {
+      // fall through to retry
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 250));
   }
+  return false;
 }
 
 export async function buyToken(
@@ -346,6 +359,11 @@ export async function buyToken(
   } catch (err) {
     const message = (err as Error).message;
     logger.error(`buyToken failed for ${tokenMint}: ${message}`);
+    // A quote/route failure (or a venue-misroute of an on-curve token to
+    // Jupiter on a transient RPC blip) sends no transaction and pays no fee.
+    // Mark it soft so the circuit breaker doesn't count it as a systematic
+    // fault and halt the bot on a recoverable condition.
+    const softFailure = /quote|route|could not find/i.test(message);
     return {
       success: false,
       txSignature: '',
@@ -354,6 +372,7 @@ export async function buyToken(
       pricePerToken: 0,
       simulated: cfg.simulate,
       error: message,
+      softFailure,
     };
   }
 }

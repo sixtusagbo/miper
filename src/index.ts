@@ -12,6 +12,7 @@ import {
   getPnlSummary,
   getPosition,
   getTradesForPosition,
+  hasStoppedPosition,
   isTokenKnown,
   recordRejection,
   recordTrade,
@@ -238,6 +239,11 @@ async function snipeCommand(options: {
         aiScore: meta.aiScore,
         poolAddress: pool.poolAddress,
       });
+      // A soft failure (no quote / no route / a venue-misroute on a transient
+      // RPC blip) sent no transaction and is recoverable — don't let it trip
+      // the do-not-restart circuit breaker, which is for systematic faults
+      // that bleed fees (bad encoding, dead RPC, drained wallet).
+      if (buy.softFailure) return;
       consecutiveBuyFailures++;
       if (
         cfg.maxConsecutiveBuyFailures > 0 &&
@@ -467,9 +473,16 @@ async function snipeCommand(options: {
         // Gate on a currently-OPEN position (not any historical row): a leader
         // re-entering a token they previously exited should be copied again.
         // isTokenKnown would block re-buys forever and let a stale mayhem
-        // rejection suppress a legitimate later entry.
+        // rejection suppress a legitimate later entry. But do NOT re-buy a mint
+        // our own stop-loss already cut at a loss — copying a leader who keeps
+        // averaging down a token that stopped us out just bleeds via repeated
+        // SL exits.
         const alreadyHeld = getOpenPositions().some((p) => p.token_mint === t.tokenMint);
         if (alreadyHeld || inflightMints.has(t.tokenMint)) return;
+        if (hasStoppedPosition(t.tokenMint)) {
+          logger.info(`copytrade: skipping ${t.tokenMint} — already stop-lossed this run`);
+          return;
+        }
         inflightMints.add(t.tokenMint);
         buysInFlight++;
         try {
