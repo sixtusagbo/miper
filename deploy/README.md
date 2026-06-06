@@ -16,14 +16,27 @@ Confirm `origin/copy-trading` includes the mayhem veto and the trader fixes.
 
 ## 1. System setup (as root on the server)
 
+Create the Hetzner box with your **SSH key attached** (not password). The
+script disables password logins, so a password-only session would lock you
+out.
+
 ```
 scp deploy/provision.sh root@SERVER_IP:/root/
 ssh root@SERVER_IP
 bash provision.sh
 ```
 
-Installs Node 22, build tools, a firewall (SSH-only inbound), and creates the
-unprivileged `miper` user.
+Installs Node 22 and build tools, creates the unprivileged `miper` user, and
+hardens the box (it will hold a live wallet key):
+
+- key-only SSH, password auth off, root login key-only
+- `fail2ban` brute-force protection on SSH
+- automatic security updates (`unattended-upgrades`)
+- firewall: deny all inbound except SSH, allow outbound
+
+If the script warns that no root key was found, it skips the SSH password
+lockdown to avoid locking you out. Add your key, then set
+`PasswordAuthentication no` yourself before going live.
 
 ## 2. Clone the repo (as the miper user)
 
@@ -105,7 +118,14 @@ chmod 440 /etc/sudoers.d/miper-restart
 
 ## Security notes
 
+- Hardening is applied by `provision.sh`: key-only SSH (no passwords), root
+  login key-only, `fail2ban`, automatic security updates, inbound-deny firewall.
 - The wallet key lives only in `~/miper/.env` (chmod 600), owned by miper.
+- `miper` is not in `sudo`; it gets one narrow grant to restart the service.
 - Deploy key is read-only, so a server compromise cannot push to the repo.
-- Firewall denies all inbound except SSH; the bot is outbound-only.
+- The bot is outbound-only; nothing listens for inbound connections.
 - Never commit `.env`. It is gitignored.
+
+Optional extra: fund the wallet with only what you can lose, and treat the box
+as compromised-able. If the server is breached the key is exposed, so keep the
+copy-trading wallet separate from any wallet holding meaningful balance.
