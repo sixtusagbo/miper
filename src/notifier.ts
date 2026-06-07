@@ -20,20 +20,28 @@ export class Notifier {
     return this.token !== '' && this.chatId !== '';
   }
 
-  // Fire-and-forget alert. Never throws.
-  async alert(message: string): Promise<void> {
+  // Fire-and-forget alert. Never throws. Pass markdown=true to render Telegram
+  // legacy Markdown (monospace `code`, [links]) — only for messages we've kept
+  // markdown-safe (trade alerts); plain alerts stay markdown=false so a stray
+  // char in an error string can't make Telegram reject a critical alert.
+  async alert(message: string, markdown = false): Promise<void> {
     if (!this.enabled) return;
     try {
+      const body: Record<string, unknown> = {
+        chat_id: this.chatId,
+        // Trade alerts (markdown) are self-identifying (emoji + action) and the
+        // chat is already named for the bot, so skip the "[miper]" prefix;
+        // plain alerts (startup/breaker/heartbeat) keep it.
+        text: `${markdown ? '' : '[miper] '}${message}`,
+        disable_web_page_preview: true,
+      };
+      if (markdown) body.parse_mode = 'Markdown';
       const res = await fetch(
         `https://api.telegram.org/bot${this.token}/sendMessage`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: this.chatId,
-            text: `[miper] ${message}`,
-            disable_web_page_preview: true,
-          }),
+          body: JSON.stringify(body),
         }
       );
       if (!res.ok) {
@@ -58,6 +66,22 @@ export function initNotifier(cfg: Config): Notifier {
 }
 
 // Fire-and-forget convenience. Never throws, never blocks the caller.
-export function notify(message: string): void {
-  void active?.alert(message);
+export function notify(message: string, markdown = false): void {
+  void active?.alert(message, markdown);
+}
+
+// Telegram legacy-Markdown body for a trade alert: a summary line, the full
+// mint as tap-to-copy monospace, and chart/tx links (bonkbot-style). The caller
+// builds `summary` and must run free text (symbols, errors) through mdSafe.
+export function formatTradeAlert(summary: string, mint: string, signature?: string): string {
+  const links =
+    `[chart](https://dexscreener.com/solana/${mint})` +
+    (signature ? ` · [view tx](https://solscan.io/tx/${signature})` : '');
+  return `${summary}\n\`${mint}\`\n${links}`;
+}
+
+// Strip legacy-Markdown entity chars from free text so a stray * _ ` [ ] can't
+// break the message and make Telegram reject the whole alert.
+export function mdSafe(text: string): string {
+  return text.replace(/[`*_[\]]/g, '');
 }

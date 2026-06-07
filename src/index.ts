@@ -40,7 +40,7 @@ import { checkLaunchBundle } from './bundleCheck';
 import { TrendingListener, TrendingCandidate } from './trendingListener';
 import { scoreTrendingCandidate } from './trendingAnalyzer';
 import { WalletListener, LeaderTrade } from './walletListener';
-import { initNotifier, notify } from './notifier';
+import { initNotifier, notify, formatTradeAlert, mdSafe } from './notifier';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -247,7 +247,13 @@ async function snipeCommand(options: {
       if (buy.softFailure) return;
       // A hard failure sent a transaction that reverted (e.g. Custom:6002
       // slippage). Push it so a live watcher sees the wall in real time.
-      notify(`BUY FAILED ${meta.symbol || pool.tokenMint.slice(0, 8)}: ${buy.error}`);
+      notify(
+        formatTradeAlert(
+          `❌ BUY FAILED *${mdSafe(meta.symbol || pool.tokenMint.slice(0, 8))}*: ${mdSafe(buy.error ?? 'unknown')}`,
+          pool.tokenMint
+        ),
+        true
+      );
       consecutiveBuyFailures++;
       if (
         cfg.maxConsecutiveBuyFailures > 0 &&
@@ -293,10 +299,15 @@ async function snipeCommand(options: {
       txSignature: buy.txSignature || null,
       simulated: buy.simulated,
     });
-    const buyMc = buy.marketCapUsd !== undefined ? ` @ ${formatUsd(buy.marketCapUsd)}` : '';
+    const buyMc = buy.marketCapUsd !== undefined ? ` @ MC ${formatUsd(buy.marketCapUsd)}` : '';
     notify(
-      `BUY ${meta.symbol || pool.tokenMint.slice(0, 8)} — ${buy.amountIn.toFixed(3)} SOL${buyMc}` +
-        ` via ${buy.venue ?? 'jupiter'}${buy.simulated ? ' (sim)' : ''}`
+      formatTradeAlert(
+        `🟢 BUY *${mdSafe(meta.symbol || pool.tokenMint.slice(0, 8))}* · ${buy.amountIn.toFixed(3)} SOL${buyMc}` +
+          ` (${buy.venue ?? 'jupiter'})${buy.simulated ? ' SIM' : ''}`,
+        pool.tokenMint,
+        buy.txSignature || undefined
+      ),
+      true
     );
   };
 

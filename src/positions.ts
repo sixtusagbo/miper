@@ -10,7 +10,7 @@ import {
   updatePosition,
 } from './db';
 import { logger } from './logger';
-import { notify } from './notifier';
+import { notify, formatTradeAlert, mdSafe } from './notifier';
 import { sellToken, formatUsd } from './trader';
 import { readBondingCurve } from './bondingCurve';
 import { withTimeout, TimeoutError } from './concurrency';
@@ -212,7 +212,11 @@ async function doPartialSell(
         `Position ${position.id} (${position.token_mint}) failed ${MAX_SELL_RETRIES} sells; manual exit may be needed`
       );
       notify(
-        `SELL STUCK ${position.token_symbol || position.token_mint.slice(0, 8)} after ${MAX_SELL_RETRIES} tries: ${result.error ?? 'unknown'}`
+        formatTradeAlert(
+          `⚠️ SELL STUCK *${mdSafe(position.token_symbol || position.token_mint.slice(0, 8))}* after ${MAX_SELL_RETRIES} tries: ${mdSafe(result.error ?? 'unknown')}`,
+          position.token_mint
+        ),
+        true
       );
     }
     return false;
@@ -230,16 +234,23 @@ async function doPartialSell(
   });
   // One alert for every sell path, carrying the reason (TP1/TRAIL/COPY-EXIT/
   // STOPLOSS/TIMEOUT/shutdown) so a phone watcher knows WHY it exited and a
-  // double-sell of one position would be obvious, plus the realized MC.
+  // double-sell of one position would be obvious, plus this leg's realized
+  // PnL, multiple, and MC. The full mint is included as tap-to-copy monospace.
   const mult =
     position.entry_price_sol > 0
       ? result.pricePerToken / position.entry_price_sol
       : null;
-  const mc = result.marketCapUsd !== undefined ? ` @ ${formatUsd(result.marketCapUsd)}` : '';
+  const legPnl = result.amountOut - tokensToSell * position.entry_price_sol;
+  const mc = result.marketCapUsd !== undefined ? ` @ MC ${formatUsd(result.marketCapUsd)}` : '';
+  const sym = mdSafe(position.token_symbol || position.token_mint.slice(0, 8));
   notify(
-    `SELL ${position.token_symbol || position.token_mint.slice(0, 8)}` +
-      `${reason ? ' ' + reason : ''} — ${result.amountOut.toFixed(3)} SOL` +
-      `${mult ? ` (${mult.toFixed(2)}x)` : ''}${mc}${result.simulated ? ' (sim)' : ''}`
+    formatTradeAlert(
+      `${legPnl >= 0 ? '🟢' : '🔴'} SELL *${sym}*${reason ? ' ' + reason : ''} · ${legPnl >= 0 ? '+' : ''}${legPnl.toFixed(3)} SOL` +
+        `${mult ? ` (${mult.toFixed(2)}x)` : ''}${mc}${result.simulated ? ' SIM' : ''}`,
+      position.token_mint,
+      result.txSignature || undefined
+    ),
+    true
   );
   return true;
 }
