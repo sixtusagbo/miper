@@ -11,7 +11,7 @@ import {
 } from './db';
 import { logger } from './logger';
 import { notify, formatTradeAlert, mdSafe } from './notifier';
-import { sellToken, formatUsd } from './trader';
+import { sellToken, formatUsd, getTokenBalance } from './trader';
 import { readBondingCurve } from './bondingCurve';
 import { withTimeout, TimeoutError } from './concurrency';
 
@@ -151,7 +151,8 @@ async function executePartialSell(
   position: Position,
   tokensToSell: number,
   cfg: Config,
-  reason = ''
+  reason = '',
+  sweep = false
 ): Promise<boolean> {
   // Concurrency guard: if another exit path is already selling this position,
   // skip. Prevents the monitor (SL/TP/time-exit) and the copytrade leader-sell
@@ -172,7 +173,20 @@ async function executePartialSell(
     }
     // Clamp to what's actually left: a prior partial may have reduced the bag
     // since this tick's snapshot, so never request more than the fresh balance.
-    const amount = Math.min(tokensToSell, fresh.amount_tokens);
+    let amount = Math.min(tokensToSell, fresh.amount_tokens);
+    // A final exit sweeps the ACTUAL on-chain balance, not the booked amount: a
+    // pump buy can deliver slightly more tokens than we recorded, and selling
+    // only the booked amount strands the excess (the "leftover" remainders).
+    // Live only — paper has no real ATA. Best-effort: a failed read falls back
+    // to the booked amount.
+    if (sweep && !cfg.simulate) {
+      try {
+        const actual = await getTokenBalance(position.token_mint, cfg);
+        if (actual > 0) amount = actual;
+      } catch (err) {
+        logger.debug(`sweep balance read failed for ${position.token_mint}: ${(err as Error).message}`);
+      }
+    }
     return await doPartialSell(position, amount, cfg, reason);
   } finally {
     sellingPositions.delete(position.id);
@@ -272,7 +286,8 @@ export async function executeTakeProfit(
   tokensToSell = Math.min(tokensToSell, position.amount_tokens);
   if (tokensToSell <= 0) return;
 
-  const sold = await executePartialSell(position, tokensToSell, cfg, `TP${level}`);
+  // Level 3 closes the whole remaining bag — sweep it; TP1/TP2 are partial.
+  const sold = await executePartialSell(position, tokensToSell, cfg, `TP${level}`, level === 3);
   if (!sold) return;
 
   const remaining = position.amount_tokens - tokensToSell;
@@ -306,7 +321,7 @@ export async function executeStopLoss(
   position: Position,
   cfg: Config = loadConfig()
 ): Promise<void> {
-  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'STOPLOSS');
+  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'STOPLOSS', true);
   if (!sold) return;
 
   logger.position(
@@ -426,7 +441,7 @@ export async function executeTimeExit(
   position: Position,
   cfg: Config = loadConfig()
 ): Promise<void> {
-  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'TIMEOUT');
+  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'TIMEOUT', true);
   if (!sold) return;
 
   const mult = position.current_price_sol
@@ -479,7 +494,8 @@ export async function executeAllInExit(
     position,
     position.amount_tokens,
     cfg,
-    leaderExit ? 'COPY-EXIT' : 'TP3'
+    leaderExit ? 'COPY-EXIT' : 'TP3',
+    true
   );
   if (!sold) return;
 
@@ -518,7 +534,7 @@ export async function executeTrailingExit(
   position: Position,
   cfg: Config = loadConfig()
 ): Promise<void> {
-  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'TRAIL');
+  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'TRAIL', true);
   if (!sold) return;
 
   const mult = position.current_price_sol
@@ -672,7 +688,7 @@ async function tryPartialSellWithTimeout(
 ): Promise<boolean> {
   try {
     return await withTimeout(
-      executePartialSell(p, tokensToSell, cfg, 'shutdown'),
+      executePartialSell(p, tokensToSell, cfg, 'shutdown', true),
       timeoutMs,
       `shutdown sell ${p.token_mint}`
     );

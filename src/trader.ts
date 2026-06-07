@@ -102,9 +102,11 @@ export interface SwapResult {
   // PDA as a position's price source when the buy went through the pump curve
   // (copytrade only learns the venue per-token at trade time).
   venue?: 'pump' | 'jupiter';
-  // True when the failure happened BEFORE any transaction was submitted (no
-  // quote / no route / venue-detection RPC blip): no fee was paid and it is
-  // not a systematic fault, so the circuit breaker must NOT count it.
+  // True for a per-token / transient failure that must NOT trip the circuit
+  // breaker (no quote/route, block-height-exceeded, init race 6001, incompatible
+  // token 6010). A fee may or may not have been paid; the point is it is not the
+  // systematic fault (dead RPC / drained wallet / bad encoding) the breaker
+  // exists to catch. See isNonSystematicBuyError.
   softFailure?: boolean;
   // Token market cap in USD at trade time (supply x price x SOL/USD), for the
   // buy/sell log + alert. Best-effort; undefined when supply or the SOL price
@@ -436,11 +438,10 @@ export async function buyToken(
   } catch (err) {
     const message = (err as Error).message;
     logger.error(`buyToken failed for ${tokenMint}: ${message}`);
-    // A quote/route failure (or a venue-misroute of an on-curve token to
-    // Jupiter on a transient RPC blip) sends no transaction and pays no fee.
-    // Mark it soft so the circuit breaker doesn't count it as a systematic
-    // fault and halt the bot on a recoverable condition.
-    const softFailure = /quote|route|could not find/i.test(message);
+    // Per-token / transient failures must not trip the do-not-restart breaker
+    // (see isNonSystematicBuyError): no quote/route, block-height-exceeded,
+    // init race (6001), incompatible token (6010).
+    const softFailure = isNonSystematicBuyError(message);
     return {
       success: false,
       txSignature: '',
@@ -480,6 +481,20 @@ function pumpBuySim(tokenMint: string, amountSol: number): SwapResult {
   };
 }
 
+// A buy failure that is per-token or transient, NOT a systematic fault, so it
+// must not count toward the do-not-restart circuit breaker (which exists to
+// halt on dead-RPC / drained-wallet / bad-encoding bleed). Covers: no quote /
+// route (no fee), block-height-exceeded (tx expired, congestion), Custom:6001
+// (AlreadyInitialized — a rapid double-buy init race), and Custom:6010
+// (AccountTypeNotSupported — an incompatible token type, e.g. a Token-2022 with
+// extensions pump's buy can't handle). Slippage (6002) stays HARD: a run of it
+// is the canary for a quoting regression we DO want the breaker to catch.
+function isNonSystematicBuyError(message: string): boolean {
+  return /quote|route|could not find|block height exceeded|"Custom":\s*(6001|6010)\b/i.test(
+    message
+  );
+}
+
 function pumpFailure(amountIn: number, error: string): SwapResult {
   return {
     success: false,
@@ -489,6 +504,7 @@ function pumpFailure(amountIn: number, error: string): SwapResult {
     pricePerToken: 0,
     simulated: false,
     error,
+    softFailure: isNonSystematicBuyError(error),
   };
 }
 
