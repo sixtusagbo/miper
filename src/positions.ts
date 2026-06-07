@@ -10,6 +10,7 @@ import {
   updatePosition,
 } from './db';
 import { logger } from './logger';
+import { notify } from './notifier';
 import { sellToken } from './trader';
 import { readBondingCurve } from './bondingCurve';
 import { withTimeout, TimeoutError } from './concurrency';
@@ -207,6 +208,18 @@ async function doPartialSell(
     txSignature: result.txSignature || null,
     simulated: result.simulated,
   });
+  // One alert for every sell path (TP, SL, time, leader-mirror, shutdown).
+  // The caller's logger.position line carries the reason; this just surfaces
+  // the realized number on the phone.
+  const mult =
+    position.entry_price_sol > 0
+      ? result.pricePerToken / position.entry_price_sol
+      : null;
+  notify(
+    `SELL ${position.token_symbol || position.token_mint.slice(0, 8)} — ` +
+      `${result.amountOut.toFixed(3)} SOL${mult ? ` (${mult.toFixed(2)}x)` : ''}` +
+      `${result.simulated ? ' (sim)' : ''}`
+  );
   return true;
 }
 

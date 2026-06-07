@@ -45,3 +45,19 @@ export class Notifier {
     }
   }
 }
+
+// Module-level singleton so code that doesn't construct the Notifier (the
+// position monitor / sell paths in positions.ts) can still push alerts. The
+// snipe command calls initNotifier(cfg) at startup; notify() is a no-op until
+// then and whenever Telegram is unconfigured.
+let active: Notifier | null = null;
+
+export function initNotifier(cfg: Config): Notifier {
+  active = new Notifier(cfg);
+  return active;
+}
+
+// Fire-and-forget convenience. Never throws, never blocks the caller.
+export function notify(message: string): void {
+  void active?.alert(message);
+}
