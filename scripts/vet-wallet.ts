@@ -43,6 +43,20 @@ const MAX_LAST_TRADE_DAYS = 14;
 // not a copyable leader regardless of headline PnL.
 const MAX_FAILED_FRACTION = 0.6;
 
+// A round-trip closed within this many seconds is a near-instant flip. A wallet
+// that does this on a big share of trades is a sniper/MEV bot whose entry-to-
+// exit speed we cannot mirror at our poll+land latency (it would dump before
+// our copy-buy lands). Threshold from community vetting guides (~5s sells).
+const FAST_FLIP_SEC = 5;
+const MAX_FAST_FLIP_FRACTION = 0.2;
+
+// Wash-trade signature: most of the wallet's volume cycling through ONE token
+// with very short holds. Flag when one token is >= this share of buy volume
+// AND the median hold is under WASH_MAX_HOLD_MIN — the two together, not either
+// alone (a legit trader can concentrate, or hold briefly, but rarely both).
+const WASH_CONCENTRATION = 0.4;
+const WASH_MAX_HOLD_MIN = 10;
+
 interface WalletReport {
   wallet: string;
   fetchedTxs: number; // total signatures pulled (incl. failed)
@@ -53,6 +67,9 @@ interface WalletReport {
   winRate: number;
   realizedPnlSol: number;
   lastTradeAgoH: number;
+  medianHoldMin: number; // median round-trip hold (first buy -> first sell)
+  fastFlipFraction: number; // share of round-trips closed within FAST_FLIP_SEC
+  maxTokenShare: number; // largest single token's share of total buy volume
   verdict: 'PASS' | 'FAIL';
   reasons: string[];
 }
@@ -62,6 +79,15 @@ interface TokenAgg {
   sellSol: number;
   buys: number;
   sells: number;
+  buyTimes: number[];
+  sellTimes: number[];
+}
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
 async function vetWallet(connection: Connection, wallet: string): Promise<WalletReport> {
@@ -85,13 +111,22 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
     const trade = extractLeaderTrade(tx, wallet, sig.signature);
     if (!trade) continue;
     if (blockTime) tradeTimes.push(blockTime);
-    const agg = byToken.get(trade.tokenMint) ?? { buySol: 0, sellSol: 0, buys: 0, sells: 0 };
+    const agg = byToken.get(trade.tokenMint) ?? {
+      buySol: 0,
+      sellSol: 0,
+      buys: 0,
+      sells: 0,
+      buyTimes: [],
+      sellTimes: [],
+    };
     if (trade.kind === 'buy') {
       agg.buySol += trade.solAmount;
       agg.buys += 1;
+      if (blockTime) agg.buyTimes.push(blockTime);
     } else {
       agg.sellSol += trade.solAmount;
       agg.sells += 1;
+      if (blockTime) agg.sellTimes.push(blockTime);
     }
     byToken.set(trade.tokenMint, agg);
   }
@@ -100,14 +135,27 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
   let trades = 0;
   let wins = 0;
   let realizedPnlSol = 0;
+  let totalBuySol = 0;
+  let maxTokenBuySol = 0;
+  const holdSecs: number[] = [];
   for (const agg of byToken.values()) {
+    totalBuySol += agg.buySol;
+    if (agg.buySol > maxTokenBuySol) maxTokenBuySol = agg.buySol;
     if (agg.buys === 0 || agg.sells === 0) continue;
     trades += 1;
     const pnl = agg.sellSol - agg.buySol;
     realizedPnlSol += pnl;
     if (pnl > 0) wins += 1;
+    // Hold = first buy -> first sell. Skip if the sample only caught a sell
+    // that predates the buy (truncated window) -> negative, not a real hold.
+    const hold = Math.min(...agg.sellTimes) - Math.min(...agg.buyTimes);
+    if (Number.isFinite(hold) && hold >= 0) holdSecs.push(hold);
   }
   const winRate = trades > 0 ? wins / trades : 0;
+  const medianHoldMin = holdSecs.length > 0 ? median(holdSecs) / 60 : 0;
+  const fastFlipFraction =
+    holdSecs.length > 0 ? holdSecs.filter((h) => h < FAST_FLIP_SEC).length / holdSecs.length : 0;
+  const maxTokenShare = totalBuySol > 0 ? maxTokenBuySol / totalBuySol : 0;
 
   const now = Date.now() / 1000;
   const spanDays =
@@ -119,6 +167,14 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
   if (failedFraction > MAX_FAILED_FRACTION)
     reasons.push(
       `${(failedFraction * 100).toFixed(0)}% of recent txs failed — likely an HFT/MEV bot, not copyable`
+    );
+  if (fastFlipFraction > MAX_FAST_FLIP_FRACTION)
+    reasons.push(
+      `${(fastFlipFraction * 100).toFixed(0)}% of round-trips flip in <${FAST_FLIP_SEC}s — sniper/bot, too fast to copy`
+    );
+  if (maxTokenShare >= WASH_CONCENTRATION && medianHoldMin < WASH_MAX_HOLD_MIN && trades > 0)
+    reasons.push(
+      `wash-trade pattern: ${(maxTokenShare * 100).toFixed(0)}% of volume in one token with ${medianHoldMin.toFixed(1)}min median hold`
     );
   if (trades < MIN_TRADES) reasons.push(`only ${trades} round-trips (want >=${MIN_TRADES})`);
   if (winRate < MIN_WIN_RATE)
@@ -137,6 +193,9 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
     winRate,
     realizedPnlSol,
     lastTradeAgoH,
+    medianHoldMin,
+    fastFlipFraction,
+    maxTokenShare,
     verdict: reasons.length === 0 ? 'PASS' : 'FAIL',
     reasons,
   };
@@ -157,6 +216,9 @@ function printReport(r: WalletReport): void {
   console.log(`  round-trips:  ${r.trades}  (last trade ${ago})`);
   console.log(`  win rate:     ${(r.winRate * 100).toFixed(0)}%`);
   console.log(`  realized PnL: ${r.realizedPnlSol >= 0 ? '+' : ''}${r.realizedPnlSol.toFixed(2)} SOL`);
+  console.log(`  median hold:  ${r.medianHoldMin.toFixed(1)} min`);
+  console.log(`  fast flips:   ${(r.fastFlipFraction * 100).toFixed(0)}% under ${FAST_FLIP_SEC}s`);
+  console.log(`  concentration: ${(r.maxTokenShare * 100).toFixed(0)}% of buy vol in top token`);
   console.log(`  VERDICT: ${r.verdict}${r.reasons.length ? ' — ' + r.reasons.join('; ') : ''}`);
 }
 
