@@ -21,6 +21,11 @@ import {
   getBuyTokenAmountFromSolAmount,
   getSellSolAmountFromTokenAmount,
 } from '@pump-fun/pump-sdk';
+import {
+  OnlinePumpAmmSdk,
+  PumpAmmSdk,
+  canonicalPumpPoolPda,
+} from '@pump-fun/pump-swap-sdk';
 import bs58 from 'bs58';
 import fetch from 'node-fetch';
 import { Config, loadConfig, MIN_SOL_RESERVE, SOL_MINT_ADDRESS } from './config';
@@ -266,31 +271,55 @@ async function executeSwap(
 // routes it). So for copytrade we detect per token: an active, un-graduated
 // curve -> direct pump path; anything else (graduated, non-pump, unreadable)
 // -> Jupiter. Other sources never use the pump path here.
-export async function usePumpVenue(
+// Classify a token's pump.fun bonding-curve state for venue routing:
+//   'price'     -> active, un-graduated curve (direct pump buy/sell ix)
+//   'graduated' -> curve complete, now a PumpSwap AMM pool (PumpSwap SDK)
+//   'none'      -> not a pump token, or persistently unreadable
+// readBondingCurve returns 'unavailable' on a transient RPC blip (uncached),
+// the same value as for a genuinely non-pump token, so retry a few times before
+// concluding 'none' — a misclassification routes an on-curve token to Jupiter,
+// which cannot route an active curve.
+async function classifyPumpCurve(
   tokenMint: string,
-  cfg: Config,
-  connection: Connection = getConnection(cfg)
-): Promise<boolean> {
-  if (cfg.source === 'pump') return true;
-  if (cfg.source !== 'copytrade') return false;
+  connection: Connection
+): Promise<'price' | 'graduated' | 'none'> {
   const addr = bondingCurvePda(tokenMint).toBase58();
-  // readBondingCurve returns 'unavailable' on a transient RPC blip (it does not
-  // cache that), the same value it returns for a genuinely non-pump token. A
-  // misclassification here routes an on-curve token to Jupiter, which cannot
-  // route an active bonding curve, so retry a few times before concluding it is
-  // not a pump token. 'price' -> pump, 'graduated' -> Jupiter, persistently
-  // 'unavailable' -> treat as non-pump (Jupiter).
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const reading = await readBondingCurve(connection, addr);
-      if (reading.kind === 'price') return true;
-      if (reading.kind === 'graduated') return false;
+      if (reading.kind === 'price') return 'price';
+      if (reading.kind === 'graduated') return 'graduated';
     } catch {
       // fall through to retry
     }
     if (attempt < 2) await new Promise((r) => setTimeout(r, 250));
   }
-  return false;
+  return 'none';
+}
+
+// Execution venue for a token: 'curve' (active pump bonding curve, direct ix),
+// 'pumpswap' (graduated pump token, now an AMM pool — sell via the pump AMM
+// SDK), or 'jupiter' (non-pump AMM, or an unreadable curve). The pump source is
+// always the curve; copytrade detects per token; other sources are Jupiter.
+export async function resolveVenue(
+  tokenMint: string,
+  cfg: Config,
+  connection: Connection = getConnection(cfg)
+): Promise<'curve' | 'pumpswap' | 'jupiter'> {
+  if (cfg.source === 'pump') return 'curve';
+  if (cfg.source !== 'copytrade') return 'jupiter';
+  const kind = await classifyPumpCurve(tokenMint, connection);
+  if (kind === 'price') return 'curve';
+  if (kind === 'graduated') return 'pumpswap';
+  return 'jupiter';
+}
+
+export async function usePumpVenue(
+  tokenMint: string,
+  cfg: Config,
+  connection: Connection = getConnection(cfg)
+): Promise<boolean> {
+  return (await resolveVenue(tokenMint, cfg, connection)) === 'curve';
 }
 
 export async function buyToken(
@@ -707,9 +736,9 @@ async function pumpSellLive(
     const { bondingCurveAccountInfo, bondingCurve } = sellState;
     if (bondingCurve.complete) {
       logger.info(
-        `bonding curve complete for ${tokenMint}; selling via Jupiter (post-graduation)`
+        `bonding curve complete for ${tokenMint}; selling via PumpSwap (post-graduation)`
       );
-      return jupiterSell(tokenMint, amountTokens, cfg);
+      return pumpSwapSell(tokenMint, amountTokens, cfg);
     }
 
     const amount = new BN(Math.floor(amountTokens * PUMP_TOKEN_BASE_UNITS));
@@ -774,6 +803,74 @@ async function pumpSellLive(
   } catch (err) {
     const message = (err as Error).message;
     logger.error(`pumpSellLive ${tokenMint}: ${message}`);
+    return pumpSellFailure(amountTokens, message);
+  }
+}
+
+// Sells a GRADUATED pump token on its PumpSwap AMM pool, the venue bonkbot
+// uses. Jupiter's route for a freshly-graduated pump pool reverts with
+// Custom:6024 (Overflow), trapping the sell; the pump AMM SDK sells cleanly.
+async function pumpSwapSell(
+  tokenMint: string,
+  amountTokens: number,
+  cfg: Config,
+  currentPriceSol: number | null = null
+): Promise<SwapResult> {
+  if (cfg.simulate) return pumpSellSim(tokenMint, amountTokens, currentPriceSol);
+  try {
+    const connection = getConnection(cfg);
+    const wallet = getWallet(cfg);
+    const mintPk = new PublicKey(tokenMint);
+
+    const online = new OnlinePumpAmmSdk(connection);
+    const amm = new PumpAmmSdk();
+    const poolKey = canonicalPumpPoolPda(mintPk);
+    const state = await online.swapSolanaState(poolKey, wallet.publicKey);
+
+    const base = new BN(Math.floor(amountTokens * 10 ** state.baseMintAccount.decimals));
+    if (base.lten(0)) return pumpSellFailure(amountTokens, 'amount too small');
+
+    // sellBaseInput: sell `base` tokens for SOL (quote), with slippage applied
+    // to the min-output floor. slippage is a whole-percent number.
+    const sellIxs = await amm.sellBaseInput(state, base, slippagePercent(cfg));
+    const signature = await sendPumpTransaction(connection, wallet, sellIxs, cfg);
+
+    // Reclaim rent from the now-empty token ATA (best-effort, own tx).
+    const userAta = getAssociatedTokenAddressSync(
+      mintPk,
+      wallet.publicKey,
+      false,
+      state.baseTokenProgram
+    );
+    await maybeCloseEmptyAta(connection, mintPk, userAta, state.baseTokenProgram, cfg);
+
+    // Estimate SOL out from pool reserves (constant product, minus a 1% buffer
+    // for the pool/protocol fee) for PnL booking. The actual delivered SOL is
+    // in the wallet regardless; this is only the recorded figure.
+    const baseRes = Number(state.poolBaseAmount.toString());
+    const quoteRes = Number(state.poolQuoteAmount.toString());
+    const baseIn = Number(base.toString());
+    const quoteOut =
+      baseRes + baseIn > 0 ? quoteRes - (baseRes * quoteRes) / (baseRes + baseIn) : 0;
+    const solOut = (Math.max(quoteOut, 0) / LAMPORTS_PER_SOL) * 0.99;
+    const pricePerToken = amountTokens > 0 ? solOut / amountTokens : 0;
+
+    logger.position(
+      'SELL',
+      tokenMint,
+      `${amountTokens.toFixed(4)} tokens -> ${solOut.toFixed(6)} SOL (${signature.slice(0, 8)}..., pumpswap)`
+    );
+    return {
+      success: true,
+      txSignature: signature,
+      amountIn: amountTokens,
+      amountOut: solOut,
+      pricePerToken,
+      simulated: false,
+    };
+  } catch (err) {
+    const message = (err as Error).message;
+    logger.error(`pumpSwapSell ${tokenMint}: ${message}`);
     return pumpSellFailure(amountTokens, message);
   }
 }
@@ -911,8 +1008,12 @@ export async function sellToken(
   // Jupiter path because the quote's outAmount is the source of truth.
   currentPriceSol: number | null = null
 ): Promise<SwapResult> {
-  if (await usePumpVenue(tokenMint, cfg)) {
-    return pumpSell(tokenMint, amountTokens, cfg, currentPriceSol);
-  }
+  // A graduated pump token MUST sell on PumpSwap: Jupiter's route for a freshly
+  // graduated pump pool reverts with Custom:6024 (Overflow), which is what
+  // trapped sells before this fix. pumpSellLive also falls back to PumpSwap if
+  // the curve graduated between this read and the actual sell.
+  const venue = await resolveVenue(tokenMint, cfg, getConnection(cfg));
+  if (venue === 'curve') return pumpSell(tokenMint, amountTokens, cfg, currentPriceSol);
+  if (venue === 'pumpswap') return pumpSwapSell(tokenMint, amountTokens, cfg, currentPriceSol);
   return jupiterSell(tokenMint, amountTokens, cfg);
 }

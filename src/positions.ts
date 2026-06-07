@@ -199,11 +199,12 @@ async function doPartialSell(
     logger.warn(
       `Sell failed for position ${position.id} (${position.token_mint}) attempt ${retries}: ${result.error ?? 'unknown'}`
     );
-    // After a run of failures the bot can't exit on its own: a transient
-    // mayhem-mode flip (Custom:6024, which can later clear), a graduated curve
-    // our venue routing misses, or a dead route. Ping the phone ONCE so the
-    // position can be closed by hand (e.g. bonkbot). Don't book a loss or stop
-    // trying — the block can clear and a later tick may still land the sell.
+    // After a run of failures the bot can't exit on its own (a dead route, a
+    // transient RPC/landing failure, or a venue we don't yet handle). Graduated
+    // pump tokens now sell via PumpSwap, so this is a backstop, not the common
+    // case. Ping the phone ONCE so the position can be closed by hand (bonkbot);
+    // don't book a loss or stop trying, since the condition can clear and a
+    // later tick may still land.
     if (retries === MAX_SELL_RETRIES) {
       logger.error(
         `Position ${position.id} (${position.token_mint}) failed ${MAX_SELL_RETRIES} sells; manual exit may be needed`

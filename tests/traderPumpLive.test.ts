@@ -25,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   mockGetMint: vi.fn(),
   mockCreateCloseAccount: vi.fn(),
   mockFetch: vi.fn(),
+  mockSwapSolanaState: vi.fn(),
+  mockSellBaseInput: vi.fn(),
 }));
 
 vi.mock('node-fetch', () => ({ default: mocks.mockFetch }));
@@ -70,6 +72,18 @@ vi.mock('@pump-fun/pump-sdk', () => ({
   },
   getBuyTokenAmountFromSolAmount: mocks.mockGetBuyTokenAmount,
   getSellSolAmountFromTokenAmount: mocks.mockGetSellSolAmount,
+}));
+
+// PumpSwap SDK — the venue for graduated pump tokens (post-bonding-curve).
+vi.mock('@pump-fun/pump-swap-sdk', () => ({
+  OnlinePumpAmmSdk: class {
+    swapSolanaState = mocks.mockSwapSolanaState;
+    constructor(_connection: unknown) {}
+  },
+  PumpAmmSdk: class {
+    sellBaseInput = mocks.mockSellBaseInput;
+  },
+  canonicalPumpPoolPda: () => new PublicKey('So11111111111111111111111111111111111111112'),
 }));
 
 import { resetConfigCache } from '../src/config';
@@ -266,15 +280,30 @@ describe('pump live sell — Jupiter fallback for graduated curves', () => {
     });
   }
 
-  it('routes through Jupiter when the curve reports complete=true', async () => {
+  it('routes a graduated curve (complete=true) to PumpSwap, not Jupiter', async () => {
+    // Post-graduation the curve sell is invalid; the token lives on a PumpSwap
+    // pool. Jupiter's route there reverts Custom:6024 (Overflow), so we sell via
+    // the pump AMM SDK instead.
     mocks.mockFetchSellState.mockResolvedValue({
       bondingCurveAccountInfo: { data: Buffer.alloc(0) },
       bondingCurve: { complete: true },
     });
-    mockJupiterReachable();
-    await sellToken(MINT, 1_000_000, undefined, null);
-    expect(mocks.mockFetch).toHaveBeenCalled();
-    expect(mocks.mockSellV2Instructions).not.toHaveBeenCalled();
+    mocks.mockSwapSolanaState.mockResolvedValue({
+      baseMintAccount: { decimals: 6 },
+      poolBaseAmount: new BN('1000000000000'),
+      poolQuoteAmount: new BN('50000000000'),
+      baseTokenProgram: TOKEN_2022_PROGRAM,
+    });
+    mocks.mockSellBaseInput.mockResolvedValue([]);
+    mocks.mockSendRawTransaction.mockResolvedValue('PUMPSWAPSIG');
+    mocks.mockGetTokenAccountBalance.mockResolvedValue({ value: { amount: '1' } }); // partial -> skip ATA close
+
+    const r = await sellToken(MINT, 1_000_000, undefined, null);
+
+    expect(mocks.mockSellBaseInput).toHaveBeenCalled(); // routed to PumpSwap
+    expect(mocks.mockFetch).not.toHaveBeenCalled(); // NOT Jupiter
+    expect(mocks.mockSellV2Instructions).not.toHaveBeenCalled(); // NOT the direct curve
+    expect(r.success).toBe(true);
   });
 
   it('routes through Jupiter when fetchSellState throws (curve gone / RPC blip)', async () => {

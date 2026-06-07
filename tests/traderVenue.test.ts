@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, resetConfigCache, Config } from '../src/config';
-import { usePumpVenue } from '../src/trader';
+import { resolveVenue, usePumpVenue } from '../src/trader';
 import { clearBondingCurveCache } from '../src/bondingCurve';
 
 // Minimal active bonding-curve account buffer: 8-byte discriminator, 5 u64
@@ -14,6 +14,14 @@ function activeCurveBuffer(): Buffer {
   buf.writeBigUInt64LE(0n, off); off += 8;                          // realSol
   buf.writeBigUInt64LE(1_000_000_000n, off); off += 8;             // totalSupply
   buf[off] = 0; // not complete
+  return buf;
+}
+
+// Same shape as an active curve but with complete=1 (offset 48) — readBonding-
+// Curve reports this as 'graduated' (migrated to a PumpSwap AMM pool).
+function graduatedCurveBuffer(): Buffer {
+  const buf = activeCurveBuffer();
+  buf[48] = 1; // complete
   return buf;
 }
 
@@ -60,5 +68,36 @@ describe('usePumpVenue', () => {
   it('never uses the pump venue for non-pump, non-copytrade sources', async () => {
     const conn = fakeConn({ data: activeCurveBuffer() });
     expect(await usePumpVenue(MINT_A, cfg('raydium'), conn)).toBe(false);
+  });
+});
+
+describe('resolveVenue (sell routing)', () => {
+  it('routes an active copytrade curve to the direct pump path', async () => {
+    const conn = fakeConn({ data: activeCurveBuffer() });
+    expect(await resolveVenue(MINT_A, cfg('copytrade'), conn)).toBe('curve');
+  });
+
+  it('routes a GRADUATED copytrade pump token to PumpSwap (not Jupiter)', async () => {
+    // The fix: a graduated pump token sells on its PumpSwap pool. Jupiter's
+    // route for a fresh pump pool reverts Custom:6024 (Overflow).
+    const conn = fakeConn({ data: graduatedCurveBuffer() });
+    expect(await resolveVenue(MINT_B, cfg('copytrade'), conn)).toBe('pumpswap');
+  });
+
+  it('routes a non-pump / unreadable copytrade token to Jupiter', async () => {
+    const conn = fakeConn(null);
+    expect(await resolveVenue(MINT_B, cfg('copytrade'), conn)).toBe('jupiter');
+  });
+
+  it('routes the pump source to the curve without an RPC read', async () => {
+    const conn = fakeConn(null);
+    expect(await resolveVenue(MINT_A, cfg('pump'), conn)).toBe('curve');
+    expect((conn as unknown as { getAccountInfo: ReturnType<typeof vi.fn> }).getAccountInfo)
+      .not.toHaveBeenCalled();
+  });
+
+  it('routes non-pump sources straight to Jupiter', async () => {
+    const conn = fakeConn({ data: activeCurveBuffer() });
+    expect(await resolveVenue(MINT_A, cfg('raydium'), conn)).toBe('jupiter');
   });
 });
