@@ -174,7 +174,7 @@ export const logger = {
     }
   },
   position(
-    action: 'BUY' | 'SELL' | 'STOPLOSS' | 'TIMEOUT' | 'TP1' | 'TP2' | 'TP3' | 'COPY-EXIT',
+    action: 'BUY' | 'SELL' | 'STOPLOSS' | 'TIMEOUT' | 'TP1' | 'TP2' | 'TP3' | 'COPY-EXIT' | 'TRAIL',
     token: string,
     details: string
   ): void {

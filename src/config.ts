@@ -57,6 +57,14 @@ export interface Config {
   exitMode: ExitMode;
   // Multiplier at which all-in mode fully exits. Ignored under tiered mode.
   exitAtMult: number;
+  // Trailing take-profit. Once a position has run up to TRAILING_TP_ARM_MULT x
+  // entry (armed), the monitor tracks its peak price and sells the whole bag
+  // when price falls TRAILING_TP_DROP_PCT below that peak. This rides a real
+  // runner to its top and banks it on the turn, instead of riding the fade
+  // back to entry while waiting on a leader's lagged sell or a 10x that never
+  // comes. drop=0 disables (default), preserving plain all-in/tiered behavior.
+  trailingTpArmMult: number;
+  trailingTpDropPct: number;
   // Max wall-clock hours before snipe runs auto-shutdown. 0 disables (run
   // forever until SIGINT). Useful for unattended paper-trading sessions.
   maxRunHours: number;
@@ -324,6 +332,8 @@ export function loadConfig(): Config {
     source,
     exitMode: parseExitMode(process.env.EXIT_MODE),
     exitAtMult: numberFromEnv('EXIT_AT_MULT', 2),
+    trailingTpArmMult: numberFromEnv('TRAILING_TP_ARM_MULT', 1.5),
+    trailingTpDropPct: numberFromEnv('TRAILING_TP_DROP_PCT', 0),
     maxRunHours: numberFromEnv('MAX_RUN_HOURS', 0),
     closeOnShutdown: boolFromEnv('CLOSE_ON_SHUTDOWN', false),
     maxHoldMinutes: numberFromEnv('MAX_HOLD_MINUTES', 0),
@@ -390,6 +400,16 @@ function validateConfig(c: Config): void {
   }
   if (c.maxRunHours < 0) {
     throw new Error(`MAX_RUN_HOURS must be >= 0 (0 disables auto-shutdown), got ${c.maxRunHours}`);
+  }
+  if (c.trailingTpDropPct < 0 || c.trailingTpDropPct >= 1) {
+    throw new Error(
+      `TRAILING_TP_DROP_PCT must be in [0,1) (fraction below peak; 0 disables), got ${c.trailingTpDropPct}`
+    );
+  }
+  if (c.trailingTpDropPct > 0 && c.trailingTpArmMult <= 1) {
+    throw new Error(
+      `TRAILING_TP_ARM_MULT must be > 1 when trailing TP is enabled, got ${c.trailingTpArmMult}`
+    );
   }
   if (c.maxHoldMinutes < 0) {
     throw new Error(`MAX_HOLD_MINUTES must be >= 0 (0 disables time-exit), got ${c.maxHoldMinutes}`);

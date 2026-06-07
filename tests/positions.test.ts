@@ -28,6 +28,7 @@ import {
   TIME_EXIT_TP_LEVEL,
   checkPosition,
   clearGraduatedCurves,
+  clearPeakPrices,
   clearSellLocks,
   closeAllOpenPositions,
   executeAllInExit,
@@ -61,9 +62,12 @@ beforeEach(() => {
   delete process.env.SOURCE;
   delete process.env.EXIT_MODE;
   delete process.env.EXIT_AT_MULT;
+  delete process.env.TRAILING_TP_ARM_MULT;
+  delete process.env.TRAILING_TP_DROP_PCT;
   resetConfigCache();
   clearGraduatedCurves();
   clearSellLocks();
+  clearPeakPrices();
   clearBondingCurveCache();
   mocks.mockFetch.mockReset();
   mocks.mockSellToken.mockReset();
@@ -665,6 +669,65 @@ describe('checkPosition', () => {
 
     const updated = getPosition(p.id)!;
     expect(updated.status).toBe('stopped');
+  });
+});
+
+describe('trailing take-profit', () => {
+  function enableTrailing(armMult = 1.5, dropPct = 0.25) {
+    // Isolate trailing as the only profit exit (matches prod: all-in @ a high
+    // mult + trailing), so tiered TP levels don't fire first and mask it.
+    process.env.EXIT_MODE = 'all-in';
+    process.env.EXIT_AT_MULT = '100';
+    process.env.TRAILING_TP_ARM_MULT = String(armMult);
+    process.env.TRAILING_TP_DROP_PCT = String(dropPct);
+    resetConfigCache();
+  }
+
+  it('exits the full bag when an armed runner falls below its trailing peak', async () => {
+    enableTrailing(1.5, 0.25);
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    // Tick 1: runs to 1.8x — arms (>=1.5x) and records the peak. No exit yet.
+    mockPriceFetch(0.00018);
+    await checkPosition(p);
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
+
+    // Tick 2: fades to 1.3x, below peak(1.8) * (1 - 0.25) = 1.35x -> trail exit.
+    mockPriceFetch(0.00013);
+    mockSellSuccess(0.13, 0.00013);
+    await checkPosition(getPosition(p.id)!);
+
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
+    const closed = getPosition(p.id)!;
+    expect(closed.status).toBe('closed');
+    expect(closed.amount_tokens).toBe(0);
+  });
+
+  it('does not trail-exit a position that never armed', async () => {
+    enableTrailing(1.5, 0.25);
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    // Peaks at 1.3x (below the 1.5x arm), then dips to 1.05x. No trailing exit.
+    mockPriceFetch(0.00013);
+    await checkPosition(p);
+    mockPriceFetch(0.000105);
+    await checkPosition(getPosition(p.id)!);
+
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('rides higher peaks before trailing (does not exit on a shallow dip)', async () => {
+    enableTrailing(1.5, 0.25);
+    const p = mkPosition({ entryPriceSol: 0.0001 });
+    mockPriceFetch(0.00018); // 1.8x, arms, peak 1.8
+    await checkPosition(p);
+    mockPriceFetch(0.0003); // 3.0x, new peak
+    await checkPosition(getPosition(p.id)!);
+    mockPriceFetch(0.00025); // 2.5x, only -17% off the 3.0x peak (< 25%) -> hold
+    await checkPosition(getPosition(p.id)!);
+
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+    expect(getPosition(p.id)!.status).toBe('open');
   });
 });
 

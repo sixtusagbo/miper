@@ -38,6 +38,15 @@ const SHUTDOWN_PER_POSITION_TIMEOUT_MS = 30_000;
 export const TIME_EXIT_TP_LEVEL = 4;
 
 const sellFailureCount = new Map<number, number>();
+// Highest price seen per open position, for the trailing take-profit. In
+// memory only: a restart re-arms from the next observed price, which is fine
+// (a runner that survives a restart just re-establishes its peak). Pruned to
+// the open set each monitor tick so it can't grow unbounded.
+const peakPriceByPosition = new Map<number, number>();
+
+export function clearPeakPrices(): void {
+  peakPriceByPosition.clear();
+}
 // Per-position sell lock. ALL exit paths (monitor stop-loss / take-profit /
 // time-exit AND the copytrade leader-sell via executeAllInExit) funnel through
 // executePartialSell, so guarding it here is the single chokepoint that kills
@@ -347,6 +356,23 @@ export async function checkPosition(
     return;
   }
 
+  // Trailing take-profit. Once the position has armed (peak >= arm x entry),
+  // exit the whole bag when price falls the configured fraction below its
+  // peak. This banks a real runner on the turn instead of riding it back down
+  // while waiting on the leader's lagged sell or a 10x that never prints.
+  if (cfg.trailingTpDropPct > 0) {
+    const peak = Math.max(
+      peakPriceByPosition.get(position.id) ?? position.entry_price_sol,
+      currentPrice
+    );
+    peakPriceByPosition.set(position.id, peak);
+    const armed = peak >= position.entry_price_sol * cfg.trailingTpArmMult;
+    if (armed && currentPrice <= peak * (1 - cfg.trailingTpDropPct)) {
+      await executeTrailingExit(position, cfg);
+      return;
+    }
+  }
+
   // All-in mode collapses the three-tier TP into a single full-bag exit at
   // EXIT_AT_MULT. The 'compound small profits' thesis from miper-spec.md §1
   // — frequent 2x exits beat rare 5x outliers — is what this mode tests.
@@ -454,6 +480,33 @@ export async function executeAllInExit(
   });
 }
 
+// Sells the whole bag when a runner turns: triggered by the trailing
+// take-profit in checkPosition once price has fallen TRAILING_TP_DROP_PCT
+// below its armed peak. Closed (not stopped) since it realizes a gain.
+export async function executeTrailingExit(
+  position: Position,
+  cfg: Config = loadConfig()
+): Promise<void> {
+  const sold = await executePartialSell(position, position.amount_tokens, cfg);
+  if (!sold) return;
+
+  const mult = position.current_price_sol
+    ? position.current_price_sol / position.entry_price_sol
+    : null;
+  logger.position(
+    'TRAIL',
+    position.token_mint,
+    `trailing exit: sold ${position.amount_tokens.toFixed(2)} at ${mult ? mult.toFixed(2) : '?'}x entry`
+  );
+  updatePosition(position.id, {
+    amountTokens: 0,
+    amountSolReceived: position.amount_sol_received + recentSolReceived(position.id),
+    status: 'closed',
+    tpLevel: 3,
+  });
+  peakPriceByPosition.delete(position.id);
+}
+
 let monitorTimer: NodeJS.Timeout | null = null;
 let monitorRunning = false;
 let monitorConnection: Connection | null = null;
@@ -474,6 +527,12 @@ export function startMonitoring(
     monitorRunning = true;
     try {
       const positions = getOpenPositions();
+      // Drop trailing-TP peaks for positions that have closed, so the map
+      // tracks only the live set and can't grow across a long-running session.
+      const openIds = new Set(positions.map((p) => p.id));
+      for (const id of peakPriceByPosition.keys()) {
+        if (!openIds.has(id)) peakPriceByPosition.delete(id);
+      }
       for (const p of positions) {
         try {
           await checkPosition(p, undefined, monitorConnection);
