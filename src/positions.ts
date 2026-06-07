@@ -480,6 +480,17 @@ export async function executeAllInExit(
   });
 }
 
+// When a leader sells, should we ignore it and keep riding? Yes, once the
+// position has banked its first take-profit tranche (tp_level >= 1) AND the
+// trailing stop is active to protect it: it's a proven runner, so we ride it
+// past the leader's (lagged) exit and let the trailing stop bank the rest on
+// the turn. This is the BOUTYWORK case — the leader left at 4.65x and it ran
+// to 6.3x+. An unproven position (never hit 2x) still mirrors the leader out
+// to cut the loss early.
+export function shouldRideThroughLeaderExit(position: Position, cfg: Config): boolean {
+  return cfg.trailingTpDropPct > 0 && position.tp_level >= 1;
+}
+
 // Sells the whole bag when a runner turns: triggered by the trailing
 // take-profit in checkPosition once price has fallen TRAILING_TP_DROP_PCT
 // below its armed peak. Closed (not stopped) since it realizes a gain.

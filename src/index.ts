@@ -26,6 +26,7 @@ import {
   closeAllOpenPositions,
   executeAllInExit,
   positionAgeMinutes,
+  shouldRideThroughLeaderExit,
   startMonitoring,
   stopMonitoring,
 } from './positions';
@@ -456,6 +457,12 @@ async function snipeCommand(options: {
       exitingMints.add(tokenMint);
       try {
         for (const position of open) {
+          if (shouldRideThroughLeaderExit(position, cfg)) {
+            logger.info(
+              `copytrade: leader exited ${tokenMint}, but position #${position.id} already banked a tranche — riding the trailing stop past the leader`
+            );
+            continue;
+          }
           logger.info(
             `copytrade: leader exited ${tokenMint} — closing position #${position.id}`
           );

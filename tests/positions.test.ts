@@ -38,7 +38,9 @@ import {
   fetchPriceSol,
   isPastHoldLimit,
   positionAgeMinutes,
+  shouldRideThroughLeaderExit,
 } from '../src/positions';
+import { loadConfig } from '../src/config';
 import { clearBondingCurveCache } from '../src/bondingCurve';
 
 let tempDir: string;
@@ -714,6 +716,27 @@ describe('trailing take-profit', () => {
 
     expect(mocks.mockSellToken).not.toHaveBeenCalled();
     expect(getPosition(p.id)!.status).toBe('open');
+  });
+
+  it('rides through a leader exit once a tranche is banked, follows out otherwise', () => {
+    process.env.TRAILING_TP_DROP_PCT = '0.35';
+    process.env.TRAILING_TP_ARM_MULT = '2';
+    resetConfigCache();
+    const cfg = loadConfig();
+    const banked = { ...mkPosition(), tp_level: 1 };
+    const unproven = { ...mkPosition(), tp_level: 0 };
+    // Proven runner: ride past the leader on the trailing stop.
+    expect(shouldRideThroughLeaderExit(banked, cfg)).toBe(true);
+    // Never hit 2x: still mirror the leader's exit to cut the loss.
+    expect(shouldRideThroughLeaderExit(unproven, cfg)).toBe(false);
+  });
+
+  it('always follows the leader out when trailing is disabled', () => {
+    delete process.env.TRAILING_TP_DROP_PCT;
+    resetConfigCache();
+    const cfg = loadConfig();
+    const banked = { ...mkPosition(), tp_level: 2 };
+    expect(shouldRideThroughLeaderExit(banked, cfg)).toBe(false);
   });
 
   it('rides higher peaks before trailing (does not exit on a shallow dip)', async () => {
