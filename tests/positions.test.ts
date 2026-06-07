@@ -451,6 +451,25 @@ describe('executeStopLoss', () => {
     expect(updated.status).toBe('open');
     expect(updated.amount_tokens).toBeCloseTo(1_000_000);
   });
+
+  it('keeps the position open through repeated sell failures (no false write-off)', async () => {
+    // A run of failed sells (transient mayhem flip, missed venue, dead route)
+    // must NOT abandon the position: the block can clear and a later tick can
+    // still land the sell, or the user can exit by hand. Booking a loss here
+    // would throw away a recoverable position.
+    const p = mkPosition();
+    mockSellFailure('Transaction failed: {"InstructionError":[3,{"Custom":6024}]}');
+    mockSellFailure('Transaction failed: {"InstructionError":[3,{"Custom":6024}]}');
+    mockSellFailure('Transaction failed: {"InstructionError":[3,{"Custom":6024}]}');
+    await executeStopLoss(p);
+    await executeStopLoss(getPosition(p.id)!);
+    await executeStopLoss(getPosition(p.id)!);
+
+    const updated = getPosition(p.id)!;
+    expect(updated.status).toBe('open');
+    expect(updated.amount_tokens).toBeCloseTo(1_000_000);
+    expect(mocks.mockSellToken).toHaveBeenCalledTimes(3);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -190,9 +190,17 @@ async function doPartialSell(
     logger.warn(
       `Sell failed for position ${position.id} (${position.token_mint}) attempt ${retries}: ${result.error ?? 'unknown'}`
     );
-    if (retries >= MAX_SELL_RETRIES) {
+    // After a run of failures the bot can't exit on its own: a transient
+    // mayhem-mode flip (Custom:6024, which can later clear), a graduated curve
+    // our venue routing misses, or a dead route. Ping the phone ONCE so the
+    // position can be closed by hand (e.g. bonkbot). Don't book a loss or stop
+    // trying — the block can clear and a later tick may still land the sell.
+    if (retries === MAX_SELL_RETRIES) {
       logger.error(
-        `Position ${position.id} exceeded ${MAX_SELL_RETRIES} sell retries; manual review needed`
+        `Position ${position.id} (${position.token_mint}) failed ${MAX_SELL_RETRIES} sells; manual exit may be needed`
+      );
+      notify(
+        `SELL STUCK ${position.token_symbol || position.token_mint.slice(0, 8)} after ${MAX_SELL_RETRIES} tries: ${result.error ?? 'unknown'}`
       );
     }
     return false;
