@@ -11,7 +11,7 @@ import {
 } from './db';
 import { logger } from './logger';
 import { notify } from './notifier';
-import { sellToken } from './trader';
+import { sellToken, formatUsd } from './trader';
 import { readBondingCurve } from './bondingCurve';
 import { withTimeout, TimeoutError } from './concurrency';
 
@@ -150,7 +150,8 @@ function tpMultiplier(cfg: Config, level: 1 | 2 | 3): number {
 async function executePartialSell(
   position: Position,
   tokensToSell: number,
-  cfg: Config
+  cfg: Config,
+  reason = ''
 ): Promise<boolean> {
   // Concurrency guard: if another exit path is already selling this position,
   // skip. Prevents the monitor (SL/TP/time-exit) and the copytrade leader-sell
@@ -172,7 +173,7 @@ async function executePartialSell(
     // Clamp to what's actually left: a prior partial may have reduced the bag
     // since this tick's snapshot, so never request more than the fresh balance.
     const amount = Math.min(tokensToSell, fresh.amount_tokens);
-    return await doPartialSell(position, amount, cfg);
+    return await doPartialSell(position, amount, cfg, reason);
   } finally {
     sellingPositions.delete(position.id);
   }
@@ -181,7 +182,8 @@ async function executePartialSell(
 async function doPartialSell(
   position: Position,
   tokensToSell: number,
-  cfg: Config
+  cfg: Config,
+  reason = ''
 ): Promise<boolean> {
   // Pass the most recent observed price as a hint. The Raydium path ignores
   // it (Jupiter's outAmount is authoritative), but pump's paper-mode sell
@@ -226,17 +228,18 @@ async function doPartialSell(
     txSignature: result.txSignature || null,
     simulated: result.simulated,
   });
-  // One alert for every sell path (TP, SL, time, leader-mirror, shutdown).
-  // The caller's logger.position line carries the reason; this just surfaces
-  // the realized number on the phone.
+  // One alert for every sell path, carrying the reason (TP1/TRAIL/COPY-EXIT/
+  // STOPLOSS/TIMEOUT/shutdown) so a phone watcher knows WHY it exited and a
+  // double-sell of one position would be obvious, plus the realized MC.
   const mult =
     position.entry_price_sol > 0
       ? result.pricePerToken / position.entry_price_sol
       : null;
+  const mc = result.marketCapUsd !== undefined ? ` @ ${formatUsd(result.marketCapUsd)}` : '';
   notify(
-    `SELL ${position.token_symbol || position.token_mint.slice(0, 8)} — ` +
-      `${result.amountOut.toFixed(3)} SOL${mult ? ` (${mult.toFixed(2)}x)` : ''}` +
-      `${result.simulated ? ' (sim)' : ''}`
+    `SELL ${position.token_symbol || position.token_mint.slice(0, 8)}` +
+      `${reason ? ' ' + reason : ''} — ${result.amountOut.toFixed(3)} SOL` +
+      `${mult ? ` (${mult.toFixed(2)}x)` : ''}${mc}${result.simulated ? ' (sim)' : ''}`
   );
   return true;
 }
@@ -258,7 +261,7 @@ export async function executeTakeProfit(
   tokensToSell = Math.min(tokensToSell, position.amount_tokens);
   if (tokensToSell <= 0) return;
 
-  const sold = await executePartialSell(position, tokensToSell, cfg);
+  const sold = await executePartialSell(position, tokensToSell, cfg, `TP${level}`);
   if (!sold) return;
 
   const remaining = position.amount_tokens - tokensToSell;
@@ -292,7 +295,7 @@ export async function executeStopLoss(
   position: Position,
   cfg: Config = loadConfig()
 ): Promise<void> {
-  const sold = await executePartialSell(position, position.amount_tokens, cfg);
+  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'STOPLOSS');
   if (!sold) return;
 
   logger.position(
@@ -412,7 +415,7 @@ export async function executeTimeExit(
   position: Position,
   cfg: Config = loadConfig()
 ): Promise<void> {
-  const sold = await executePartialSell(position, position.amount_tokens, cfg);
+  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'TIMEOUT');
   if (!sold) return;
 
   const mult = position.current_price_sol
@@ -461,7 +464,12 @@ export async function executeAllInExit(
   cfg: Config = loadConfig(),
   leaderExit = false
 ): Promise<void> {
-  const sold = await executePartialSell(position, position.amount_tokens, cfg);
+  const sold = await executePartialSell(
+    position,
+    position.amount_tokens,
+    cfg,
+    leaderExit ? 'COPY-EXIT' : 'TP3'
+  );
   if (!sold) return;
 
   // leaderExit: a copytrade mirror of the leader's own sell — not a take-
@@ -499,7 +507,7 @@ export async function executeTrailingExit(
   position: Position,
   cfg: Config = loadConfig()
 ): Promise<void> {
-  const sold = await executePartialSell(position, position.amount_tokens, cfg);
+  const sold = await executePartialSell(position, position.amount_tokens, cfg, 'TRAIL');
   if (!sold) return;
 
   const mult = position.current_price_sol
@@ -653,7 +661,7 @@ async function tryPartialSellWithTimeout(
 ): Promise<boolean> {
   try {
     return await withTimeout(
-      executePartialSell(p, tokensToSell, cfg),
+      executePartialSell(p, tokensToSell, cfg, 'shutdown'),
       timeoutMs,
       `shutdown sell ${p.token_mint}`
     );

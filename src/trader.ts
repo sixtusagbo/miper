@@ -106,6 +106,54 @@ export interface SwapResult {
   // quote / no route / venue-detection RPC blip): no fee was paid and it is
   // not a systematic fault, so the circuit breaker must NOT count it.
   softFailure?: boolean;
+  // Token market cap in USD at trade time (supply x price x SOL/USD), for the
+  // buy/sell log + alert. Best-effort; undefined when supply or the SOL price
+  // wasn't available (e.g. a Jupiter-routed non-pump token).
+  marketCapUsd?: number;
+}
+
+// Cached SOL/USD for USD market-cap display on trade lines. Best-effort: a free
+// price endpoint refreshed at most every 5 min (not Helius RPC, no key). On any
+// failure we keep the last value or return null, and MC display is just omitted.
+let solUsdCache: { value: number; at: number } | null = null;
+const SOL_USD_TTL_MS = 5 * 60 * 1000;
+async function getSolUsd(): Promise<number | null> {
+  const now = Date.now();
+  if (solUsdCache && now - solUsdCache.at < SOL_USD_TTL_MS) return solUsdCache.value;
+  try {
+    const res = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
+    );
+    if (!res.ok) return solUsdCache?.value ?? null;
+    const body = (await res.json()) as { solana?: { usd?: number } };
+    const usd = body.solana?.usd;
+    if (typeof usd === 'number' && usd > 0) {
+      solUsdCache = { value: usd, at: now };
+      return usd;
+    }
+  } catch {
+    // fall through to the last cached value (or null)
+  }
+  return solUsdCache?.value ?? null;
+}
+
+// MC in USD = circulating supply (human units) x price-per-token (SOL) x SOL/USD.
+async function marketCapUsd(
+  supplyTokens: number,
+  pricePerTokenSol: number
+): Promise<number | undefined> {
+  if (!(supplyTokens > 0) || !(pricePerTokenSol > 0)) return undefined;
+  const solUsd = await getSolUsd();
+  if (!solUsd) return undefined;
+  return supplyTokens * pricePerTokenSol * solUsd;
+}
+
+// Compact USD: $24K, $1.8M, $950.
+export function formatUsd(n: number | undefined): string {
+  if (n === undefined || !Number.isFinite(n)) return '?';
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${n.toFixed(0)}`;
 }
 
 interface JupiterQuote {
@@ -635,10 +683,14 @@ async function pumpBuyLive(
 
     const tokensOut = Number(amount.toString()) / PUMP_TOKEN_BASE_UNITS;
     const pricePerToken = tokensOut > 0 ? amountSol / tokensOut : 0;
+    const mc = await marketCapUsd(
+      Number(mintInfo.supply) / 10 ** mintInfo.decimals,
+      pricePerToken
+    );
     logger.position(
       'BUY',
       tokenMint,
-      `${amountSol} SOL -> ${tokensOut.toFixed(4)} tokens (${signature.slice(0, 8)}..., pump v2)`
+      `${amountSol} SOL -> ${tokensOut.toFixed(4)} tokens @ MC ${formatUsd(mc)} (${signature.slice(0, 8)}..., pump v2)`
     );
     return {
       success: true,
@@ -647,6 +699,7 @@ async function pumpBuyLive(
       amountOut: tokensOut,
       pricePerToken,
       simulated: false,
+      marketCapUsd: mc,
     };
   } catch (err) {
     const message = (err as Error).message;
@@ -787,10 +840,14 @@ async function pumpSellLive(
     // higher than this conservative figure; good enough for PnL accounting.
     const solOut = Number(quoteAmount.toString()) / LAMPORTS_PER_SOL;
     const pricePerToken = amountTokens > 0 ? solOut / amountTokens : 0;
+    const mc = await marketCapUsd(
+      Number(mintInfo.supply) / 10 ** mintInfo.decimals,
+      pricePerToken
+    );
     logger.position(
       'SELL',
       tokenMint,
-      `${amountTokens.toFixed(4)} tokens -> ${solOut.toFixed(6)} SOL (${signature.slice(0, 8)}..., pump v2)`
+      `${amountTokens.toFixed(4)} tokens -> ${solOut.toFixed(6)} SOL @ MC ${formatUsd(mc)} (${signature.slice(0, 8)}..., pump v2)`
     );
     return {
       success: true,
@@ -799,6 +856,7 @@ async function pumpSellLive(
       amountOut: solOut,
       pricePerToken,
       simulated: false,
+      marketCapUsd: mc,
     };
   } catch (err) {
     const message = (err as Error).message;
@@ -854,11 +912,15 @@ async function pumpSwapSell(
       baseRes + baseIn > 0 ? quoteRes - (baseRes * quoteRes) / (baseRes + baseIn) : 0;
     const solOut = (Math.max(quoteOut, 0) / LAMPORTS_PER_SOL) * 0.99;
     const pricePerToken = amountTokens > 0 ? solOut / amountTokens : 0;
+    const mc = await marketCapUsd(
+      Number(state.baseMintAccount.supply) / 10 ** state.baseMintAccount.decimals,
+      pricePerToken
+    );
 
     logger.position(
       'SELL',
       tokenMint,
-      `${amountTokens.toFixed(4)} tokens -> ${solOut.toFixed(6)} SOL (${signature.slice(0, 8)}..., pumpswap)`
+      `${amountTokens.toFixed(4)} tokens -> ${solOut.toFixed(6)} SOL @ MC ${formatUsd(mc)} (${signature.slice(0, 8)}..., pumpswap)`
     );
     return {
       success: true,
@@ -867,6 +929,7 @@ async function pumpSwapSell(
       amountOut: solOut,
       pricePerToken,
       simulated: false,
+      marketCapUsd: mc,
     };
   } catch (err) {
     const message = (err as Error).message;

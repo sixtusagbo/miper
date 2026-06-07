@@ -21,7 +21,7 @@ import {
 } from './db';
 import { PoolListener, PumpListener, LogListener, NewPool } from './listener';
 import { analyzeToken, runSafetyChecks } from './analyzer';
-import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken } from './trader';
+import { buyToken, getTokenBalance, getWallet, getWalletBalance, sellToken, formatUsd } from './trader';
 import {
   closeAllOpenPositions,
   executeAllInExit,
@@ -293,8 +293,9 @@ async function snipeCommand(options: {
       txSignature: buy.txSignature || null,
       simulated: buy.simulated,
     });
+    const buyMc = buy.marketCapUsd !== undefined ? ` @ ${formatUsd(buy.marketCapUsd)}` : '';
     notify(
-      `BUY ${meta.symbol || pool.tokenMint.slice(0, 8)} — ${buy.amountIn.toFixed(3)} SOL` +
+      `BUY ${meta.symbol || pool.tokenMint.slice(0, 8)} — ${buy.amountIn.toFixed(3)} SOL${buyMc}` +
         ` via ${buy.venue ?? 'jupiter'}${buy.simulated ? ' (sim)' : ''}`
     );
   };
