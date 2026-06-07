@@ -110,6 +110,9 @@ function mockBuyHappyPath() {
     bondingCurve: { complete: false },
     associatedUserAccountInfo: null,
   });
+  // The buy quote needs the real mint supply (mintSupply: null makes the SDK
+  // quote against a fresh launch-floor curve).
+  mocks.mockGetMint.mockResolvedValue({ supply: 1_000_000_000_000_000n, decimals: 6 });
   mocks.mockGetBuyTokenAmount.mockReturnValue(new BN('1785357000000'));
   mocks.mockBuyV2Instructions.mockResolvedValue([]);
   mocks.mockSendRawTransaction.mockResolvedValue('BUYSIG12345');
