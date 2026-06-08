@@ -344,6 +344,17 @@ function recentSolReceived(positionId: number): number {
   return 0;
 }
 
+// Realized multiple of the sale just booked: SOL actually received this leg
+// over the cost basis of the tokens sold. Uses the booked fill (the last
+// recorded sell), not position.current_price_sol — the price oracle can be
+// stale at exit, which made TRAIL/TIMEOUT logs misreport (e.g. 0.51x for a
+// real 2.85x exit). Call after the sell and before amount_tokens is zeroed.
+function realizedExitMult(position: Position): number | null {
+  const costBasis = position.amount_tokens * position.entry_price_sol;
+  if (costBasis <= 0) return null;
+  return recentSolReceived(position.id) / costBasis;
+}
+
 export async function checkPosition(
   position: Position,
   cfg: Config = loadConfig(),
@@ -444,9 +455,7 @@ export async function executeTimeExit(
   const sold = await executePartialSell(position, position.amount_tokens, cfg, 'TIMEOUT', true);
   if (!sold) return;
 
-  const mult = position.current_price_sol
-    ? position.current_price_sol / position.entry_price_sol
-    : null;
+  const mult = realizedExitMult(position);
   logger.position(
     'TIMEOUT',
     position.token_mint,
@@ -537,9 +546,7 @@ export async function executeTrailingExit(
   const sold = await executePartialSell(position, position.amount_tokens, cfg, 'TRAIL', true);
   if (!sold) return;
 
-  const mult = position.current_price_sol
-    ? position.current_price_sol / position.entry_price_sol
-    : null;
+  const mult = realizedExitMult(position);
   logger.position(
     'TRAIL',
     position.token_mint,

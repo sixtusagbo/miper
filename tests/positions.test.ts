@@ -42,6 +42,7 @@ import {
 } from '../src/positions';
 import { loadConfig } from '../src/config';
 import { clearBondingCurveCache } from '../src/bondingCurve';
+import { logger } from '../src/logger';
 
 let tempDir: string;
 
@@ -826,6 +827,24 @@ describe('executeTimeExit', () => {
     expect(mocks.mockSellToken).toHaveBeenCalledTimes(1);
     // Full bag, not a partial.
     expect(mocks.mockSellToken.mock.calls[0][1]).toBeCloseTo(1_000_000);
+  });
+
+  it('logs the realized fill multiple, not a stale price-oracle reading', async () => {
+    // Regression: the exit log read position.current_price_sol (the oracle),
+    // which can be stale at exit and misreported (e.g. 0.51x for a 2.85x exit).
+    // It must report the booked fill instead. Here the oracle says 0.5x while
+    // the actual sale fills at 2x; the log must say 2.00x.
+    const p = mkPosition({ entryPriceSol: 0.00000005, amountTokens: 1_000_000 });
+    updatePosition(p.id, { currentPriceSol: 0.000000025 }); // stale 0.5x
+    const updated = getPosition(p.id)!;
+    mockSellSuccess(0.1, 0.0000001); // 0.1 SOL on a 0.05 cost basis = 2x
+    const spy = vi.spyOn(logger, 'position');
+    await executeTimeExit(updated, loadConfig());
+
+    const call = spy.mock.calls.find((c) => c[0] === 'TIMEOUT');
+    expect(call?.[2]).toContain('2.00x');
+    expect(call?.[2]).not.toContain('0.50x');
+    spy.mockRestore();
   });
 });
 
