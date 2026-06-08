@@ -313,4 +313,21 @@ describe('pump live sell — Jupiter fallback for graduated curves', () => {
     expect(mocks.mockFetch).toHaveBeenCalled();
     expect(mocks.mockSellV2Instructions).not.toHaveBeenCalled();
   });
+
+  it('falls back to Jupiter when the canonical PumpSwap pool is not found', async () => {
+    // A graduated token whose canonical PumpSwap pool the SDK can't find (it
+    // graduated to Raydium / a non-canonical pool). Instead of trapping the
+    // position (this stranded a 93x runner), route the sell through Jupiter.
+    mocks.mockFetchSellState.mockResolvedValue({
+      bondingCurveAccountInfo: { data: Buffer.alloc(0) },
+      bondingCurve: { complete: true },
+    });
+    mocks.mockSwapSolanaState.mockRejectedValue(new Error('Pool account not found'));
+    mockJupiterReachable();
+
+    await sellToken(MINT, 1_000_000, undefined, null);
+
+    expect(mocks.mockSellBaseInput).not.toHaveBeenCalled(); // PumpSwap couldn't proceed
+    expect(mocks.mockFetch).toHaveBeenCalled(); // fell back to Jupiter
+  });
 });

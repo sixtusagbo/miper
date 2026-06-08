@@ -949,6 +949,17 @@ async function pumpSwapSell(
     };
   } catch (err) {
     const message = (err as Error).message;
+    // The canonical PumpSwap pool may not exist for this mint — the token
+    // graduated to a different venue (e.g. Raydium) or a non-canonical pool, so
+    // the SDK's canonical-pool derivation finds nothing ("Pool account not
+    // found") and the position would be trapped (this stranded a 93x runner).
+    // Jupiter aggregates every AMM and can route it. The 6024 trap that makes us
+    // avoid Jupiter applies only to a *freshly-graduated canonical* pool, which
+    // by definition is not this case — so fall back to Jupiter instead.
+    if (/pool.*not found/i.test(message)) {
+      logger.warn(`pumpSwapSell ${tokenMint}: canonical pool not found — falling back to Jupiter`);
+      return jupiterSell(tokenMint, amountTokens, cfg);
+    }
     logger.error(`pumpSwapSell ${tokenMint}: ${message}`);
     return pumpSellFailure(amountTokens, message);
   }
