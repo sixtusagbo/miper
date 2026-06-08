@@ -18,6 +18,7 @@ export interface Position {
   ai_score: number | null;
   pool_address: string | null;
   entry_tx: string | null;
+  leader: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -81,6 +82,7 @@ function initSchema(conn: Database.Database): void {
       ai_score REAL,
       pool_address TEXT,
       entry_tx TEXT,
+      leader TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -109,11 +111,31 @@ function initSchema(conn: Database.Database): void {
       reason TEXT NOT NULL,
       ai_score REAL,
       pool_address TEXT,
+      leader TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE INDEX IF NOT EXISTS idx_rejected_mint ON rejected_tokens(token_mint);
   `);
+
+  // Migrations for DBs created before a column existed. CREATE TABLE IF NOT
+  // EXISTS never alters an existing table, so additive columns are applied here
+  // idempotently. The `leader` column attributes each copytrade buy/rejection
+  // to the wallet it was copied from, enabling per-leader landed-rate and PnL.
+  addColumnIfMissing(conn, 'positions', 'leader', 'TEXT');
+  addColumnIfMissing(conn, 'rejected_tokens', 'leader', 'TEXT');
+}
+
+function addColumnIfMissing(
+  conn: Database.Database,
+  table: string,
+  column: string,
+  decl: string
+): void {
+  const cols = conn.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
 }
 
 export function isTokenKnown(mint: string): boolean {
@@ -147,6 +169,9 @@ export interface CreatePositionInput {
   aiScore: number | null;
   poolAddress: string | null;
   entryTx: string | null;
+  // The leader wallet this buy was copied from (copytrade source). Null for
+  // Raydium/pump entries that aren't copies.
+  leader?: string | null;
 }
 
 export function createPosition(input: CreatePositionInput): Position {
@@ -155,8 +180,8 @@ export function createPosition(input: CreatePositionInput): Position {
     .prepare(
       `INSERT INTO positions
        (token_mint, token_symbol, entry_price_sol, current_price_sol, amount_tokens,
-        amount_sol_spent, amount_sol_received, status, tp_level, ai_score, pool_address, entry_tx)
-       VALUES (?, ?, ?, ?, ?, ?, 0, 'open', 0, ?, ?, ?)`
+        amount_sol_spent, amount_sol_received, status, tp_level, ai_score, pool_address, entry_tx, leader)
+       VALUES (?, ?, ?, ?, ?, ?, 0, 'open', 0, ?, ?, ?, ?)`
     )
     .run(
       input.tokenMint,
@@ -167,7 +192,8 @@ export function createPosition(input: CreatePositionInput): Position {
       input.amountSolSpent,
       input.aiScore,
       input.poolAddress,
-      input.entryTx
+      input.entryTx,
+      input.leader ?? null
     );
   const id = Number(result.lastInsertRowid);
   return getPosition(id)!;
@@ -273,15 +299,17 @@ export interface RecordRejectionInput {
   reason: string;
   aiScore: number | null;
   poolAddress: string | null;
+  // The leader wallet whose buy we tried (and failed) to copy. Null otherwise.
+  leader?: string | null;
 }
 
 export function recordRejection(input: RecordRejectionInput): void {
   getDb()
     .prepare(
-      `INSERT INTO rejected_tokens (token_mint, reason, ai_score, pool_address)
-       VALUES (?, ?, ?, ?)`
+      `INSERT INTO rejected_tokens (token_mint, reason, ai_score, pool_address, leader)
+       VALUES (?, ?, ?, ?, ?)`
     )
-    .run(input.tokenMint, input.reason, input.aiScore, input.poolAddress);
+    .run(input.tokenMint, input.reason, input.aiScore, input.poolAddress, input.leader ?? null);
 }
 
 export function getPnlSummary(): PnlSummary {

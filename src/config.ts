@@ -150,6 +150,10 @@ export interface Config {
   // spent at least copytradeMinLeaderSol; exit when the leader sells (with
   // the stop-loss / time-exit as independent floors).
   copytradeWallets: string[];
+  // Optional human-readable names for the followed wallets, positionally
+  // matched to copytradeWallets (COPYTRADE_LABELS). Used only in logs and DB
+  // attribution; a missing label falls back to a short address.
+  copytradeLabels: string[];
   copytradePollSec: number;
   copytradeMinLeaderSol: number;
   // A leader sell only mirrors as our full exit when they sold at least this
@@ -192,6 +196,15 @@ function boolFromEnv(name: string, fallback: boolean): boolean {
   if (['1', 'true', 'yes', 'y'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'n'].includes(normalized)) return false;
   throw new Error(`Invalid boolean value for ${name}: ${raw}`);
+}
+
+// Human-readable name for a followed leader wallet, positionally matched to
+// COPYTRADE_WALLETS via COPYTRADE_LABELS. Falls back to a short address when no
+// label is configured, so logs and DB attribution always identify the leader.
+export function leaderLabel(wallet: string, wallets: string[], labels: string[]): string {
+  const i = wallets.indexOf(wallet);
+  const name = i >= 0 ? (labels[i] ?? '').trim() : '';
+  return name || `${wallet.slice(0, 4)}..${wallet.slice(-4)}`;
 }
 
 // Parse a comma-separated env var into a trimmed, de-blanked list.
@@ -360,6 +373,7 @@ export function loadConfig(): Config {
     trendingMinAgeMin: numberFromEnv('TRENDING_MIN_AGE_MIN', 30),
     trendingMaxAgeHours: numberFromEnv('TRENDING_MAX_AGE_HOURS', 24),
     copytradeWallets: listFromEnv('COPYTRADE_WALLETS'),
+    copytradeLabels: listFromEnv('COPYTRADE_LABELS'),
     copytradePollSec: numberFromEnv('COPYTRADE_POLL_SEC', 12),
     copytradeMinLeaderSol: numberFromEnv('COPYTRADE_MIN_LEADER_SOL', 0.5),
     copytradeSellExitFraction: numberFromEnv('COPYTRADE_SELL_EXIT_FRACTION', 0.34),

@@ -8,6 +8,7 @@ import {
   countOpenPositions,
   createPosition,
   getActivityWindow,
+  getDb,
   getFinishedPositions,
   getOpenPositions,
   getPnlSummary,
@@ -69,6 +70,14 @@ describe('db: positions', () => {
 
   it('returns null for missing position', () => {
     expect(getPosition(999)).toBeNull();
+  });
+
+  it('stores and returns the leader a buy was copied from', () => {
+    const copied = mkPosition({ tokenMint: 'MINT_COPIED', leader: 'Nyhrox' });
+    expect(getPosition(copied.id)!.leader).toBe('Nyhrox');
+    // an organic (non-copy) entry leaves leader null
+    const organic = mkPosition({ tokenMint: 'MINT_ORGANIC' });
+    expect(getPosition(organic.id)!.leader).toBeNull();
   });
 
   it('updates partial fields without clobbering others', () => {
@@ -144,6 +153,20 @@ describe('db: rejections and isTokenKnown', () => {
 
   it('returns false for an unknown mint', () => {
     expect(isTokenKnown('UNSEEN_MINT')).toBe(false);
+  });
+
+  it('attributes a failed-copy rejection to its leader', () => {
+    recordRejection({
+      tokenMint: 'MINT_FAIL',
+      reason: 'buy failed: Custom:6002',
+      aiScore: null,
+      poolAddress: null,
+      leader: 'Nyhrox',
+    });
+    const row = getDb()
+      .prepare('SELECT leader FROM rejected_tokens WHERE token_mint = ?')
+      .get('MINT_FAIL') as { leader: string | null };
+    expect(row.leader).toBe('Nyhrox');
   });
 });
 

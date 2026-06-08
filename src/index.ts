@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { Connection } from '@solana/web3.js';
 import chalk from 'chalk';
-import { loadConfig, resetConfigCache } from './config';
+import { loadConfig, resetConfigCache, leaderLabel } from './config';
 import { logger } from './logger';
 import {
   countOpenPositions,
@@ -149,7 +149,8 @@ async function snipeCommand(options: {
           connection,
           cfg.copytradeWallets,
           cfg.copytradePollSec * 1000,
-          cfg.copytradeMinLeaderSol
+          cfg.copytradeMinLeaderSol,
+          cfg.copytradeLabels
         )
       : null;
   // The momentum pre-screen — bundle veto + safety checks. Run during the
@@ -229,16 +230,17 @@ async function snipeCommand(options: {
   // entry.
   const executeBuy = async (
     pool: { tokenMint: string; poolAddress: string },
-    meta: { aiScore: number | null; symbol: string | null }
+    meta: { aiScore: number | null; symbol: string | null; leader?: string | null }
   ): Promise<void> => {
     const buy = await buyToken(pool.tokenMint, cfg.buyAmountSol, cfg);
     if (!buy.success) {
-      logger.error(`buy failed: ${buy.error}`);
+      logger.error(`buy failed${meta.leader ? ` (${meta.leader})` : ''}: ${buy.error}`);
       recordRejection({
         tokenMint: pool.tokenMint,
         reason: `buy failed: ${buy.error}`,
         aiScore: meta.aiScore,
         poolAddress: pool.poolAddress,
+        leader: meta.leader ?? null,
       });
       // A soft failure (no quote / no route / a venue-misroute on a transient
       // RPC blip) sent no transaction and is recoverable — don't let it trip
@@ -289,6 +291,7 @@ async function snipeCommand(options: {
       aiScore: meta.aiScore,
       poolAddress,
       entryTx: buy.txSignature,
+      leader: meta.leader ?? null,
     });
     recordTrade({
       positionId: position.id,
@@ -526,10 +529,11 @@ async function snipeCommand(options: {
             });
             return;
           }
-          logger.info(`BUYING ${t.tokenMint} — copying ${t.wallet.slice(0, 8)}...`);
+          const leader = leaderLabel(t.wallet, cfg.copytradeWallets, cfg.copytradeLabels);
+          logger.info(`BUYING ${t.tokenMint} — copying ${leader}`);
           await executeBuy(
             { tokenMint: t.tokenMint, poolAddress: '' },
-            { aiScore: null, symbol: null }
+            { aiScore: null, symbol: null, leader }
           );
           // The leader sold this token while our buy was in flight — exit the
           // freshly-opened position now.

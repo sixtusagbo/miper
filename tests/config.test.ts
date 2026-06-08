@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { loadConfig, resetConfigCache } from '../src/config';
+import { loadConfig, resetConfigCache, leaderLabel } from '../src/config';
 
 const BASE_ENV: Record<string, string> = {
   ANTHROPIC_API_KEY: 'sk-test',
@@ -298,5 +298,27 @@ describe('loadConfig', () => {
   it('throws on an unknown SOURCE value', () => {
     setEnv({ SOURCE: 'bogus' });
     expect(() => loadConfig()).toThrow(/SOURCE/);
+  });
+});
+
+describe('leaderLabel', () => {
+  const wallets = ['AAAABBBBCCCCDDDD', 'EEEEFFFFGGGGHHHH'];
+  const labels = ['Joji', 'Nyhrox'];
+
+  it('maps a wallet to its positionally-matched label', () => {
+    expect(leaderLabel('EEEEFFFFGGGGHHHH', wallets, labels)).toBe('Nyhrox');
+  });
+
+  it('falls back to a short address when no label is configured', () => {
+    expect(leaderLabel('AAAABBBBCCCCDDDD', wallets, [])).toBe('AAAA..DDDD');
+  });
+
+  it('falls back to a short address for a wallet not in the list', () => {
+    expect(leaderLabel('ZZZZYYYYXXXXWWWW', wallets, labels)).toBe('ZZZZ..WWWW');
+  });
+
+  it('parses COPYTRADE_LABELS into copytradeLabels', () => {
+    setEnv({ COPYTRADE_WALLETS: 'WAL_A,WAL_B', COPYTRADE_LABELS: 'Joji,Nyhrox' });
+    expect(loadConfig().copytradeLabels).toEqual(['Joji', 'Nyhrox']);
   });
 });

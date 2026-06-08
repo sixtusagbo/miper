@@ -8,6 +8,7 @@ import {
 } from '@solana/web3.js';
 import { logger } from './logger';
 import { trimSeen } from './listener';
+import { leaderLabel } from './config';
 
 const SIG_PAGE = 25;
 // Cap pagination so one hyperactive leader can't make a poll cycle unbounded.
@@ -121,10 +122,16 @@ export class WalletListener extends EventEmitter {
     private readonly connection: Connection,
     private readonly wallets: string[],
     private readonly pollMs: number,
-    private readonly minLeaderSol: number
+    private readonly minLeaderSol: number,
+    private readonly labels: string[] = []
   ) {
     super();
     for (const w of wallets) this.state.set(w, { lastSignature: null, primed: false });
+  }
+
+  // Readable name for a followed wallet (falls back to a short address).
+  private label(wallet: string): string {
+    return leaderLabel(wallet, this.wallets, this.labels);
   }
 
   start(): void {
@@ -156,7 +163,7 @@ export class WalletListener extends EventEmitter {
     try {
       for (const wallet of this.wallets) {
         await this.pollWallet(wallet).catch((err) =>
-          logger.debug(`copytrade: poll failed for ${short(wallet)}: ${(err as Error).message}`)
+          logger.debug(`copytrade: poll failed for ${this.label(wallet)}: ${(err as Error).message}`)
         );
       }
     } finally {
@@ -187,7 +194,7 @@ export class WalletListener extends EventEmitter {
       before = batch[batch.length - 1].signature;
       if (page === MAX_SIG_PAGES - 1) {
         logger.warn(
-          `copytrade: ${short(wallet)} produced >=${MAX_SIG_PAGES * SIG_PAGE} txs in one poll window — older trades may be dropped`
+          `copytrade: ${this.label(wallet)} produced >=${MAX_SIG_PAGES * SIG_PAGE} txs in one poll window — older trades may be dropped`
         );
       }
     }
@@ -230,17 +237,17 @@ export class WalletListener extends EventEmitter {
       if (trade.kind === 'buy') {
         if (trade.solAmount < this.minLeaderSol) {
           logger.debug(
-            `copytrade: ${short(wallet)} bought ${short(trade.tokenMint)} for ` +
+            `copytrade: ${this.label(wallet)} bought ${short(trade.tokenMint)} for ` +
               `${trade.solAmount.toFixed(2)} SOL — below ${this.minLeaderSol}, skipped`
           );
           continue;
         }
         logger.info(
-          `copytrade: leader ${short(wallet)} BOUGHT ${trade.tokenMint} (~${trade.solAmount.toFixed(2)} SOL)`
+          `copytrade: leader ${this.label(wallet)} BOUGHT ${trade.tokenMint} (~${trade.solAmount.toFixed(2)} SOL)`
         );
         this.emit('leaderBuy', trade);
       } else {
-        logger.info(`copytrade: leader ${short(wallet)} SOLD ${trade.tokenMint}`);
+        logger.info(`copytrade: leader ${this.label(wallet)} SOLD ${trade.tokenMint}`);
         this.emit('leaderSell', trade);
       }
     }
