@@ -21,6 +21,7 @@ import 'dotenv/config';
 import { Connection, PublicKey, ConfirmedSignatureInfo } from '@solana/web3.js';
 import { readFileSync } from 'fs';
 import { extractLeaderTrade } from '../src/walletListener';
+import { retry } from '../src/concurrency';
 
 // How many SUCCESSFUL txs to actually parse per wallet. Hyperactive wallets
 // (snipers/MEV) bury their wins under thousands of reverts, so a flat "newest
@@ -57,6 +58,14 @@ const MAX_FAILED_FRACTION = 0.6;
 // our copy-buy lands). Threshold from community vetting guides (~5s sells).
 const FAST_FLIP_SEC = 5;
 const MAX_FAST_FLIP_FRACTION = 0.2;
+
+// Our copy latency is ~8s (poll interval + land time). A wallet whose MEDIAN
+// hold sits below a small multiple of that exits the typical position before our
+// copy-buy lands — we'd be buying its exit. The fast-flip fraction catches
+// wallets that are *sometimes* instant; this catches wallets that are
+// *consistently* faster than we can copy (e.g. a 6s median that ducks under the
+// 5s fast-flip bar but is still uncopyable for us).
+const MIN_MEDIAN_HOLD_SEC = 20;
 
 // Wash-trade signature: most of the wallet's volume cycling through ONE token
 // with very short holds. Flag when one token is >= this share of buy volume
@@ -112,7 +121,11 @@ async function collectSignatures(
   let before: string | undefined;
   while (scanned < MAX_SCAN_SIGNATURES && ok.length < MAX_SIGNATURES) {
     const limit = Math.min(SIG_PAGE, MAX_SCAN_SIGNATURES - scanned);
-    const batch = await connection.getSignaturesForAddress(key, { limit, before });
+    const batch = await retry(() => connection.getSignaturesForAddress(key, { limit, before }), {
+      attempts: 4,
+      baseDelayMs: 500,
+      label: `getSignaturesForAddress ${wallet.slice(0, 8)}`,
+    });
     if (batch.length === 0) break;
     scanned += batch.length;
     for (const s of batch) if (!s.err && ok.length < MAX_SIGNATURES) ok.push(s);
@@ -131,12 +144,21 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
   const allTimes: number[] = [];
 
   for (const sig of sigs) {
-    const tx = await connection.getParsedTransaction(sig.signature, {
-      maxSupportedTransactionVersion: 0,
-      commitment: 'confirmed',
-    });
     const blockTime = sig.blockTime ?? 0;
     if (blockTime) allTimes.push(blockTime);
+    let tx;
+    try {
+      tx = await retry(
+        () =>
+          connection.getParsedTransaction(sig.signature, {
+            maxSupportedTransactionVersion: 0,
+            commitment: 'confirmed',
+          }),
+        { attempts: 3, baseDelayMs: 400 }
+      );
+    } catch {
+      continue; // transient RPC failure on one tx — skip it, don't kill the run
+    }
     const trade = extractLeaderTrade(tx, wallet, sig.signature);
     if (!trade) continue;
     if (blockTime) tradeTimes.push(blockTime);
@@ -200,6 +222,10 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
   if (fastFlipFraction > MAX_FAST_FLIP_FRACTION)
     reasons.push(
       `${(fastFlipFraction * 100).toFixed(0)}% of round-trips flip in <${FAST_FLIP_SEC}s — sniper/bot, too fast to copy`
+    );
+  if (trades > 0 && medianHoldMin * 60 < MIN_MEDIAN_HOLD_SEC)
+    reasons.push(
+      `median hold ${(medianHoldMin * 60).toFixed(0)}s under ${MIN_MEDIAN_HOLD_SEC}s — too fast to copy at our ~8s latency`
     );
   if (maxTokenShare >= WASH_CONCENTRATION && medianHoldMin < WASH_MAX_HOLD_MIN && trades > 0)
     reasons.push(
