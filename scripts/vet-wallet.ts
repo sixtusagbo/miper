@@ -18,15 +18,23 @@
 // quality read, not exact accounting.
 
 import 'dotenv/config';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey, ConfirmedSignatureInfo } from '@solana/web3.js';
 import { readFileSync } from 'fs';
 import { extractLeaderTrade } from '../src/walletListener';
 
-// Newest N signatures to pull per wallet (getSignaturesForAddress caps at 1000).
-// Newest N signatures to pull per wallet. Fetched and parsed one at a time —
-// batched RPC (getParsedTransactions) is rejected by the free Helius tier —
-// so this is kept modest to keep a vetting run to a few minutes per wallet.
-const MAX_SIGNATURES = 250;
+// How many SUCCESSFUL txs to actually parse per wallet. Hyperactive wallets
+// (snipers/MEV) bury their wins under thousands of reverts, so a flat "newest
+// N" fetch can land entirely inside a revert burst and see zero round-trips.
+// We scan signatures (cheap) up to MAX_SCAN_SIGNATURES, count the failed
+// fraction over that window, and parse only the newest MAX_SIGNATURES
+// non-errored ones. Both are env-overridable for a deep re-vet:
+//   VET_OK_TARGET -> MAX_SIGNATURES        (successful txs to parse)
+//   VET_MAX_SCAN  -> MAX_SCAN_SIGNATURES   (signature scan ceiling)
+// Defaults keep a normal run to a few minutes; batched RPC (getParsedTransactions)
+// is rejected by the free Helius tier, so everything is one page / one tx at a time.
+const MAX_SIGNATURES = Number(process.env.VET_OK_TARGET) || 250;
+const MAX_SCAN_SIGNATURES = Math.max(MAX_SIGNATURES, Number(process.env.VET_MAX_SCAN) || 250);
+const SIG_PAGE = 1000; // getSignaturesForAddress hard cap per call
 
 // Advisory PASS bar. Looser than the canonical 30-trades/60-day rule because
 // the sample is bounded — the printed raw numbers are the real decision input.
@@ -90,12 +98,33 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
+// Page through a wallet's signatures (newest first), collecting the SUCCESSFUL
+// ones up to MAX_SIGNATURES while scanning at most MAX_SCAN_SIGNATURES total.
+// Returns the ok sigs to parse plus the scanned count so the caller can report
+// the failed fraction over the whole window actually scanned.
+async function collectSignatures(
+  connection: Connection,
+  wallet: string
+): Promise<{ ok: ConfirmedSignatureInfo[]; scanned: number }> {
+  const key = new PublicKey(wallet);
+  const ok: ConfirmedSignatureInfo[] = [];
+  let scanned = 0;
+  let before: string | undefined;
+  while (scanned < MAX_SCAN_SIGNATURES && ok.length < MAX_SIGNATURES) {
+    const limit = Math.min(SIG_PAGE, MAX_SCAN_SIGNATURES - scanned);
+    const batch = await connection.getSignaturesForAddress(key, { limit, before });
+    if (batch.length === 0) break;
+    scanned += batch.length;
+    for (const s of batch) if (!s.err && ok.length < MAX_SIGNATURES) ok.push(s);
+    before = batch[batch.length - 1].signature;
+    if (batch.length < limit) break;
+  }
+  return { ok, scanned };
+}
+
 async function vetWallet(connection: Connection, wallet: string): Promise<WalletReport> {
-  const sigInfos = await connection.getSignaturesForAddress(new PublicKey(wallet), {
-    limit: MAX_SIGNATURES,
-  });
-  const sigs = sigInfos.filter((s) => !s.err);
-  const failedFraction = sigInfos.length > 0 ? (sigInfos.length - sigs.length) / sigInfos.length : 0;
+  const { ok: sigs, scanned } = await collectSignatures(connection, wallet);
+  const failedFraction = scanned > 0 ? (scanned - sigs.length) / scanned : 0;
 
   const byToken = new Map<string, TokenAgg>();
   const tradeTimes: number[] = [];
@@ -185,7 +214,7 @@ async function vetWallet(connection: Connection, wallet: string): Promise<Wallet
 
   return {
     wallet,
-    fetchedTxs: sigInfos.length,
+    fetchedTxs: scanned,
     failedFraction,
     sampleTxs: sigs.length,
     spanDays,
