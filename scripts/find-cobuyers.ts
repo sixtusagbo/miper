@@ -18,6 +18,7 @@ import 'dotenv/config';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { readFileSync } from 'fs';
 import { extractLeaderTrade } from '../src/walletListener';
+import { retry } from '../src/concurrency';
 
 // Oldest N signatures per mint to inspect — the launch window where the smart
 // early buyers land. Bigger = more candidates but more RPC.
@@ -27,10 +28,14 @@ const EARLY_TX = 200;
 const MAX_PAGES = 40;
 const PAGE = 1000;
 
-// Current leaders + obvious infra never count as candidates.
+// Our own bot wallet + current leaders never count as candidates (the bot
+// bought these winners by copying, so it shows up as an "early buyer").
 const EXCLUDE = new Set<string>([
+  'EcehC76ATmta8RBiYnMwSTDTGYCxSzodCq7XQbeBuQL2', // our bot wallet
   'BQVz7fQ1WsQmSTMY3umdPEPPTm1sdcBcX9sP7o6kPRmB', // Limfork
   'DVMkhiQe1D8yenuEgsW44NjRn9LfVQjGEpZcez5x7Mff', // iceman
+  '525LueqAyZJueCoiisfWy6nyh4MTvmF4X9jSqi6efXJT', // Joji
+  '6S8GezkxYUfZy9JPtYnanbcZTMB87Wjt1qx3c6ELajKC', // Nyhrox
 ]);
 
 function sleep(ms: number): Promise<void> {
@@ -44,7 +49,11 @@ async function oldestSignatures(conn: Connection, mint: string): Promise<string[
   let before: string | undefined;
   const ok: string[] = [];
   for (let p = 0; p < MAX_PAGES; p++) {
-    const batch = await conn.getSignaturesForAddress(key, { limit: PAGE, before });
+    const batch = await retry(() => conn.getSignaturesForAddress(key, { limit: PAGE, before }), {
+      attempts: 4,
+      baseDelayMs: 500,
+      label: `getSignaturesForAddress ${mint.slice(0, 8)}`,
+    });
     if (batch.length === 0) break;
     for (const b of batch) if (!b.err) ok.push(b.signature);
     before = batch[batch.length - 1].signature;
@@ -60,10 +69,14 @@ async function earlyBuyers(conn: Connection, mint: string): Promise<Set<string>>
   for (const sig of sigs) {
     let tx;
     try {
-      tx = await conn.getParsedTransaction(sig, {
-        maxSupportedTransactionVersion: 0,
-        commitment: 'confirmed',
-      });
+      tx = await retry(
+        () =>
+          conn.getParsedTransaction(sig, {
+            maxSupportedTransactionVersion: 0,
+            commitment: 'confirmed',
+          }),
+        { attempts: 3, baseDelayMs: 400 }
+      );
     } catch {
       continue;
     }
