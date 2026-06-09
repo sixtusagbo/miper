@@ -19,8 +19,15 @@ Listens for new Raydium AMM pools or pump.fun launches, runs on-chain safety che
 - `src/bondingCurve.ts` — pump.fun bonding-curve account decoder + price helper
 - `src/trader.ts` — Jupiter V6 swaps (Raydium + pump-graduated) and live pump buy/sell via `@pump-fun/pump-sdk` (`buy_v2`/`sell_v2`)
 - `src/positions.ts` — TP/SL monitoring loop; per-source price oracle dispatch
+- `src/walletListener.ts` — copytrade leader polling + the balance-diff trade parser (`extractLeaderTrade`)
+- `src/discovery.ts` — discovery scanner: per-launch watcher, feature sampling, alert/candidate events, `wallet_intel` compounding
+- `src/discoveryScore.ts` — deterministic 0-100 scorer + `DiscoveryProfile` load/defaults (shared by scanner and backtest)
+- `src/walletResearch.ts` — research-side feature extraction: entry snapshots, round-trips, co-buy/funding analysis, profile derivation
+- `src/bundleCheck.ts` — launch-slot bundle (same-block buyer cluster) veto
+- `src/notifier.ts` — Telegram push alerts (trade, discovery, breaker, heartbeat)
 - `src/review.ts` — PnL summary + live-readiness checklist
 - `src/concurrency.ts` — InflightGate, withTimeout, retry helpers
+- `scripts/` — operational CLIs: `vet-wallet` (copytrade vetting), `find-cobuyers` (leader hunting), `profile-wallets` (discovery research), `backtest-discovery`, `leader-stats`, `exit-postmortem`
 - `tests/` — vitest mirror of `src/`; mocks all RPC/HTTP/SDK calls
 
 ## Token sources
@@ -29,8 +36,20 @@ Listens for new Raydium AMM pools or pump.fun launches, runs on-chain safety che
 |---|---|---|---|---|
 | `raydium` *(default)* | Raydium AMM pool inits | `./sniper.db` | none | Jupiter V6 |
 | `pump` | pump.fun mint creates (Token-2022 / SPL) | `./pump.db` | `./pump.log` | Direct bonding-curve `buy`/`sell` ix; Jupiter fallback once curve graduates |
+| `trending` | GeckoTerminal trending pools | `./trending.db` | `./trending.log` | Jupiter V6 |
+| `copytrade` | Curated leader-wallet polling | `./copytrade.db` | `./copytrade.log` | Mirrors leader buys/sells through the standard trade path |
+| `discovery` | pump.fun creates, scored against the researched wallet profile | `./discovery.db` | `./discovery.log` | Alert-only by default; `DISCOVERY_AUTOBUY=true` buys through the standard trade path |
 
 Source selection: `--source` flag wins over `SOURCE` env, env wins over the `'raydium'` default. Explicit `--source` clears any stale `DB_PATH` / `LOG_FILE` shell exports so pump runs never silently land in the Raydium DB.
+
+## Discovery pipeline
+
+Reverse-engineers a set of high-performing sniper wallets instead of copying them (their seconds-long holds are uncopyable at polling latency — `vet-wallet.ts` proves this per wallet). Design + on-chain method: `research/discovery-scanner-design.md`.
+
+1. `npm run profile-wallets -- --file research/target-wallets.txt` — reconstructs every entry's context (age/mcap/liquidity/holders at entry, deployer + funding wallets, same-block co-buys) → `research/wallet-profile.json` + scanner thresholds in `research/discovery-profile.json`.
+2. `npm run backtest-discovery -- research/wallet-profile.json` — replays the production scorer (`scoreDiscovery`) over their entries; recall/threshold sweep.
+3. `npm run simulate:discovery` — live alert-only scan; Telegram alert per match; post-alert peak recorded into `discovery_alerts` (live precision).
+4. `DISCOVERY_AUTOBUY=true` — buys at `DISCOVERY_BUY_SCORE` via the standard trade path (sizing, slippage, priority fees, exits, breaker all reused). No AI key needed — scoring is deterministic.
 
 ## AI provider
 

@@ -9,6 +9,10 @@
 	sim-copytrade sim-copytrade-fresh snipe-copytrade snipe-copytrade-fresh \
 	review-copytrade status-copytrade \
 	tail-copytrade archive-copytrade nuke-copytrade \
+	profile-wallets backtest-discovery backtest-discovery-live \
+	sim-discovery sim-discovery-fresh snipe-discovery snipe-discovery-fresh \
+	review-discovery status-discovery tail-discovery \
+	archive-discovery nuke-discovery \
 	monitor-pump status-pump review-pump balance-pump \
 	stats-pump scores-pump exits-pump tail-pump \
 	archive-pump archive-raydium archive-all \
@@ -30,6 +34,12 @@ help:
 	@echo "    sim-trending     start simulate:trending (keeps existing state)"
 	@echo "    sim-copytrade-fresh archive copytrade state, then start simulate:copytrade"
 	@echo "    sim-copytrade    start simulate:copytrade (keeps existing state)"
+	@echo "    sim-discovery    start simulate:discovery (alert-only scan of pump launches)"
+	@echo ""
+	@echo "  Discovery research"
+	@echo "    profile-wallets       profile research/target-wallets.txt -> wallet+discovery profile JSONs"
+	@echo "    backtest-discovery    replay the scorer over the researched entries (recall sweep)"
+	@echo "    backtest-discovery-live  same + live alert precision from discovery.db"
 	@echo ""
 	@echo "  Run — LIVE (real SOL; needs SIMULATE=false in .env)"
 	@echo "    snipe-pump-fresh archive pump state under runs/, then start a live pump run"
@@ -163,6 +173,63 @@ archive-copytrade:
 
 nuke-copytrade:
 	rm -f copytrade.db* copytrade.log*
+
+# ---- run: discovery (scan launches against the researched wallet profile) --
+
+# Research the target wallets (paste addresses into research/target-wallets.txt
+# first). Writes research/wallet-profile.json + research/discovery-profile.json.
+profile-wallets:
+	npm run profile-wallets -- --file research/target-wallets.txt
+
+# Replay the production scorer over the researched entries (recall sweep).
+backtest-discovery:
+	npm run backtest-discovery -- research/wallet-profile.json
+
+# Same, plus live alert precision from discovery.db.
+backtest-discovery-live:
+	npm run backtest-discovery -- research/wallet-profile.json --db discovery.db
+
+sim-discovery:
+	npm run simulate:discovery
+
+sim-discovery-fresh: archive-discovery
+	npm run simulate:discovery
+
+# Live discovery run — real SOL only when SIMULATE=false AND
+# DISCOVERY_AUTOBUY=true in .env; otherwise it's an alert-only scan.
+snipe-discovery:
+	npm run snipe:discovery
+
+snipe-discovery-fresh: archive-discovery
+	npm run snipe:discovery
+
+review-discovery:
+	npm run review:discovery
+
+status-discovery:
+	npm run status:discovery
+
+tail-discovery:
+	tail -f discovery.log
+
+archive-discovery:
+	@if [ -f discovery.db ] || [ -n "$$(ls discovery.log* 2>/dev/null)" ]; then \
+		stamp=$$(date -u +%Y-%m-%dT%H-%M-%SZ); \
+		dir="runs/$${stamp}_$(LABEL)"; \
+		mkdir -p "$$dir"; \
+		for f in discovery.db discovery.db-shm discovery.db-wal discovery.db-journal discovery.log; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		for f in discovery.log.*; do \
+			[ -e "$$f" ] && mv "$$f" "$$dir/" 2>/dev/null || true; \
+		done; \
+		echo "archived discovery state to $$dir"; \
+	else \
+		echo "no discovery state to archive"; \
+	fi
+
+nuke-discovery:
+	rm -f discovery.db* discovery.log*
 
 # ---- inspect -------------------------------------------------------------
 

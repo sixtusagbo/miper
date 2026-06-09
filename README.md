@@ -14,6 +14,7 @@ miper supports two launch streams, selected at the command line or via env. Each
 |---|---|---|---|---|
 | `raydium` *(default)* | Raydium AMM | `./sniper.db` | none | Jupiter V6 |
 | `pump` | pump.fun (Token-2022 / SPL) | `./pump.db` | `./pump.log` | Direct bonding-curve instruction; falls back to Jupiter once a curve graduates |
+| `discovery` | pump.fun creates, scored deterministically against a researched wallet profile | `./discovery.db` | `./discovery.log` | Alert-only by default; optional auto-buy through the same trade path |
 
 **Why two sources?** Raydium AMM inits are rare (often only a handful per hour during off-peak). Pump.fun creates hundreds of mints per hour, which is great for signal density but comes with different mechanics: Token-2022 (or legacy SPL) mints, bonding-curve pricing, and tokens not yet on DexScreener. Live pump trades go through the pump.fun program directly while the bonding curve is active, then fall back to Jupiter once a curve graduates and the token moves to PumpSwap.
 
@@ -111,6 +112,39 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
 ```
 
 `make help` lists convenience targets — archiving a run's DB+log into `runs/`, log/score inspection, and `make snipe-pump-fresh` (archive the prior run, then start a live pump run).
+
+---
+
+## Discovery scanner
+
+The `discovery` source detects the opportunities a researched set of high-performing sniper wallets trades, without copying their fills (their seconds-long holds are uncopyable at any polling latency). Full method: `research/discovery-scanner-design.md`.
+
+```bash
+# 1. Research: reconstruct the target wallets' entries from public chain data
+#    (token age / mcap / liquidity / holders AT entry, deployers, funding
+#    wallets, same-block co-buys). Writes research/wallet-profile.json plus
+#    the scanner thresholds in research/discovery-profile.json.
+npm run profile-wallets -- --file research/target-wallets.txt
+
+# 2. Backtest: replay the production scorer over their actual entries —
+#    would the scanner have flagged what they bought?
+npm run backtest-discovery -- research/wallet-profile.json
+
+# 3. Scan in real time, alert-only (Telegram alert per match: mint, mcap,
+#    liquidity, age, holders, score, reasons). Every alert's post-alert peak
+#    is recorded, so precision accrues in discovery.db while you watch.
+npm run simulate:discovery
+
+# 4. Measure live precision against the alert outcomes
+npm run backtest-discovery -- research/wallet-profile.json --db discovery.db
+
+# 5. Only after 2-4 hold up: flip DISCOVERY_AUTOBUY=true (paper first, then
+#    SIMULATE=false). Buys reuse the standard trade path: BUY_AMOUNT_SOL,
+#    slippage, priority fees, stop-loss/trailing/time exits, the
+#    consecutive-failure breaker, and Telegram trade alerts.
+```
+
+The scanner needs no AI key — scoring is deterministic, driven by the research profile (smart-wallet cluster buys, deployer/funder reputation, holder growth, tx velocity, dev-buy band, entry-mcap band; bundled launches, mayhem coins and dev sells are hard vetoes). Deployer/funder track records also compound across runs in the `wallet_intel` table: every watched launch teaches it something.
 
 ---
 

@@ -191,6 +191,52 @@ Then scan `pump.log` for any `tx failed` lines.
 - **Keep `MAX_SLIPPAGE_BPS` at 200 or above.** Pump's fee is absorbed by slippage headroom; too tight a cap and buys/sells revert.
 - **If transactions consistently fail to land**, raise `PUMP_PRIORITY_MICROLAMPORTS`.
 
+## Discovery scanner workflow
+
+The discovery source has its own lifecycle: research → backtest → alert-only → auto-buy. Each gate must hold before the next phase.
+
+### 1. Research the target wallets
+
+Paste the wallet addresses into `research/target-wallets.txt`, then:
+
+```
+npm run profile-wallets -- --file research/target-wallets.txt
+```
+
+Expect a long run (it walks each wallet's history plus every bought token's pre-entry context — RPC-bound; output is rewritten incrementally so a crash loses minutes). Read the report's key verdicts:
+
+- **explainable fraction** — how many of their entries had ANY public pre-entry signal. Low (<30%) means they act on private signal; the scanner's edge then rests on the smart-wallet-cluster feature (detecting *them* buying), not on front-running them.
+- **same-slot co-buys + shared target funders** — one-operator evidence. If the "wallets" are one operator, treat the cluster as a single signal source.
+- **recurring deployers/funders** — if present, the scanner can be early without seeing the cluster at all.
+
+Outputs: `research/wallet-profile.json` (evidence), `research/discovery-profile.json` (scanner thresholds — review before trusting).
+
+### 2. Backtest against their actual entries
+
+```
+npm run backtest-discovery -- research/wallet-profile.json
+```
+
+Pick `DISCOVERY_ALERT_SCORE` off the threshold sweep (favor winner-recall and PnL-weighted recall). The "top misses" list shows their biggest winners the scanner would have missed and why — tune, re-run. Recall here is an upper bound (bundle/mayhem/dev-sell vetoes can't fire historically).
+
+### 3. Alert-only live run (no buys, no AI key needed)
+
+```
+make sim-discovery        # or: npm run simulate:discovery
+```
+
+Telegram alerts fire at `DISCOVERY_ALERT_SCORE` with mint, mcap, liquidity, age, holders, score and the fired rules. Every alert's post-alert peak lands in `discovery.db` — after a day or two, measure precision:
+
+```
+npm run backtest-discovery -- research/wallet-profile.json --db discovery.db
+```
+
+### 4. Auto-buy (only after 2 and 3 hold)
+
+Set `DISCOVERY_AUTOBUY=true` and start with paper (`SIMULATE=true`). Buys fire at `DISCOVERY_BUY_SCORE` through the standard trade path — `BUY_AMOUNT_SOL`, `MAX_SLIPPAGE_BPS`, priority fees, `STOP_LOSS`/trailing/`MAX_HOLD_MINUTES` exits, `MAX_OPEN_POSITIONS`, and the `MAX_CONSECUTIVE_BUY_FAILURES` breaker. Go `SIMULATE=false` only after paper PnL clears the `npm run review` gates.
+
+**Kill switches, fastest first:** flip `DISCOVERY_AUTOBUY=false` and restart (alerts keep flowing, buying stops); Ctrl-C / `systemctl stop` (with `CLOSE_ON_SHUTDOWN=true` the bag is flattened on the way out); the breaker trips itself on systematic buy failures and exits with code 2 so the systemd unit stays down.
+
 ## Common issues
 
 | Symptom | Fix |
