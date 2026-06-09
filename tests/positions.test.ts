@@ -6,12 +6,14 @@ import * as path from 'path';
 const mocks = vi.hoisted(() => ({
   mockFetch: vi.fn(),
   mockSellToken: vi.fn(),
+  mockGetTokenBalance: vi.fn(),
 }));
 
 vi.mock('node-fetch', () => ({ default: mocks.mockFetch }));
 
 vi.mock('../src/trader', () => ({
   sellToken: mocks.mockSellToken,
+  getTokenBalance: mocks.mockGetTokenBalance,
 }));
 
 import { resetConfigCache } from '../src/config';
@@ -74,6 +76,8 @@ beforeEach(() => {
   clearBondingCurveCache();
   mocks.mockFetch.mockReset();
   mocks.mockSellToken.mockReset();
+  mocks.mockGetTokenBalance.mockReset();
+  mocks.mockGetTokenBalance.mockResolvedValue(0);
 });
 
 afterEach(() => {
@@ -1008,6 +1012,26 @@ describe('per-position sell lock (double-sell guard)', () => {
     await executeAllInExit(p, loadConfig());
 
     // Fresh DB re-read inside the lock saw it closed and skipped the sell.
+    expect(mocks.mockSellToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('sell give-up (no infinite fee-burn loop)', () => {
+  it('closes the position after repeated failed sells instead of retrying forever', async () => {
+    const p = mkPosition({ entryPriceSol: 0.0001, amountTokens: 1_000_000 });
+    mocks.mockGetTokenBalance.mockResolvedValue(0); // tokens no longer in wallet
+    // 10 failed stop-loss sells = 10 doPartialSell attempts; the cap is 10.
+    for (let i = 0; i < 10; i++) {
+      mockSellFailure('pump tx failed: {"InstructionError":[3,{"Custom":1}]}');
+      await executeStopLoss(getPosition(p.id)!, loadConfig());
+    }
+    expect(getPosition(p.id)!.status).toBe('closed');
+    expect(mocks.mockGetTokenBalance).toHaveBeenCalled();
+
+    // A further tick must NOT submit another sell — the position is closed, so
+    // the loop that once burned 1200+ tx fees is over.
+    mocks.mockSellToken.mockClear();
+    await executeStopLoss(getPosition(p.id)!, loadConfig());
     expect(mocks.mockSellToken).not.toHaveBeenCalled();
   });
 });

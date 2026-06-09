@@ -23,7 +23,13 @@ const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const DEFAULT_INTERVAL_MS = 10_000;
 const MIN_FETCH_SPACING_MS = 1000;
 const DUST_SOL_THRESHOLD = 1e-8;
+// Failed sells before we alert (an early warning the bot can't exit on its own).
 const MAX_SELL_RETRIES = 3;
+// Failed sells before we GIVE UP and stop retrying. Retrying a reverting sell
+// every tick burns a tx fee on each revert; left unbounded it once looped 1200+
+// times on a position whose tokens had left the wallet and drained the SOL.
+// Past this we close the position in tracking so the monitor stops polling it.
+const MAX_SELL_RETRIES_GIVEUP = 10;
 // Per-position cap on the close-on-shutdown price refresh and sell. Protects
 // the sweep from hanging indefinitely when DNS or RPC stops responding mid-
 // outage (R10b had 50 positions stuck for hours behind unbounded waits). A
@@ -215,12 +221,9 @@ async function doPartialSell(
     logger.warn(
       `Sell failed for position ${position.id} (${position.token_mint}) attempt ${retries}: ${result.error ?? 'unknown'}`
     );
-    // After a run of failures the bot can't exit on its own (a dead route, a
-    // transient RPC/landing failure, or a venue we don't yet handle). Graduated
-    // pump tokens now sell via PumpSwap, so this is a backstop, not the common
-    // case. Ping the phone ONCE so the position can be closed by hand (bonkbot);
-    // don't book a loss or stop trying, since the condition can clear and a
-    // later tick may still land.
+    // Early warning: the bot can't exit on its own yet (a dead route, a
+    // transient RPC/landing failure, or a venue we don't handle). Ping the phone
+    // ONCE; the condition may clear and a later tick may still land.
     if (retries === MAX_SELL_RETRIES) {
       logger.error(
         `Position ${position.id} (${position.token_mint}) failed ${MAX_SELL_RETRIES} sells; manual exit may be needed`
@@ -228,6 +231,29 @@ async function doPartialSell(
       notify(
         formatTradeAlert(
           `⚠️ SELL STUCK *${mdSafe(position.token_symbol || position.token_mint.slice(0, 8))}* after ${MAX_SELL_RETRIES} tries: ${mdSafe(result.error ?? 'unknown')}`,
+          position.token_mint
+        ),
+        true
+      );
+    }
+    // Hard stop: stop retrying so we don't burn a tx fee per revert forever.
+    // If we no longer hold the token (it was sold out-of-band), close it
+    // cleanly; if we still hold it but can't sell, abandon it in tracking and
+    // ping for a manual exit. Either way the monitor stops polling it.
+    if (retries >= MAX_SELL_RETRIES_GIVEUP) {
+      const held = await getTokenBalance(position.token_mint, cfg);
+      const gone = held <= 0;
+      updatePosition(position.id, { status: 'closed', amountTokens: 0 });
+      sellFailureCount.delete(position.id);
+      peakPriceByPosition.delete(position.id);
+      logger.error(
+        `Position ${position.id} (${position.token_mint}) gave up after ${retries} failed sells — ` +
+          (gone ? 'tokens no longer in wallet, closing' : `still holding ${held} tokens, abandoning (sell manually)`)
+      );
+      notify(
+        formatTradeAlert(
+          `🛑 GAVE UP on *${mdSafe(position.token_symbol || position.token_mint.slice(0, 8))}* after ${retries} failed sells` +
+            (gone ? ' (tokens gone)' : ', you still hold it — exit manually'),
           position.token_mint
         ),
         true
