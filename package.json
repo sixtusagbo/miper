@@ -44,7 +44,8 @@
     "vet-wallet": "ts-node scripts/vet-wallet.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "triage-wallets": "ts-node scripts/triage-wallets.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
