@@ -199,7 +199,7 @@ async function main(): Promise<void> {
   const tradesByWallet = new Map<string, TimedTrade[]>();
   const buyTxsByWallet = new Map<string, Map<string, ParsedTransactionWithMeta>>();
   for (const wallet of wallets) {
-    log(`\n[1/${wallets.length === 1 ? 1 : 3}] trade history: ${wallet}`);
+    log(`\n[phase 1/3] trade history: ${wallet}`);
     try {
       const { trades, buyTxs } = await collectWalletTrades(connection, wallet, opts, (d, t) => {
         if (d % 100 === 0) log(`  parsed ${d}/${t} txs`);
@@ -226,7 +226,7 @@ async function main(): Promise<void> {
   const sameSlotGroups = coBuys.filter((g) => g.sameSlotWallets.length > 0);
   output.coBuys = coBuys;
   log(
-    `\n[2/3] co-buys: ${coBuys.length} tokens bought by >=2 targets; ` +
+    `\n[phase 2/3] co-buys: ${coBuys.length} tokens bought by >=2 targets; ` +
       `${sameSlotGroups.length} with same-slot entries`
   );
 
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
     );
   });
   const selected = ordered.slice(0, MAX_TOKENS);
-  log(`[3/3] snapshotting ${selected.length}/${ordered.length} tokens (co-buys first)`);
+  log(`[phase 3/3] snapshotting ${selected.length}/${ordered.length} tokens (co-buys first)`);
 
   const preOpts: WalkOptions = { ...opts, maxParse: PRE_ENTRY_PARSE };
   const creatorCache = new Map<string, CreatorContext>();
