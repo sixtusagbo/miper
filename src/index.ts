@@ -641,6 +641,7 @@ async function snipeCommand(options: {
     clearInterval(statusTimer);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (autoStopTimer) clearTimeout(autoStopTimer);
+    if (lowBalanceTimer) clearInterval(lowBalanceTimer);
     await listener?.stop();
     trendingListener?.stop();
     walletListener?.stop();
@@ -669,6 +670,27 @@ async function snipeCommand(options: {
       logger.info(`MAX_RUN_HOURS=${cfg.maxRunHours} reached`);
       void shutdown(`MAX_RUN_HOURS=${cfg.maxRunHours}`);
     }, ms);
+  }
+
+  // Auto-shutdown once the wallet can't fund a buy (balance < buyAmountSol) and
+  // nothing is open to manage (CLOSE_WHEN_BELOW_MIN_BALANCE). Winds a tapped-out
+  // run down instead of idling. Only checks when flat, so open positions still
+  // get managed to exit first.
+  let lowBalanceTimer: NodeJS.Timeout | null = null;
+  if (cfg.closeWhenBelowMinBalance) {
+    lowBalanceTimer = setInterval(() => {
+      void (async () => {
+        if (countOpenPositions() > 0) return;
+        const bal = await getWalletBalance(cfg).catch(() => null);
+        if (bal !== null && bal < cfg.buyAmountSol) {
+          logger.info(
+            `balance ${bal.toFixed(4)} SOL below buy minimum ${cfg.buyAmountSol} with no open positions`
+          );
+          void shutdown('balance below buy minimum, nothing to trade');
+        }
+      })();
+    }, 5 * 60 * 1000);
+    lowBalanceTimer.unref();
   }
 
   logger.info(

@@ -73,6 +73,10 @@ export interface Config {
   // by default to preserve current behavior; flip on for live trading and
   // bounded paper sessions where you want a clean PnL at session end.
   closeOnShutdown: boolean;
+  // When true, the bot gracefully shuts itself down once the wallet balance is
+  // below buyAmountSol (can't open a new position) AND no positions are open to
+  // manage. Winds a tapped-out run down instead of idling. Off by default.
+  closeWhenBelowMinBalance: boolean;
   // Maximum minutes a position may stay open without hitting TP/SL before
   // the monitor force-exits at last-known price. 0 disables (the historical
   // behavior — positions hold forever). Surfaced after R11b showed that
@@ -349,6 +353,7 @@ export function loadConfig(): Config {
     trailingTpDropPct: numberFromEnv('TRAILING_TP_DROP_PCT', 0),
     maxRunHours: numberFromEnv('MAX_RUN_HOURS', 0),
     closeOnShutdown: boolFromEnv('CLOSE_ON_SHUTDOWN', false),
+    closeWhenBelowMinBalance: boolFromEnv('CLOSE_WHEN_BELOW_MIN_BALANCE', false),
     maxHoldMinutes: numberFromEnv('MAX_HOLD_MINUTES', 0),
     bondingCurveCacheMs: numberFromEnv('BONDING_CURVE_CACHE_MS', 5000),
     logMaxBytes: numberFromEnv('LOG_MAX_BYTES', 100 * 1024 * 1024),

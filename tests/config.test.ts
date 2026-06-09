@@ -322,3 +322,12 @@ describe('leaderLabel', () => {
     expect(loadConfig().copytradeLabels).toEqual(['Joji', 'Nyhrox']);
   });
 });
+
+describe('closeWhenBelowMinBalance', () => {
+  it('parses CLOSE_WHEN_BELOW_MIN_BALANCE and defaults to false', () => {
+    setEnv({ CLOSE_WHEN_BELOW_MIN_BALANCE: 'true' });
+    expect(loadConfig().closeWhenBelowMinBalance).toBe(true);
+    setEnv({ CLOSE_WHEN_BELOW_MIN_BALANCE: 'false' });
+    expect(loadConfig().closeWhenBelowMinBalance).toBe(false);
+  });
+});
