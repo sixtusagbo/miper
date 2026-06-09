@@ -177,7 +177,7 @@ interface JupiterSwapResponse {
 
 let walletCache: Keypair | null = null;
 let connectionCache: Connection | null = null;
-const mintDecimalsCache = new Map<string, number>();
+const mintInfoCache = new Map<string, { supply: number; decimals: number }>();
 
 function getConnection(cfg: Config = loadConfig()): Connection {
   if (!connectionCache) {
@@ -228,8 +228,13 @@ export async function getTokenBalance(
   }
 }
 
-async function getMintDecimals(mint: string, cfg: Config): Promise<number> {
-  const cached = mintDecimalsCache.get(mint);
+// Cached {supply (UI units), decimals} for a mint. getMint already fetches both,
+// so keeping them together lets callers compute market cap without a second read.
+async function getMintInfo(
+  mint: string,
+  cfg: Config
+): Promise<{ supply: number; decimals: number }> {
+  const cached = mintInfoCache.get(mint);
   if (cached !== undefined) return cached;
   const connection = getConnection(cfg);
   const mintPk = new PublicKey(mint);
@@ -239,8 +244,13 @@ async function getMintDecimals(mint: string, cfg: Config): Promise<number> {
   // empty-message TokenInvalidAccountOwnerError.
   const tokenProgram = await detectTokenProgram(connection, mintPk);
   const info = await getMint(connection, mintPk, undefined, tokenProgram);
-  mintDecimalsCache.set(mint, info.decimals);
-  return info.decimals;
+  const result = { supply: Number(info.supply) / 10 ** info.decimals, decimals: info.decimals };
+  mintInfoCache.set(mint, result);
+  return result;
+}
+
+async function getMintDecimals(mint: string, cfg: Config): Promise<number> {
+  return (await getMintInfo(mint, cfg)).decimals;
 }
 
 async function getQuote(params: {
@@ -407,9 +417,11 @@ export async function buyToken(
       amount: String(lamports),
       slippageBps: cfg.maxSlippageBps,
     });
-    const decimals = await getMintDecimals(tokenMint, cfg);
+    const { supply, decimals } = await getMintInfo(tokenMint, cfg);
     const tokensOut = Number(quote.outAmount) / 10 ** decimals;
     const pricePerToken = tokensOut > 0 ? amountSol / tokensOut : 0;
+    const mc = await marketCapUsd(supply, pricePerToken);
+    const mcSuffix = mc !== undefined ? ` @ MC ${formatUsd(mc)}` : '';
 
     if (cfg.simulate) {
       logger.sim(`BUY ${tokenMint} ${amountSol} SOL -> ${tokensOut} tokens @ ${pricePerToken.toExponential(4)} SOL`);
@@ -421,11 +433,12 @@ export async function buyToken(
         pricePerToken,
         simulated: true,
         venue: 'jupiter',
+        marketCapUsd: mc,
       };
     }
 
     const signature = await executeSwap(quote, cfg);
-    logger.position('BUY', tokenMint, `${amountSol} SOL -> ${tokensOut.toFixed(4)} tokens (${signature.slice(0, 8)}...)`);
+    logger.position('BUY', tokenMint, `${amountSol} SOL -> ${tokensOut.toFixed(4)} tokens${mcSuffix} (${signature.slice(0, 8)}...)`);
     return {
       success: true,
       txSignature: signature,
@@ -434,6 +447,7 @@ export async function buyToken(
       pricePerToken,
       simulated: false,
       venue: 'jupiter',
+      marketCapUsd: mc,
     };
   } catch (err) {
     const message = (err as Error).message;

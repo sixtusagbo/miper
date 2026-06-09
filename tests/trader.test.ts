@@ -101,6 +101,26 @@ describe('buyToken (simulate)', () => {
     expect(result.txSignature).toMatch(/^SIM-/);
   });
 
+  it('reports market cap on a jupiter buy (supply + SOL price available)', async () => {
+    // Distinct mint so the module-level mint cache (populated with a
+    // no-supply mock by the test above) doesn't mask the supply here.
+    const MC_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+    // 1e9-token supply (raw 1e15 @ 6 decimals); 0.05 SOL -> 1e6 tokens.
+    mocks.mockGetMint.mockResolvedValue({ supply: 1_000_000_000_000_000n, decimals: 6 });
+    mockJupiter(jupiterQuote({ outAmount: '1000000000000' })); // fetch #1: quote
+    // fetch #2: getSolUsd (CoinGecko) inside marketCapUsd
+    mocks.mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ solana: { usd: 150 } }),
+      text: async () => '',
+    });
+    const result = await buyToken(MC_MINT, 0.05);
+    expect(result.success).toBe(true);
+    // MC = supply(1e9) * price(0.05/1e6) * solUsd(150) = ~$7,500
+    expect(result.marketCapUsd).toBeCloseTo(7500, 0);
+  });
+
   it('propagates Jupiter errors as a failed result', async () => {
     mocks.mockFetch.mockRejectedValueOnce(new Error('jupiter down'));
     const result = await buyToken(VALID_MINT, 0.05);
