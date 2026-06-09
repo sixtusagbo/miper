@@ -40,6 +40,7 @@ import {
   buyToken,
   computePriorityMicrolamports,
   confirmWithRebroadcast,
+  isNonSystematicBuyError,
   sellToken,
 } from '../src/trader';
 
@@ -334,5 +335,20 @@ describe('confirmWithRebroadcast', () => {
     await expect(confirmWithRebroadcast(conn, raw, bh, 5)).rejects.toThrow(
       /pump tx failed/
     );
+  });
+});
+
+describe('isNonSystematicBuyError (circuit-breaker classification)', () => {
+  it('treats fresh-launch (Custom:1) and other per-token reverts as non-systematic', () => {
+    expect(isNonSystematicBuyError('pump tx failed: {"InstructionError":[3,{"Custom":1}]}')).toBe(true);
+    expect(isNonSystematicBuyError('pump tx failed: {"InstructionError":[2,{"Custom":6001}]}')).toBe(true);
+    expect(isNonSystematicBuyError('{"InstructionError":[3,{"Custom":6010}]}')).toBe(true);
+    expect(isNonSystematicBuyError('no route found for mint')).toBe(true);
+    expect(isNonSystematicBuyError('Signature x has expired: block height exceeded.')).toBe(true);
+  });
+
+  it('keeps slippage (6002) and a drained wallet HARD so the breaker still catches them', () => {
+    expect(isNonSystematicBuyError('pump tx failed: {"InstructionError":[3,{"Custom":6002}]}')).toBe(false);
+    expect(isNonSystematicBuyError('insufficient balance: 0.01 SOL, need 0.17')).toBe(false);
   });
 });

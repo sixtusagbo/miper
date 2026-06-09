@@ -499,12 +499,15 @@ function pumpBuySim(tokenMint: string, amountSol: number): SwapResult {
 // must not count toward the do-not-restart circuit breaker (which exists to
 // halt on dead-RPC / drained-wallet / bad-encoding bleed). Covers: no quote /
 // route (no fee), block-height-exceeded (tx expired, congestion), Custom:6001
-// (AlreadyInitialized — a rapid double-buy init race), and Custom:6010
+// (AlreadyInitialized — a rapid double-buy init race), Custom:6010
 // (AccountTypeNotSupported — an incompatible token type, e.g. a Token-2022 with
-// extensions pump's buy can't handle). Slippage (6002) stays HARD: a run of it
-// is the canary for a quoting regression we DO want the breaker to catch.
-function isNonSystematicBuyError(message: string): boolean {
-  return /quote|route|could not find|block height exceeded|"Custom":\s*(6001|6010)\b/i.test(
+// extensions pump's buy can't handle), and Custom:1 (a per-token on-chain revert
+// seen when copying a leader's rapid fresh-launch snipes; a genuinely drained
+// wallet is caught earlier by the balance guard's "insufficient balance", which
+// stays HARD). Slippage (6002) stays HARD: a run of it is the canary for a
+// quoting regression we DO want the breaker to catch.
+export function isNonSystematicBuyError(message: string): boolean {
+  return /quote|route|could not find|block height exceeded|"Custom":\s*(1|6001|6010)\b/i.test(
     message
   );
 }
