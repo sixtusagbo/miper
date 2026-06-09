@@ -295,3 +295,62 @@ describe('db: review helpers', () => {
     expect(w.last).toBeNull();
   });
 });
+
+describe('db: discovery alerts', () => {
+  const alertInput = {
+    tokenMint: 'MINT_D',
+    symbol: 'DSC',
+    score: 80,
+    reasons: ['+30 1 smart wallet(s) bought', '+10 mcap $5000 in the entry band'],
+    mcapUsd: 5000,
+    liquiditySol: 14,
+    ageSec: 90,
+    holderCount: 12,
+    smartWalletBuys: 1,
+    creator: 'DEV_D',
+    funder: 'HUB_D',
+    alertPriceSol: 2.8e-8,
+  };
+
+  it('records an alert and reads it back with joined reasons', async () => {
+    const { recordDiscoveryAlert, getDiscoveryAlerts } = await import('../src/db');
+    const id = recordDiscoveryAlert(alertInput);
+    expect(id).toBeGreaterThan(0);
+    const rows = getDiscoveryAlerts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].token_mint).toBe('MINT_D');
+    expect(rows[0].score).toBe(80);
+    expect(rows[0].reasons).toContain('smart wallet');
+    expect(rows[0].peak_mult).toBeNull();
+  });
+
+  it('writes the post-alert outcome', async () => {
+    const { recordDiscoveryAlert, setDiscoveryAlertOutcome, getDiscoveryAlerts } = await import(
+      '../src/db'
+    );
+    const id = recordDiscoveryAlert(alertInput);
+    setDiscoveryAlertOutcome(id, 2.4, 'win');
+    const row = getDiscoveryAlerts()[0];
+    expect(row.peak_mult).toBeCloseTo(2.4);
+    expect(row.outcome).toBe('win');
+  });
+});
+
+describe('db: wallet intel', () => {
+  it('upserts counters across sightings', async () => {
+    const { bumpWalletIntel, getWalletIntel } = await import('../src/db');
+    bumpWalletIntel('DEV_X', 'deployer', { launch: true });
+    bumpWalletIntel('DEV_X', 'deployer', { launch: true, alerted: true, win: true });
+    const row = getWalletIntel('DEV_X');
+    expect(row).not.toBeNull();
+    expect(row!.launches).toBe(2);
+    expect(row!.alerted).toBe(1);
+    expect(row!.wins).toBe(1);
+    expect(row!.role).toBe('deployer');
+  });
+
+  it('returns null for an unknown address', async () => {
+    const { getWalletIntel } = await import('../src/db');
+    expect(getWalletIntel('NOBODY')).toBeNull();
+  });
+});

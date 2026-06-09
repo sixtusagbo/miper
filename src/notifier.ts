@@ -85,3 +85,30 @@ export function formatTradeAlert(summary: string, mint: string, signature?: stri
 export function mdSafe(text: string): string {
   return text.replace(/[`*_[\]]/g, '');
 }
+
+export interface DiscoveryAlertBody {
+  tokenMint: string;
+  symbol: string | null;
+  score: number;
+  reasons: string[];
+  mcapUsd: number | null;
+  liquiditySol: number | null;
+  ageSec: number;
+  holderCount: number;
+  smartWalletBuys: number;
+}
+
+// Telegram body for a discovery alert: headline metrics the user asked for
+// (mint, mcap, liquidity, age, holders, score) plus the fired scoring rules
+// as the "why". holderCount is a sampled lower bound, hence the >=.
+export function formatDiscoveryAlert(a: DiscoveryAlertBody): string {
+  const mcap = a.mcapUsd !== null ? `$${(a.mcapUsd / 1000).toFixed(1)}k` : '?';
+  const liq = a.liquiditySol !== null ? `${a.liquiditySol.toFixed(1)} SOL` : '?';
+  const age = a.ageSec < 120 ? `${Math.round(a.ageSec)}s` : `${(a.ageSec / 60).toFixed(1)}min`;
+  const smart = a.smartWalletBuys > 0 ? ` · 🧠 ${a.smartWalletBuys} smart` : '';
+  const summary =
+    `🔎 DISCOVERY *${mdSafe(a.symbol || a.tokenMint.slice(0, 8))}* — score ${a.score}/100\n` +
+    `MC ${mcap} · liq ${liq} · age ${age} · holders ≥${a.holderCount}${smart}\n` +
+    mdSafe(a.reasons.join('; '));
+  return formatTradeAlert(summary, a.tokenMint);
+}

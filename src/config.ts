@@ -16,7 +16,7 @@ export const PROGRAM_IDS = {
 export const SOL_MINT_ADDRESS = PROGRAM_IDS.SOL_MINT.toBase58();
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'trade';
-export type Source = 'raydium' | 'pump' | 'trending' | 'copytrade';
+export type Source = 'raydium' | 'pump' | 'trending' | 'copytrade' | 'discovery';
 export type AiProvider = 'anthropic' | 'openai';
 export type ExitMode = 'tiered' | 'all-in';
 
@@ -165,6 +165,35 @@ export interface Config {
   // and ignored, so a dust/test-sell can't dump our whole bag. 1 = only a full
   // leader exit triggers ours.
   copytradeSellExitFraction: number;
+  // Discovery scanner (discovery source): watch every pump.fun launch for a
+  // few minutes, extract the features the wallet research measured (deployer
+  // history, funding wallet, holder growth, tx flow, smart-wallet cluster
+  // buys, mcap/liquidity), score 0-100 deterministically against the research
+  // profile, alert on Telegram at discoveryAlertScore, and (only when
+  // discoveryAutobuy) buy at discoveryBuyScore through the normal trade path.
+  discoveryWindowMin: number;
+  discoverySampleSec: number;
+  discoveryWatchCap: number;
+  // Tx parses per token per sample — the buyer-diversity / smart-wallet
+  // sampling budget. The sig-count velocity is exact regardless.
+  discoveryParsePerSample: number;
+  discoveryAlertScore: number;
+  discoveryBuyScore: number;
+  // Auto-buy phase. Off = alert-only (the v1 operating mode and the kill
+  // switch for buying: flipping this off stops buys without stopping alerts).
+  discoveryAutobuy: boolean;
+  // Veto a launch when >= this many distinct wallets bought in its create
+  // slot (reuses the bundle check). 0 disables.
+  discoveryBundleThreshold: number;
+  // Skip launches whose creator co-deposited less than this at add time —
+  // an intake throttle so the watch cap goes to profile-shaped launches.
+  // 0 disables.
+  discoveryMinDevBuySol: number;
+  // Path to the research-derived profile JSON (thresholds + wallet lists).
+  // Missing/invalid file falls back to built-in defaults.
+  discoveryProfilePath: string;
+  // Extra smart wallets to track, merged with the profile's list.
+  discoverySmartWallets: string[];
   // Optional Telegram alerting. When both are set, the bot pushes startup,
   // circuit-breaker, and no-activity alerts to the chat. Empty = no-op.
   telegramBotToken: string;
@@ -235,12 +264,13 @@ function parseSource(value: string | undefined): Source {
     normalized === 'raydium' ||
     normalized === 'pump' ||
     normalized === 'trending' ||
-    normalized === 'copytrade'
+    normalized === 'copytrade' ||
+    normalized === 'discovery'
   ) {
     return normalized;
   }
   throw new Error(
-    `Invalid SOURCE: ${value} (expected 'raydium', 'pump', 'trending' or 'copytrade')`
+    `Invalid SOURCE: ${value} (expected 'raydium', 'pump', 'trending', 'copytrade' or 'discovery')`
   );
 }
 
@@ -289,12 +319,13 @@ export function loadConfig(): Config {
   if (!simulate && !walletKey) {
     throw new Error('WALLET_PRIVATE_KEY is required when SIMULATE=false');
   }
-  // The copytrade source never scores with the LLM (the leader's action is the
-  // only signal), so it must not require an AI key. Requiring one sent the live
-  // unit into a silent restart loop when the key was reasonably omitted. Only
-  // the AI-scoring sources (raydium, pump, trending) need the active provider's
-  // key, and only the active provider's, not both.
-  const usesAi = source !== 'copytrade';
+  // copytrade (the leader's action is the signal) and discovery (deterministic
+  // feature scoring against the research profile) never call the LLM, so they
+  // must not require an AI key. Requiring one sent the live unit into a silent
+  // restart loop when the key was reasonably omitted. Only the AI-scoring
+  // sources (raydium, pump, trending) need the active provider's key, and only
+  // the active provider's, not both.
+  const usesAi = source !== 'copytrade' && source !== 'discovery';
   if (usesAi && aiProvider === 'anthropic' && !anthropicKey) {
     throw new Error('ANTHROPIC_API_KEY is required when AI_PROVIDER=anthropic');
   }
@@ -337,6 +368,7 @@ export function loadConfig(): Config {
         pump: './pump.db',
         trending: './trending.db',
         copytrade: './copytrade.db',
+        discovery: './discovery.db',
       }[source]),
     logFile:
       process.env.LOG_FILE?.trim() ||
@@ -345,6 +377,7 @@ export function loadConfig(): Config {
         pump: './pump.log',
         trending: './trending.log',
         copytrade: './copytrade.log',
+        discovery: './discovery.log',
       }[source]),
     source,
     exitMode: parseExitMode(process.env.EXIT_MODE),
@@ -382,6 +415,21 @@ export function loadConfig(): Config {
     copytradePollSec: numberFromEnv('COPYTRADE_POLL_SEC', 12),
     copytradeMinLeaderSol: numberFromEnv('COPYTRADE_MIN_LEADER_SOL', 0.5),
     copytradeSellExitFraction: numberFromEnv('COPYTRADE_SELL_EXIT_FRACTION', 0.34),
+    discoveryWindowMin: numberFromEnv('DISCOVERY_WINDOW_MIN', 5),
+    // Keep sample cadence and per-sample parses modest: a full watchlist does
+    // watchCap * (2 + parsePerSample) RPC calls per sample interval, and the
+    // default budget must sit well under a free Helius tier's 10 req/s.
+    discoverySampleSec: numberFromEnv('DISCOVERY_SAMPLE_SEC', 20),
+    discoveryWatchCap: numberFromEnv('DISCOVERY_WATCH_CAP', 15),
+    discoveryParsePerSample: numberFromEnv('DISCOVERY_PARSE_PER_SAMPLE', 3),
+    discoveryAlertScore: numberFromEnv('DISCOVERY_ALERT_SCORE', 55),
+    discoveryBuyScore: numberFromEnv('DISCOVERY_BUY_SCORE', 75),
+    discoveryAutobuy: boolFromEnv('DISCOVERY_AUTOBUY', false),
+    discoveryBundleThreshold: numberFromEnv('DISCOVERY_BUNDLE_THRESHOLD', 3),
+    discoveryMinDevBuySol: numberFromEnv('DISCOVERY_MIN_DEV_BUY_SOL', 0),
+    discoveryProfilePath:
+      process.env.DISCOVERY_PROFILE?.trim() || './research/discovery-profile.json',
+    discoverySmartWallets: listFromEnv('DISCOVERY_SMART_WALLETS'),
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? '',
     telegramChatId: process.env.TELEGRAM_CHAT_ID?.trim() ?? '',
     alertHeartbeatMinutes: numberFromEnv('ALERT_HEARTBEAT_MINUTES', 60),
@@ -525,6 +573,38 @@ function validateConfig(c: Config): void {
   if (c.copytradeSellExitFraction <= 0 || c.copytradeSellExitFraction > 1) {
     throw new Error(
       `COPYTRADE_SELL_EXIT_FRACTION must be in (0, 1], got ${c.copytradeSellExitFraction}`
+    );
+  }
+  if (c.discoveryWindowMin <= 0) {
+    throw new Error(`DISCOVERY_WINDOW_MIN must be > 0, got ${c.discoveryWindowMin}`);
+  }
+  if (c.discoverySampleSec < 5) {
+    throw new Error(
+      `DISCOVERY_SAMPLE_SEC must be >= 5 (a tighter cadence multiplied across the watchlist blows the RPC budget), got ${c.discoverySampleSec}`
+    );
+  }
+  if (c.discoveryWatchCap < 1) {
+    throw new Error(`DISCOVERY_WATCH_CAP must be >= 1, got ${c.discoveryWatchCap}`);
+  }
+  if (c.discoveryParsePerSample < 0) {
+    throw new Error(
+      `DISCOVERY_PARSE_PER_SAMPLE must be >= 0 (0 disables buyer sampling), got ${c.discoveryParsePerSample}`
+    );
+  }
+  if (c.discoveryAlertScore < 0 || c.discoveryAlertScore > 100) {
+    throw new Error(`DISCOVERY_ALERT_SCORE must be 0-100, got ${c.discoveryAlertScore}`);
+  }
+  if (c.discoveryBuyScore < 0 || c.discoveryBuyScore > 100) {
+    throw new Error(`DISCOVERY_BUY_SCORE must be 0-100, got ${c.discoveryBuyScore}`);
+  }
+  if (c.discoveryBundleThreshold < 0) {
+    throw new Error(
+      `DISCOVERY_BUNDLE_THRESHOLD must be >= 0 (0 disables the bundle check), got ${c.discoveryBundleThreshold}`
+    );
+  }
+  if (c.discoveryMinDevBuySol < 0) {
+    throw new Error(
+      `DISCOVERY_MIN_DEV_BUY_SOL must be >= 0 (0 disables the intake filter), got ${c.discoveryMinDevBuySol}`
     );
   }
 }

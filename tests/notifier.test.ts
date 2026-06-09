@@ -50,3 +50,50 @@ describe('Notifier', () => {
     await expect(n.alert('x')).resolves.toBeUndefined();
   });
 });
+
+describe('formatDiscoveryAlert', () => {
+  it('packs mint, mcap, liquidity, age, holders, score and reasons into one body', async () => {
+    const { formatDiscoveryAlert } = await import('../src/notifier');
+    const body = formatDiscoveryAlert({
+      tokenMint: 'MintAddr111',
+      symbol: 'DOG*',
+      score: 78,
+      reasons: ['+30 1 smart wallet(s) bought', '+10 mcap $5200 in the entry band'],
+      mcapUsd: 5200,
+      liquiditySol: 14.3,
+      ageSec: 94,
+      holderCount: 12,
+      smartWalletBuys: 2,
+    });
+    expect(body).toContain('score 78/100');
+    expect(body).toContain('*DOG*'); // bold-wrapped, symbol's own * stripped
+    expect(body).not.toContain('DOG**');
+    expect(body).toContain('MC $5.2k');
+    expect(body).toContain('liq 14.3 SOL');
+    expect(body).toContain('age 94s');
+    expect(body).toContain('holders ≥12');
+    expect(body).toContain('🧠 2 smart');
+    expect(body).toContain('smart wallet(s) bought');
+    expect(body).toContain('`MintAddr111`'); // tap-to-copy mint
+    expect(body).toContain('dexscreener.com/solana/MintAddr111');
+  });
+
+  it('renders unknowns as ? and minutes past 120s', async () => {
+    const { formatDiscoveryAlert } = await import('../src/notifier');
+    const body = formatDiscoveryAlert({
+      tokenMint: 'M',
+      symbol: null,
+      score: 60,
+      reasons: [],
+      mcapUsd: null,
+      liquiditySol: null,
+      ageSec: 300,
+      holderCount: 0,
+      smartWalletBuys: 0,
+    });
+    expect(body).toContain('MC ?');
+    expect(body).toContain('liq ?');
+    expect(body).toContain('age 5.0min');
+    expect(body).not.toContain('🧠');
+  });
+});

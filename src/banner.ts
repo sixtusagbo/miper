@@ -34,16 +34,22 @@ export function bannerLines(cfg: Config, now: Date = new Date()): string[] {
     );
   }
 
-  if (cfg.source === 'pump' || cfg.source === 'copytrade') {
-    // Pump uses momentum entry and copytrade mirrors a wallet — neither uses
-    // AI scoring, so the AI knobs don't apply.
+  if (cfg.source === 'pump' || cfg.source === 'copytrade' || cfg.source === 'discovery') {
+    // Pump uses momentum entry, copytrade mirrors a wallet, and discovery
+    // scores deterministically — none of them use AI scoring, so the AI
+    // knobs don't apply.
     lines.push(`buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open`);
   } else {
     lines.push(
       `buy ${cfg.buyAmountSol} SOL | max ${cfg.maxOpenPositions} open | min AI score ${cfg.minAiScore} (${cfg.aiModel})`
     );
   }
-  if (cfg.source === 'copytrade') {
+  if (cfg.source === 'discovery') {
+    lines.push(
+      `discovery: profile ${cfg.discoveryProfilePath} | alert>=${cfg.discoveryAlertScore} buy>=${cfg.discoveryBuyScore} | ` +
+        `autobuy ${cfg.discoveryAutobuy ? 'ON' : 'off (alert-only)'} | window ${cfg.discoveryWindowMin}min cap ${cfg.discoveryWatchCap}`
+    );
+  } else if (cfg.source === 'copytrade') {
     lines.push(
       `filters: following ${cfg.copytradeWallets.length} wallet(s) | ` +
         `min leader buy ${cfg.copytradeMinLeaderSol} SOL | slippage ${cfg.maxSlippageBps}bps`

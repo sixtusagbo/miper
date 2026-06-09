@@ -155,3 +155,21 @@ describe('bannerLines', () => {
     expect(dbLine).not.toContain('log file');
   });
 });
+
+describe('discovery banner', () => {
+  it('shows the profile, thresholds and autobuy state instead of AI knobs', async () => {
+    const { bannerLines } = await import('../src/banner');
+    const { loadConfig, resetConfigCache } = await import('../src/config');
+    process.env.SOURCE = 'discovery';
+    process.env.SIMULATE = 'true';
+    resetConfigCache();
+    const lines = bannerLines(loadConfig());
+    const all = lines.join('\n');
+    expect(all).toContain('discovery: profile ./research/discovery-profile.json');
+    expect(all).toContain('alert>=55 buy>=75');
+    expect(all).toContain('autobuy off (alert-only)');
+    expect(all).not.toContain('min AI score');
+    delete process.env.SOURCE;
+    resetConfigCache();
+  });
+});

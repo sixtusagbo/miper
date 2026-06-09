@@ -40,7 +40,15 @@ import { checkLaunchBundle } from './bundleCheck';
 import { TrendingListener, TrendingCandidate } from './trendingListener';
 import { scoreTrendingCandidate } from './trendingAnalyzer';
 import { WalletListener, LeaderTrade } from './walletListener';
-import { initNotifier, notify, formatTradeAlert, mdSafe } from './notifier';
+import { DiscoveryScanner, DiscoveryAlert } from './discovery';
+import { loadDiscoveryProfile } from './discoveryScore';
+import {
+  initNotifier,
+  notify,
+  formatTradeAlert,
+  formatDiscoveryAlert,
+  mdSafe,
+} from './notifier';
 
 // Cap concurrent analyses. Each pump analysis makes ~3 RPC calls (getMint +
 // metadata + creator history) plus the AI call, so 6 concurrent ~= 6 req/s
@@ -74,10 +82,11 @@ function applyCliFlags(options: { simulate?: boolean; source?: string }): void {
       normalized !== 'raydium' &&
       normalized !== 'pump' &&
       normalized !== 'trending' &&
-      normalized !== 'copytrade'
+      normalized !== 'copytrade' &&
+      normalized !== 'discovery'
     ) {
       throw new Error(
-        `--source must be 'raydium', 'pump', 'trending' or 'copytrade', got '${options.source}'`
+        `--source must be 'raydium', 'pump', 'trending', 'copytrade' or 'discovery', got '${options.source}'`
       );
     }
     process.env.SOURCE = normalized;
@@ -123,10 +132,11 @@ async function snipeCommand(options: {
   );
   // 'trending' and 'copytrade' discover tokens off-chain (GeckoTerminal poll /
   // leader-wallet poll), not from on-chain pool logs — no LogListener.
+  // 'discovery' watches the same pump.fun create stream as 'pump'.
   const listener: LogListener | null =
     cfg.source === 'trending' || cfg.source === 'copytrade'
       ? null
-      : cfg.source === 'pump'
+      : cfg.source === 'pump' || cfg.source === 'discovery'
         ? new PumpListener(connection)
         : new PoolListener(connection);
   const trendingListener: TrendingListener | null =
@@ -153,6 +163,29 @@ async function snipeCommand(options: {
           cfg.copytradeLabels
         )
       : null;
+  // Discovery scanner: deterministic feature scoring against the research
+  // profile (research/discovery-profile.json). Smart wallets = the profile's
+  // researched cluster plus any extras from DISCOVERY_SMART_WALLETS.
+  let discovery: DiscoveryScanner | null = null;
+  if (cfg.source === 'discovery') {
+    const profile = loadDiscoveryProfile(cfg.discoveryProfilePath);
+    const smartWallets = new Set([...profile.smartWallets, ...cfg.discoverySmartWallets]);
+    discovery = new DiscoveryScanner(
+      connection,
+      {
+        windowMs: cfg.discoveryWindowMin * 60_000,
+        sampleMs: cfg.discoverySampleSec * 1_000,
+        watchCap: cfg.discoveryWatchCap,
+        parsePerSample: cfg.discoveryParsePerSample,
+        alertScore: cfg.discoveryAlertScore,
+        buyScore: cfg.discoveryBuyScore,
+        bundleThreshold: cfg.discoveryBundleThreshold,
+        minDevBuySol: cfg.discoveryMinDevBuySol,
+      },
+      profile,
+      smartWallets
+    );
+  }
   // The momentum pre-screen — bundle veto + safety checks. Run during the
   // watch window (kicked off when watching begins) so the entry path stays
   // fast. Returns false (and logs/records the rejection) for a token to skip.
@@ -315,6 +348,12 @@ async function snipeCommand(options: {
   };
 
   listener?.on('newPool', async (pool) => {
+    if (discovery) {
+      // Discovery: hand the launch to the scanner — it samples, scores, and
+      // emits 'alert' / 'candidate' on its own schedule.
+      if (!isTokenKnown(pool.tokenMint)) discovery.add(pool);
+      return;
+    }
     if (momentum) {
       // Pump: hand the launch to the momentum watcher — it samples the
       // curve and emits 'entry' only once the token shows real momentum.
@@ -572,9 +611,61 @@ async function snipeCommand(options: {
     });
   }
 
+  if (discovery) {
+    // Every alert goes to Telegram; a 'candidate' (score >= buy threshold)
+    // becomes a buy only when DISCOVERY_AUTOBUY is on. Flipping autobuy off
+    // is the buying kill switch — the scanner keeps alerting either way.
+    discovery.on('alert', (a: DiscoveryAlert) => {
+      notify(
+        formatDiscoveryAlert({
+          tokenMint: a.pool.tokenMint,
+          symbol: a.symbol,
+          score: a.score,
+          reasons: a.reasons,
+          mcapUsd: a.mcapUsd,
+          liquiditySol: a.liquiditySol,
+          ageSec: a.ageSec,
+          holderCount: a.holderCount,
+          smartWalletBuys: a.smartWalletBuys,
+        }),
+        true
+      );
+    });
+    discovery.on('candidate', (pool: NewPool, alert: DiscoveryAlert) => {
+      if (!cfg.discoveryAutobuy) {
+        logger.info(
+          `discovery: ${pool.tokenMint} scored ${alert.score} (>= buy ${cfg.discoveryBuyScore}) — DISCOVERY_AUTOBUY off, alert only`
+        );
+        return;
+      }
+      void (async () => {
+        if (countOpenPositions() + buysInFlight >= cfg.maxOpenPositions) {
+          logger.debug(`max open positions reached, skipping ${pool.tokenMint}`);
+          return;
+        }
+        if (isTokenKnown(pool.tokenMint) || inflightMints.has(pool.tokenMint)) return;
+        if (hasStoppedPosition(pool.tokenMint)) return;
+        inflightMints.add(pool.tokenMint);
+        buysInFlight++;
+        try {
+          logger.info(
+            `BUYING ${pool.tokenMint} — discovery score ${alert.score} (${alert.reasons.join('; ')})`
+          );
+          await executeBuy(pool, { aiScore: alert.score, symbol: alert.symbol });
+        } catch (err) {
+          logger.error(`discovery buy handler failed: ${(err as Error).message}`);
+        } finally {
+          buysInFlight--;
+          inflightMints.delete(pool.tokenMint);
+        }
+      })();
+    });
+  }
+
   await listener?.start();
   trendingListener?.start();
   walletListener?.start();
+  discovery?.start();
   if (momentum) {
     momentum.start();
     logger.info(
@@ -645,6 +736,7 @@ async function snipeCommand(options: {
     await listener?.stop();
     trendingListener?.stop();
     walletListener?.stop();
+    discovery?.stop();
     if (momentum) momentum.stop();
     stopMonitoring();
     if (cfg.closeOnShutdown) {
@@ -913,7 +1005,10 @@ program
   .command('snipe')
   .description('Listen for new Raydium or pump.fun launches and auto-buy/auto-manage')
   .option('--simulate', 'force simulation mode')
-  .option('--source <source>', "token source: 'raydium' or 'pump' (falls back to SOURCE env, then 'raydium')")
+  .option(
+    '--source <source>',
+    "token source: 'raydium', 'pump', 'trending', 'copytrade' or 'discovery' (falls back to SOURCE env, then 'raydium')"
+  )
   .action(snipeCommand);
 
 program

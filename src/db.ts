@@ -116,6 +116,36 @@ function initSchema(conn: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_rejected_mint ON rejected_tokens(token_mint);
+
+    CREATE TABLE IF NOT EXISTS discovery_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_mint TEXT NOT NULL,
+      symbol TEXT,
+      score REAL NOT NULL,
+      reasons TEXT NOT NULL,
+      mcap_usd REAL,
+      liquidity_sol REAL,
+      age_sec REAL,
+      holder_count INTEGER,
+      smart_wallet_buys INTEGER NOT NULL DEFAULT 0,
+      creator TEXT,
+      funder TEXT,
+      alert_price_sol REAL,
+      peak_mult REAL,
+      outcome TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_discovery_alerts_mint ON discovery_alerts(token_mint);
+
+    CREATE TABLE IF NOT EXISTS wallet_intel (
+      address TEXT PRIMARY KEY,
+      role TEXT NOT NULL CHECK (role IN ('deployer','funder')),
+      launches INTEGER NOT NULL DEFAULT 0,
+      alerted INTEGER NOT NULL DEFAULT 0,
+      wins INTEGER NOT NULL DEFAULT 0,
+      last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Migrations for DBs created before a column existed. CREATE TABLE IF NOT
@@ -415,6 +445,119 @@ export function getActivityWindow(): { first: string | null; last: string | null
   const last =
     [pos.last, rej.last].filter((s): s is string => !!s).sort().slice(-1)[0] ?? null;
   return { first, last };
+}
+
+// ---------------------------------------------------------------------------
+// Discovery scanner: alert history + compounding deployer/funder reputation
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryAlertRow {
+  id: number;
+  token_mint: string;
+  symbol: string | null;
+  score: number;
+  reasons: string;
+  mcap_usd: number | null;
+  liquidity_sol: number | null;
+  age_sec: number | null;
+  holder_count: number | null;
+  smart_wallet_buys: number;
+  creator: string | null;
+  funder: string | null;
+  alert_price_sol: number | null;
+  peak_mult: number | null;
+  outcome: string | null;
+  created_at: string;
+}
+
+export interface RecordDiscoveryAlertInput {
+  tokenMint: string;
+  symbol: string | null;
+  score: number;
+  reasons: string[];
+  mcapUsd: number | null;
+  liquiditySol: number | null;
+  ageSec: number | null;
+  holderCount: number | null;
+  smartWalletBuys: number;
+  creator: string | null;
+  funder: string | null;
+  alertPriceSol: number | null;
+}
+
+export function recordDiscoveryAlert(input: RecordDiscoveryAlertInput): number {
+  const result = getDb()
+    .prepare(
+      `INSERT INTO discovery_alerts
+       (token_mint, symbol, score, reasons, mcap_usd, liquidity_sol, age_sec,
+        holder_count, smart_wallet_buys, creator, funder, alert_price_sol)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      input.tokenMint,
+      input.symbol,
+      input.score,
+      input.reasons.join('; '),
+      input.mcapUsd,
+      input.liquiditySol,
+      input.ageSec,
+      input.holderCount,
+      input.smartWalletBuys,
+      input.creator,
+      input.funder,
+      input.alertPriceSol
+    );
+  return Number(result.lastInsertRowid);
+}
+
+// Outcome written when the post-alert watch ends: the peak multiple the
+// token reached vs the alert price — the scanner's live precision record.
+export function setDiscoveryAlertOutcome(id: number, peakMult: number, outcome: string): void {
+  getDb()
+    .prepare('UPDATE discovery_alerts SET peak_mult = ?, outcome = ? WHERE id = ?')
+    .run(peakMult, outcome, id);
+}
+
+export function getDiscoveryAlerts(): DiscoveryAlertRow[] {
+  return getDb()
+    .prepare('SELECT * FROM discovery_alerts ORDER BY id')
+    .all() as DiscoveryAlertRow[];
+}
+
+export interface WalletIntelRow {
+  address: string;
+  role: 'deployer' | 'funder';
+  launches: number;
+  alerted: number;
+  wins: number;
+  last_seen: string;
+}
+
+// Upsert a deployer/funder sighting. Counters only ever increment; the
+// reputation rule that turns counts into good/bad lives with the scanner.
+export function bumpWalletIntel(
+  address: string,
+  role: 'deployer' | 'funder',
+  bump: { launch?: boolean; alerted?: boolean; win?: boolean }
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO wallet_intel (address, role, launches, alerted, wins)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(address) DO UPDATE SET
+         launches = launches + excluded.launches,
+         alerted = alerted + excluded.alerted,
+         wins = wins + excluded.wins,
+         last_seen = datetime('now')`
+    )
+    .run(address, role, bump.launch ? 1 : 0, bump.alerted ? 1 : 0, bump.win ? 1 : 0);
+}
+
+export function getWalletIntel(address: string): WalletIntelRow | null {
+  const row = getDb()
+    .prepare('SELECT * FROM wallet_intel WHERE address = ?')
+    .get(address) as WalletIntelRow | undefined;
+  return row ?? null;
 }
 
 export function closeDb(): void {

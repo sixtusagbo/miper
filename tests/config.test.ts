@@ -23,6 +23,7 @@ function setEnv(overrides: Record<string, string | undefined> = {}): void {
       key.startsWith('BUY_') ||
       key.startsWith('TAKE_PROFIT_') ||
       key.startsWith('SELL_PCT_') ||
+      key.startsWith('DISCOVERY_') ||
       key === 'STOP_LOSS' ||
       key === 'MAX_SLIPPAGE_BPS' ||
       key === 'MIN_LIQUIDITY_USD' ||
@@ -329,5 +330,56 @@ describe('closeWhenBelowMinBalance', () => {
     expect(loadConfig().closeWhenBelowMinBalance).toBe(true);
     setEnv({ CLOSE_WHEN_BELOW_MIN_BALANCE: 'false' });
     expect(loadConfig().closeWhenBelowMinBalance).toBe(false);
+  });
+});
+
+describe('discovery source config', () => {
+  it('accepts SOURCE=discovery with per-source DB/log defaults and no AI key', () => {
+    setEnv({
+      SOURCE: 'discovery',
+      SIMULATE: 'false',
+      WALLET_PRIVATE_KEY: '5JZ...placeholder',
+      OPENAI_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
+    });
+    const cfg = loadConfig();
+    expect(cfg.source).toBe('discovery');
+    expect(cfg.dbPath).toBe('./discovery.db');
+    expect(cfg.logFile).toBe('./discovery.log');
+  });
+
+  it('exposes the discovery defaults: alert-only, profile path, budgets', () => {
+    setEnv({ SOURCE: 'discovery' });
+    const cfg = loadConfig();
+    expect(cfg.discoveryAutobuy).toBe(false);
+    expect(cfg.discoveryAlertScore).toBe(55);
+    expect(cfg.discoveryBuyScore).toBe(75);
+    expect(cfg.discoveryWindowMin).toBe(5);
+    expect(cfg.discoverySampleSec).toBe(20);
+    expect(cfg.discoveryWatchCap).toBe(15);
+    expect(cfg.discoveryParsePerSample).toBe(3);
+    expect(cfg.discoveryBundleThreshold).toBe(3);
+    expect(cfg.discoveryMinDevBuySol).toBe(0);
+    expect(cfg.discoveryProfilePath).toBe('./research/discovery-profile.json');
+    expect(cfg.discoverySmartWallets).toEqual([]);
+  });
+
+  it('parses DISCOVERY_SMART_WALLETS into a list', () => {
+    setEnv({ SOURCE: 'discovery', DISCOVERY_SMART_WALLETS: 'W1, W2 ,,W3' });
+    expect(loadConfig().discoverySmartWallets).toEqual(['W1', 'W2', 'W3']);
+  });
+
+  it('rejects an RPC-hostile sample cadence', () => {
+    setEnv({ SOURCE: 'discovery', DISCOVERY_SAMPLE_SEC: '1' });
+    expect(() => loadConfig()).toThrow(/DISCOVERY_SAMPLE_SEC/);
+  });
+
+  it('rejects out-of-range scores and negative knobs', () => {
+    setEnv({ SOURCE: 'discovery', DISCOVERY_ALERT_SCORE: '150' });
+    expect(() => loadConfig()).toThrow(/DISCOVERY_ALERT_SCORE/);
+    setEnv({ SOURCE: 'discovery', DISCOVERY_BUY_SCORE: '-5' });
+    expect(() => loadConfig()).toThrow(/DISCOVERY_BUY_SCORE/);
+    setEnv({ SOURCE: 'discovery', DISCOVERY_MIN_DEV_BUY_SOL: '-1' });
+    expect(() => loadConfig()).toThrow(/DISCOVERY_MIN_DEV_BUY_SOL/);
   });
 });
