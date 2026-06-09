@@ -1,0 +1,10 @@
+# Target wallets for the discovery research (one base58 address per line,
+# '#' comments ignored). These are the high-performing sniper wallets to
+# reverse-engineer — NOT the copytrade leaders; vet-wallet.ts already proved
+# this class of wallet is too fast to copy. profile-wallets.ts reconstructs
+# what they buy so the discovery scanner can find the same setups itself.
+#
+# Run:
+#   npx ts-node scripts/profile-wallets.ts --file research/target-wallets.txt
+#
+# Paste the wallet addresses below:
