@@ -1,10 +1,194 @@
 # Target wallets for the discovery research (one base58 address per line,
-# '#' comments ignored). These are the high-performing sniper wallets to
-# reverse-engineer — NOT the copytrade leaders; vet-wallet.ts already proved
-# this class of wallet is too fast to copy. profile-wallets.ts reconstructs
-# what they buy so the discovery scanner can find the same setups itself.
+# '#' comments ignored). Sourced 2026-06-09 from public leaderboard exports
+# on GitHub (snapshots ~Dec 2025/Jan 2026):
+#   - GMGN leaderboard tabs (Sniper / Launchpad smart-money / Smart Money):
+#     github.com/KrypticNodes/solana_sniper_gmgn_kolscan_wallets
+#   - Kolscan leaderboard snapshot 2025-12-31 (same repo)
+#   - Kolscan top-50 named KOLs: github.com/sn3ll/KOL-Wallets-BULLX
+# UNVERIFIED until profiled: run vet-wallet / profile-wallets before trusting.
+# The profiler reports last-trade recency, so stale/rotated wallets drop out.
 #
-# Run:
-#   npx ts-node scripts/profile-wallets.ts --file research/target-wallets.txt
+# --- Tier 1: GMGN 'Sniper' tab — the same-block, sub-$10k-entry class ---
+7KvfofwtHJ7A5JAbYqLaLzEVH3LCjvPJjsMo3PRv6EmQ
+2ZJDumUsmCiXeCzWJvyL18XMd9BiJTz2K9nV2C9BErau
+336wYiTLyuF4RESNR5b7cCS64gXpDSGJcrGHorWNvWva
+74UnjrPG7kDGDKTv27XGaqztgd3GzqzGcmNfXJe2BtgS
+2D8LnvZHWgoxJULoPpJ1Ka2ZPgAsr8LTUGasYtDqduP7
+2EVG2pDH44aweg5jMa7bnj7MW8w11ADLYQ7R3kLkKaV5
+2AVZdSVGqn1vB6g1CuqYZdEAVgZEGcMc2barwpdjXP3D
+2kchWAkQ5y56CbdGyvMCLaGbMyxR49BE44JmDwvhcTPZ
+2p3i9M2AGsdvvCFsxkjGXFUndApN5AYJMPMgB7cJ8eWo
+2pekTQKDsJkd7qUMVD6Z5AGdUuuQ2ZF7zGDmhKjjgVdr
+2rGe8vdnu5Bf2qEefwywDDhg3VXy6DBm6uLUWpR1CS8T
+5LN757SkD3YChWwi952dFQA7FuGU1qP4zcqF7qwE3UX9
+23fwPE81JitXcRC1Rm1iQKLwgx3bQYaa5xG1Dknpkp35
+39aSEwzyErYwEKs257TDzonPEVwWSRuj7SNMMBrGCAmz
+3KMrD83purDr9DSAGyfWbPZ6sojuLbpjpQAbHj1NEpXc
+3MR3Vckjr4AbZnZNdPq2kCv5suv6Xpn1LhYJAZAYoH4r
+3eD2kfN9wxwyLV4vJxNwdZ9XUBHsyWqvti57ZV6RSVFn
+3guXq5PJZbCM31KKEvu315uYKR4NbGHbazW2CG4xQAiN
+3p2UGiU5GBKGEgfYDCs5jFmtX3NGQtVamtvrx7814Pk3
+3qfqVKCJ46mYH4RZptwo4pniqvZMDfnmUudUkpf9fBc6
 #
-# Paste the wallet addresses below:
+# --- Tier 2: GMGN 'Launchpad smart money' tab (early pump.fun entrants) ---
+5aLY85pyxiuX3fd4RgM3Yc1e3MAL6b7UgaZz6MS3JUfG
+FKjWnew6wQmhWMC6jp1frPaHzuG9WENaKDPG4GHjkhua
+PMJA8UQDyWTFw2Smhyp9jGA6aTaP7jKHR7BPudrgyYN
+LuitxRGMJErT1N5JDArXVuxtsomBUsLZHf9Yf1TVBBn
+nonofjCpDeEbRWnA82HENffi74FEGo4XTn41v2XWiJh
+DtvmxrTACskMG2W8a6KXgSemUfvyNVeQTgfpJoGvMVKx
+CT8cWzNAe6y5Z6dt5UQEmwfSM8yULNVXQBPG8mT7jeNW
+58oqG28EYKpQY1VQTfJjruyQ44rajRgZLdqfgGfzsvmS
+DDDD2zvzaPMLuZiC2Vos2i6TLFjJJ3bi1pN7kXQc3R5R
+7Y3rF3ZcuX4icRrsVPh9Gc1GFYxSpBzip3eQ4oAAHhr6
+AUEQxhkAVz71w2WBa9BYSoZrydhYNJaKmfNomoNs9E4t
+5Hdv9bmzA6EPYEdhN2n5mhHvJsk9E14CBoV6guguroHh
+H37GZo1oKCsNMGMcw9xqe38p1VxKp2sy3NiNGWtyzapj
+6xX7LudE5AqnTUc8dJJfzuarkSc6WMw7qRHgQXUdWauJ
+DXgGRsu5Vcd2Asguq1QEaqRnabT1moGEnA9i2FZtAdA8
+Ez2jp3rwXUbaTx7XwiHGaWVgTPFdzJoSg8TopqbxfaJN
+7tiRXPM4wwBMRMYzmywRAE6jveS3gDbNyxgRrEoU6RLA
+7Bqi1xmRanG5bEqjaVUXZUXR8KSPge7W2DvHpJZfkE7y
+36NrNaBkf2zCtPC7eRso7HoUTqL6RBhV122hdf4wYE3r
+2wHHnAmdhFaAAsayWAeqKe3snK3KkbRQkRgLwTtz7iCi
+#
+# --- Tier 3: GMGN 'Smart Money' tab (dupes with tiers above removed) ---
+HzKH3s8Kf7f7pgvJZx2V6TzhkdHbZDurG53rXj61BVLR
+CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o
+Ar2Y6o1QmrRAskjii1cRfijeKugHH13ycxW5cd7rro1x
+5DzUSNro5kfNwB2dxkkTTYrPDXAi6vRnjf4mAN2an7Gc
+3kxcF8wHKm4sEtnxjXXeUvNGeDjTmo47LgtSRg71YfG5
+FFFz6LeDp41sqe5VusaLH7V2HFhidCnqTiYQhE6V2Zco
+4BdKaxN8G6ka4GYtQQWk4G4dZRUTX2vQH9GcXdBREFUk
+HN8HcjyUg67KWXvjc83dSUovT5cqLT9JJk6jXyCaQqBo
+GijFWw4oNyh9ko3FaZforNsi3jk6wDovARpkKahPD4o5
+JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN
+7SfYLYao8pP7PbvN1uYJWCCf94FD9NZqqd9ZrsgpmDyf
+AD3XDgirYWTDrtztXDyjwzRvwyA5aG5bivaFXnjujXPf
+HiBbwvGcGYsd3t8kkNpaicFdAcYT2rhtZrdcv38MkMLS
+4R5tcc5fbcsA2MESVicBS1eNsKbFQdsWikxY2hTATUDq
+#
+# --- Tier 4: Kolscan leaderboard 2025-12-31 (dupes removed) ---
+3kebnKw7cPdSkLRfiMEALyZJGZ4wdiSRvmoN4rD1yPzV
+6mWEJG9LoRdto8TwTdZxmnJpkXpTsEerizcGiCNZvzXd
+2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f
+D1H83ueSw5Nxy5okxH7VBfV4jRnqAK5Mm1tm3JAj3m5t
+Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6
+57rXqaQsvgyBKwebP2StfqQeCBjBS4jsrZFJN5aU2V9b
+4fZFcK8ms3bFMpo1ACzEUz8bH741fQW4zhAMGd5yZMHu
+CAPn1yH4oSywsxGU456jfgTrSSUidf9jgeAnHceNUJdw
+CvNiezB8hofusHCKqu8irJ6t2FKY7VjzpSckofMzk5mB
+8deJ9xeUvXSJwicYptA9mHsU2rN2pDx37KWzkDkEXhU6
+8rvAsDKeAcEjEkiZMug9k8v1y8mW6gQQiMobd89Uy7qR
+BCagckXeMChUKrHEd6fKFA1uiWDtcmCXMsqaheLiUPJd
+8DGbkGgQewL9mx4aXzZCUChr7hBVXvPK9fYqSqc7Ajpn
+BAr5csYtpWoNpwhUjixX7ZPHXkUciFZzjBp9uNxZXJPh
+98T65wcMEjoNLDTJszBHGZEX75QRe8QaANXokv4yw3Mp
+qP3Q8d4WWsGbqkTfyA9Dr6cAD7DQoBuxPJMFTK48rWU
+#
+# --- Reference: Kolscan top-50 named KOLs (discretionary traders, a
+# different behavior class than snipers — commented out by default; they
+# are better COPYTRADE_WALLETS / DISCOVERY_SMART_WALLETS candidates than
+# research targets. Uncomment selectively to include in a research run.
+# Profit
+# G5nxEXuFMfV74DSnsrSatqCW32F34XUnBeq3PfDS7w5E
+# Pow
+# 8zFZHuSRuDpuAR7J6FzwyF3vKNx4CVW3DFHJerQhc7Zd
+# Waddles
+# 73LnJ7G9ffBDjEBGgJDdgvLUhD5APLonKrNiHsKDCw5B
+# 404Flipped
+# AbcX4XBm7DJ3i9p29i6sU8WLmiW4FWY5tiwB9D6UBbcE
+# Euris
+# DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj
+# Cooker (also in an active tier above)
+# 8deJ9xeUvXSJwicYptA9mHsU2rN2pDx37KWzkDkEXhU6
+# Gake
+# DNfuF1L62WWyW3pNakVkyGGFzVVhj4Yr52jSmdTyeBHm
+# Insentos
+# 7SDs3PjT2mswKQ7Zo4FTucn9gJdtuW4jaacPA65BseHS
+# Kev (also in an active tier above)
+# JDd3hy3gQn2V982mi1zqhNqUw1GfV2UL6g76STojCJPN
+# Frank
+# CRVidEDtEUTYZisCxBZkpELzhQc9eauMLR3FWg74tReL
+# Bastille (also in an active tier above)
+# 3kebnKw7cPdSkLRfiMEALyZJGZ4wdiSRvmoN4rD1yPzV
+# Orange
+# 96sErVjEN7LNJ6Uvj63bdRWZxNuBngj56fnT9biHLKBf
+# Assasin.eth
+# 6LChaYRYtEYjLEHhzo4HdEmgNwu2aia8CM8VhR9wn6n7
+# MoneyMaykah
+# 2CXbN6nuTTb4vCrtYM89SfQHMMKGPAW4mvFe6Ht4Yo6z
+# Leens
+# 7Dt5oUpxHWuKH8bCTXDLz2j3JyxA7jEmtzqCG6pnh96X
+# Mr. Frog
+# 4DdrfiDHpmx55i4SPssxVzS9ZaKLb8qr45NKY9Er9nNh
+# Orangie
+# 26kZ9rg8Y5pd4j1tdT4cbT8BQRu5uDbXkaVs3L5QasHy
+# Dex
+# mW4PZB45isHmnjGkLpJvjKBzVS5NXzTJ8UDyug4gTsM
+# Yenni
+# 5B52w1ZW9tuwUduueP5J7HXz5AcGfruGoX6YoAudvyxG
+# Spuno
+# GfXQesPe3Zuwg8JhAt6Cg8euJDTVx751enp9EQQmhzPH
+# The Doc
+# DYAn4XpAkN5mhiXkRB7dGq4Jadnx6XYgu8L5b3WGhbrt
+# AP
+# 215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP
+# Zinc
+# 7CeeipDnoTVE343cfmNuaEPL1BWLBzFKL2jzHcqBXN9c
+# Brox
+# 7VBTpiiEjkwRbRGHJFUz6o5fWuhPFtAmy8JGhNqwHNnn
+# Decu
+# 4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9
+# Red
+# 7ABz8qEFZTHPkovMDsmQkm64DZWN5wRtU7LEtD2ShkQ6
+# Earl
+# F2SuErm4MviWJ2HzKXk2nuzBC6xe883CFWUDCPz6cyWm
+# Wolf
+# Bqcnecs7uv1cakup5daGToD3mUAiErHouGKvtk3VCmp2
+# Polar
+# AMNDjQBYdPhLMKbzwUggXdaWGZJ15Gqfw6trsdjmAS4p
+# ShockedJS
+# 4Bq5yvgoiZDsukGERb7aM52jDmbVPCpoihbztscZ5PeM
+# Jidn
+# 3h65MmPZksoKKyEpEjnWU2Yk2iYT5oZDNitGy5cTaxoE
+# Moggi
+# c3XGUoDSBaJDA8qaJ5pUkCnamMERwZLJBVjxdkNepGo
+# Joji
+# 525LueqAyZJueCoiisfWy6nyh4MTvmF4X9jSqi6efXJT
+# Idontpaytaxes
+# FEYmfSL4B3Hhk5BzyEJNpHRiwAoMvzdNe2oa1UTKmbYT
+# Groovy
+# 34ZEH778zL8ctkLwxxERLX5ZnUu6MuFyX9CWrs8kucMw
+# Lyxe
+# HLv6yCEpgjQV9PcKsvJpem8ESyULTyh9HjHn9CtqSek1
+# Meechie
+# 831qmkeGhfL8YpcXuhrug6nHj1YdK3aXMDQUCo85Auh1
+# Jordan
+# EAnB5151L8ejp3SM6haLgyv3snk6oqc8acKgWEg9T5J
+# CC2
+# B3beyovNKBo4wF1uFrfGfpVeyEHjFyJPmEBciz7kpnoS
+# Rektober
+# HCQb4Qrtk4qCfChDH8XvM5onymmCSmRj9bddV6QCPdRe
+# Bobby
+# DBmRHNbSsVX8F6NyVaaaiuGdwo1aYGawiy3jfNcvXYSC
+# Chefin
+# 6Qs6joB349h7zu1z9xRgPgMSmpBYLDQb2wtAecY4LysH
+# Dan176
+# 78PjYqo3TtKZ2fa84yR117FeqXEmHdasZP2acQZqVSWj
+# Mezoteric
+# EdDCRfDDeiiDXdntrP59abH4DXHFNU48zpMPYisDMjA7
+# Mitch
+# 4Be9CvxqHW6BYiRAxW9Q3xu1ycTMWaL5z8NX4HR3ha7t
+# Casino (also in an active tier above)
+# 8rvAsDKeAcEjEkiZMug9k8v1y8mW6gQQiMobd89Uy7qR
+# Jazz
+# Ds8mcuP5r2phg596mLui3ti3PJtVvFRw19Eo9UFdJ5Bc
+# Beaver
+# GM7Hrz2bDq33ezMtL6KGidSWZXMWgZ6qBuugkb5H8NvN
+# Daumen
+# 8MaVa9kdt3NW4Q5HyNAm1X5LbR8PQRVDc1W8NMVK88D5
+# TheDefiApe
+# ExKCuoAzJCgCVjU3CvNoL8vVrdESTWkx3ubj6rQXwQM4
+# gh0stee
+# BD7oWkEQsUwE8sj4UT7jtrGjHC8Gq1iRqXY7U6DTbJpf
