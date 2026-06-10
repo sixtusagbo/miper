@@ -15,6 +15,7 @@ import 'dotenv/config';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { readFileSync, writeFileSync } from 'fs';
 import { retry } from '../src/concurrency';
+import { resolveRpcUrls } from '../src/config';
 
 const SPACING_MS = 150; // ~6 req/s, polite to a free-tier 10 req/s cap
 
@@ -50,7 +51,7 @@ async function main(): Promise<void> {
     console.error(`no wallets in ${file}`);
     process.exit(1);
   }
-  const rpc = process.env.SOLANA_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com';
+  const rpc = resolveRpcUrls().rpcUrl;
   const connection = new Connection(rpc, 'confirmed');
   process.stderr.write(`triaging ${wallets.length} wallets (1 call each)...\n`);
 

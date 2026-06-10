@@ -22,6 +22,7 @@ import { Connection, PublicKey, ConfirmedSignatureInfo } from '@solana/web3.js';
 import { readFileSync } from 'fs';
 import { extractLeaderTrade } from '../src/walletListener';
 import { retry } from '../src/concurrency';
+import { resolveRpcUrls } from '../src/config';
 
 // How many SUCCESSFUL txs to actually parse per wallet. Hyperactive wallets
 // (snipers/MEV) bury their wins under thousands of reverts, so a flat "newest
@@ -299,7 +300,7 @@ async function main(): Promise<void> {
   }
   // Read-only diagnostic — it needs only an RPC endpoint, not the trading
   // config (no wallet key / API keys required).
-  const rpcUrl = process.env.SOLANA_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com';
+  const { rpcUrl } = resolveRpcUrls();
   const connection = new Connection(rpcUrl, 'confirmed');
   console.log(`Vetting ${wallets.length} wallet(s) — newest ${MAX_SIGNATURES} txs each...`);
 

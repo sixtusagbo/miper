@@ -19,6 +19,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { readFileSync } from 'fs';
 import { extractLeaderTrade } from '../src/walletListener';
 import { retry } from '../src/concurrency';
+import { resolveRpcUrls } from '../src/config';
 
 // Oldest N signatures per mint to inspect — the launch window where the smart
 // early buyers land. Bigger = more candidates but more RPC.
@@ -92,7 +93,7 @@ async function earlyBuyers(conn: Connection, mint: string): Promise<Set<string>>
 }
 
 async function main(): Promise<void> {
-  const rpc = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+  const rpc = resolveRpcUrls().rpcUrl;
   const conn = new Connection(rpc, 'confirmed');
 
   let args = process.argv.slice(2);

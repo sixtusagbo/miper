@@ -295,6 +295,28 @@ export function inferAiProvider(model: string): AiProvider {
   );
 }
 
+// Resolve the RPC endpoints. Precedence: explicit SOLANA_RPC_URL / SOLANA_WS_URL
+// win; otherwise a bare HELIUS_API_KEY derives the Helius URLs (a plain key
+// survives copy-paste through chat/UI fields that mangle full URLs); otherwise
+// the public mainnet endpoints (which rate-limit hard — fine for smoke tests
+// only). Exported standalone so the research scripts can share the resolution
+// without pulling in full trading-config validation.
+export function resolveRpcUrls(): { rpcUrl: string; wsUrl: string } {
+  const key = process.env.HELIUS_API_KEY?.trim();
+  return {
+    rpcUrl:
+      process.env.SOLANA_RPC_URL?.trim() ||
+      (key
+        ? `https://mainnet.helius-rpc.com/?api-key=${key}`
+        : 'https://api.mainnet-beta.solana.com'),
+    wsUrl:
+      process.env.SOLANA_WS_URL?.trim() ||
+      (key
+        ? `wss://mainnet.helius-rpc.com/?api-key=${key}`
+        : 'wss://api.mainnet-beta.solana.com'),
+  };
+}
+
 let cached: Config | null = null;
 
 // Clears the cached Config so the next loadConfig() re-reads process.env.
@@ -333,9 +355,10 @@ export function loadConfig(): Config {
     throw new Error('OPENAI_API_KEY is required when AI_PROVIDER=openai');
   }
 
+  const { rpcUrl, wsUrl } = resolveRpcUrls();
   const config: Config = {
-    solanaRpcUrl: process.env.SOLANA_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com',
-    solanaWsUrl: process.env.SOLANA_WS_URL?.trim() || 'wss://api.mainnet-beta.solana.com',
+    solanaRpcUrl: rpcUrl,
+    solanaWsUrl: wsUrl,
     walletPrivateKey: walletKey,
     anthropicApiKey: anthropicKey,
     openaiApiKey: openaiKey,

@@ -13,6 +13,7 @@ function setEnv(overrides: Record<string, string | undefined> = {}): void {
   for (const key of Object.keys(process.env)) {
     if (
       key.startsWith('SOLANA_') ||
+      key === 'HELIUS_API_KEY' ||
       key === 'WALLET_PRIVATE_KEY' ||
       key === 'ANTHROPIC_API_KEY' ||
       key === 'OPENAI_API_KEY'
@@ -381,5 +382,32 @@ describe('discovery source config', () => {
     expect(() => loadConfig()).toThrow(/DISCOVERY_BUY_SCORE/);
     setEnv({ SOURCE: 'discovery', DISCOVERY_MIN_DEV_BUY_SOL: '-1' });
     expect(() => loadConfig()).toThrow(/DISCOVERY_MIN_DEV_BUY_SOL/);
+  });
+});
+
+describe('resolveRpcUrls / HELIUS_API_KEY', () => {
+  it('derives both Helius endpoints from a bare API key', () => {
+    setEnv({ HELIUS_API_KEY: 'abc-123' });
+    const cfg = loadConfig();
+    expect(cfg.solanaRpcUrl).toBe('https://mainnet.helius-rpc.com/?api-key=abc-123');
+    expect(cfg.solanaWsUrl).toBe('wss://mainnet.helius-rpc.com/?api-key=abc-123');
+  });
+
+  it('lets explicit SOLANA_RPC_URL / SOLANA_WS_URL win over the key', () => {
+    setEnv({
+      HELIUS_API_KEY: 'abc-123',
+      SOLANA_RPC_URL: 'https://my-node.example/rpc',
+      SOLANA_WS_URL: 'wss://my-node.example/ws',
+    });
+    const cfg = loadConfig();
+    expect(cfg.solanaRpcUrl).toBe('https://my-node.example/rpc');
+    expect(cfg.solanaWsUrl).toBe('wss://my-node.example/ws');
+  });
+
+  it('falls back to the public endpoints with neither set', () => {
+    setEnv();
+    const cfg = loadConfig();
+    expect(cfg.solanaRpcUrl).toBe('https://api.mainnet-beta.solana.com');
+    expect(cfg.solanaWsUrl).toBe('wss://api.mainnet-beta.solana.com');
   });
 });

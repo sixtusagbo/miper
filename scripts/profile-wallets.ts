@@ -12,7 +12,7 @@
 //   npx ts-node scripts/profile-wallets.ts --file research/target-wallets.txt
 //
 // Env knobs (all optional):
-//   SOLANA_RPC_URL            RPC endpoint (Helius recommended)
+//   HELIUS_API_KEY or SOLANA_RPC_URL   RPC endpoint (Helius recommended)
 //   PROFILE_MAX_SCAN=5000     signature window scanned per wallet
 //   PROFILE_MAX_PARSE=800     successful txs parsed per wallet
 //   PROFILE_MAX_TOKENS=120    entry snapshots taken (unique mints, all wallets)
@@ -50,6 +50,7 @@ import {
 } from '../src/walletResearch';
 import { DEFAULT_DISCOVERY_PROFILE } from '../src/discoveryScore';
 import { retry } from '../src/concurrency';
+import { resolveRpcUrls } from '../src/config';
 
 const MAX_SCAN = Number(process.env.PROFILE_MAX_SCAN) || 5000;
 const MAX_PARSE = Number(process.env.PROFILE_MAX_PARSE) || 800;
@@ -175,7 +176,7 @@ async function main(): Promise<void> {
     log('usage: profile-wallets.ts <addr> [...] | --file research/target-wallets.txt');
     process.exit(1);
   }
-  const rpc = process.env.SOLANA_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com';
+  const rpc = resolveRpcUrls().rpcUrl;
   const connection = new Connection(rpc, 'confirmed');
   const opts: WalkOptions = {
     maxScanSignatures: MAX_SCAN,
