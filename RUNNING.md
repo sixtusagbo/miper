@@ -231,6 +231,17 @@ Telegram alerts fire at `DISCOVERY_ALERT_SCORE` with mint, mcap, liquidity, age,
 npm run backtest-discovery -- research/wallet-profile.json --db discovery.db
 ```
 
+### RPC budget — run it in bounded windows, not 24/7
+
+The scanner samples every watched launch on a timer, so it is RPC-heavy by nature. With the defaults (`DISCOVERY_WATCH_CAP=12`, `DISCOVERY_SAMPLE_SEC=25`, `DISCOVERY_PARSE_PER_SAMPLE=2`) a full watchlist runs at **~2–3 requests/second**. That is fine for a bounded session, but a free Helius plan's ~1M credits/month works out to **~0.4 req/s sustained** — so continuous 24/7 operation overshoots a free budget by roughly 5–8×.
+
+Practical options, cheapest first:
+- **Run bounded peak-hour sessions.** `MAX_RUN_HOURS=4 make sim-discovery` during the active memecoin window (see "When Solana memecoins are most active") captures most launches for a fraction of the credits.
+- **Throttle further:** raise `DISCOVERY_SAMPLE_SEC` (30–40), lower `DISCOVERY_WATCH_CAP` (6–8). The `DISCOVERY_LAUNCH_PARSE` burst is one-time per token and is where the smart-money signal is, so keep it — trim steady-state (`DISCOVERY_PARSE_PER_SAMPLE`) first.
+- **Upgrade the RPC plan** for continuous operation.
+
+The bot prints rolling RPC counts every 15 minutes (`rpc: N calls`), so you can watch the burn against your plan in real time.
+
 ### 4. Auto-buy (only after 2 and 3 hold)
 
 Set `DISCOVERY_AUTOBUY=true` and start with paper (`SIMULATE=true`). Buys fire at `DISCOVERY_BUY_SCORE` through the standard trade path — `BUY_AMOUNT_SOL`, `MAX_SLIPPAGE_BPS`, priority fees, `STOP_LOSS`/trailing/`MAX_HOLD_MINUTES` exits, `MAX_OPEN_POSITIONS`, and the `MAX_CONSECUTIVE_BUY_FAILURES` breaker. Go `SIMULATE=false` only after paper PnL clears the `npm run review` gates.

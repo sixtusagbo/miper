@@ -82,7 +82,13 @@ state → price/mcap/liquidity trajectory; new signatures on the curve → tx
 velocity (exact); a parsed sample of those txs → unique-buyer growth
 (holder-growth proxy, lower bound), buyer diversity (distinct payers /
 parsed txs — wash detector), sells seen, and **smart-wallet hits** (fee
-payer ∈ the researched cluster).
+payer ∈ the researched cluster). The **first** sample of each token (the
+launch window) parses the *oldest* signatures after the create with a larger
+`DISCOVERY_LAUNCH_PARSE` budget — the research showed the cluster's same-slot
+entries land there, and `getSignaturesForAddress` returns newest-first, so
+reading the newest would systematically miss them. Steady-state samples read
+the newest (recent flow). Spending the parse budget where the dominant signal
+is, rather than re-sampling the head, is also the cheaper allocation.
 
 Score = Σ weighted rules, clamped 0–100, with hard vetoes (mayhem, bundled
 launch, mcap above band, dev dumped). Weights live in `src/discoveryScore.ts`;

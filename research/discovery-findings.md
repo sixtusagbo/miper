@@ -64,10 +64,26 @@ penalty**, but for this cluster a fresh creator wallet is the *norm*, not a rug
 tell — the penalty was suppressing real winners (e.g. a +8.1 SOL entry scored
 45 only because its creator had 4 prior txs). Neutralizing it
 (`freshCreatorMaxTxs=0`) lifts PnL-weighted recall from 38% → 55% at the natural
-threshold. The shipped profile also folds in the 25 cluster wallets (a *live*
-signal; the historical snapshots can't see them, so backtest recall understates
-live recall) and keeps the ~$60k pre-graduation mcap cap, which correctly
-excludes the money-losing PumpSwap cohort.
+threshold.
+
+⚠️ **Read this neutralization as conditional, not settled.** The backtest only
+contains the 299 tokens the cluster actually bought — all already quality-filtered
+by smart wallets. Within that set, fresh-creator doesn't separate winners from
+losers, but that is exactly the population where the penalty *shouldn't* fire.
+Live, the scanner sees *every* pump.fun launch, including the rugs that fresh
+throwaway creators churn out, where the penalty is genuinely protective. So the
+profile turns it off because it was clipping the cluster's real picks, but this
+trades away some rug protection. The alert-only paper run is what tells us
+whether that trade is right — watch the precision (`discovery_alerts` peaks) of
+fresh-creator alerts specifically before enabling autobuy.
+
+The shipped profile also folds in the 25 cluster wallets (a *live* signal; the
+historical snapshots can't see them, so backtest recall understates live
+recall) and keeps the ~$60k pre-graduation mcap cap, which correctly excludes
+the money-losing PumpSwap cohort. A separate code fix (commit "Parse the launch
+window's oldest sigs…") ensures the scanner actually *catches* these same-slot
+cluster entries live: it now parses the launch window's oldest signatures,
+where same-slot snipers land, rather than the newest.
 
 Shipped recall (replaying the production scorer):
 
@@ -92,17 +108,26 @@ default 55. Keep `DISCOVERY_BUY_SCORE` higher (≥65) for the autobuy phase.
   the scanner's strongest, and most of its reach isn't counted here.
 - Realized-only accounting: still-open bags are excluded, so per-wallet PnL is
   conservative.
+- **`buyersPerMin` is measured differently live than in research.** Research
+  counted distinct pre-entry buyers exactly; live, the scanner *estimates* it
+  from a small sampled diversity ratio × exact tx velocity, so the floor (60)
+  is noisier live than the table implies. `txPerMin` (from raw signature
+  counts) is exact in both.
 - Precision is **not** answered here (the wallets' picks are all positives);
   it comes from running the scanner alert-only and reading `discovery_alerts`
   outcomes — `npm run backtest-discovery -- … --db discovery.db`.
 
-## Next step
+## Next steps
 
-Alert-only paper run, with the recommended threshold:
-
-```
-DISCOVERY_ALERT_SCORE=50 npm run simulate:discovery
-```
-
-Let it accumulate a few hundred alerts, then measure live precision and decide
-on the autobuy phase.
+1. **Expand the smart set** — `research/cluster-candidates.txt` holds the 25
+   cluster wallets the research surfaced. Confirm them on-chain in the next
+   networked session (`triage-wallets` → `vet-wallet`) and promote the PASSes
+   into `DISCOVERY_SMART_WALLETS`. The scanner's `wallet_intel` table also
+   promotes deployers/funders automatically as runs accumulate.
+2. **Alert-only paper run**, recommended threshold:
+   ```
+   DISCOVERY_ALERT_SCORE=50 npm run simulate:discovery
+   ```
+   Run it in bounded peak-hour windows (`MAX_RUN_HOURS`) — see RUNNING.md's RPC
+   budget note; continuous operation exceeds a free Helius monthly budget.
+3. After a few hundred alerts, measure live precision and decide on autobuy.

@@ -1,0 +1,46 @@
+# Cluster expansion candidates — non-target wallets surfaced BY the research
+# as the cohort the 41 targets run with. These are the highest-value
+# expansion of the smart-wallet set. Generated 2026-06-10.
+#
+# WORKFLOW (next networked session):
+#   npm run triage-wallets -- --file research/cluster-candidates.txt \
+#       --out research/cluster-active.txt
+#   npm run vet-wallet -- --file research/cluster-active.txt
+#   # promote the PASSes into DISCOVERY_SMART_WALLETS or the profile's
+#   # smartWallets list, then re-backtest.
+#
+# --- Suspected cluster wallets (early in >=3 of the targets' bought tokens),
+#     ranked by how many of those tokens they were early in: ---
+2uepPiVjMXvmUaPEKjRWV4QVeiUWDt9BFJgW5ueVvBM8  # early in 20 tokens
+nya666pQkP3PzWxi7JngU3rRMHuc7zbLK8c8wxQ4qpT  # early in 19 tokens
+AgmLJBMDCqWynYnQiPCuj9ewsNNsBJXyzoUhD9LJzN51  # early in 18 tokens
+Anubis512ho5t7S6LNSwoxUWdeQmX2kf3RvZ8ApHHF5w  # early in 16 tokens
+Ez2jYoXp45DZxr7JVhiqbDNirgBT37MErjZGxA8jZkTf  # early in 16 tokens
+2CQgjcdNEo7WtbQLpJTAVcC3Ga61pNvRDTgP5grzctFG  # early in 13 tokens
+FaVqTAXTfTdL5qHoZ99NAXZKU7PkuTfVkPfNLwzzA1fX  # early in 12 tokens
+ayaCRDLwYRqAvPnrpwnkUsxrqx4hniVaWAGHYG5DGBD  # early in 11 tokens
+DQApNebkK5wCmy92T5c4Z9NePWjP7dC4avpLMzuxadxR  # early in 10 tokens
+6cUt6WMbsT5xh8j59AD2ZzumVszcPMGey9VB7dHvz6En  # early in 9 tokens
+3Xk2EuuSwKgniGNA4XkB33YY4mnEvcMnTLNpkKgGa14X  # early in 9 tokens
+9yzDcVC569tYadQqmuNPGNNa3ZmHA6AY7tdgWnSEvDbi  # early in 9 tokens
+DGJX5Phf9drKA2pq7vcXxBEBZ2cE38bQuiQrA1byvdbC  # early in 9 tokens
+DcRXXBtifMsTTwtqzMcAZWfoLfsBMgyJqPDG4i86NN52  # early in 9 tokens
+3USuyHQVNyppevSmNiamBy8eFcjDJKqLWcCuJ6zJMG5H  # early in 9 tokens
+3PpgE1PkUoftrPkZ5TcYzqaVHJs27baJsd4WathmNkuP  # early in 9 tokens
+EkXxonwVB27DoBqSEnYYjNPmF83trANHNZkq6ffkRA62  # early in 9 tokens
+C6nyDYhzNdgdNzCwtzp7NhrNfBJqA1W8P6d3pULVsU9M  # early in 9 tokens
+6fKGtgUw3kfEG3cxEGBN4RrwybvBv35zY49iCjwQfyka  # early in 8 tokens
+84UBp52FJZ5xwD5sGUqddzujNUUUAjNzNtLBfVeLXW84  # early in 8 tokens
+3K95DX2TLQkibB98AaegFPa7ojy51HKidreKkrN9Rg2d  # early in 8 tokens
+2qKU91U5P4vCXUh4JzPSRwvPPdvpoyzLHS3mgKiSZQXo  # early in 8 tokens
+7HwqTbpxyHvaEtdwzYomrhtWCF1XpHcqqQkEVnq9jCML  # early in 8 tokens
+FMdL2mr1qVgxata25DLtR1Um7zdfKRC2vV4oV9HPJcb  # early in 8 tokens
+LuitxHPxN8UU78q5Fp6VjotgtYKAGJNviS2gb2TSt5T  # early in 8 tokens
+#
+# --- Recurring funding wallets (funded multiple bought tokens — these are
+#     fund sources, NOT traders; useful as knownGoodFunders, not smartWallets): ---
+# 5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9  (funded 7 tokens)
+# iGdFcQoyR2MwbXMHQskhmNsqddZ6rinsipHc4TNSdwu  (funded 3 tokens)
+# B48kNVXs4YK4amkBCH2XokQiv1SeiVQGHDR17xDeKAAn  (funded 2 tokens)
+# Dv34prGm2BT7Ph2n6qKLgzeLgjnii87RJJ7Db6ZQQvKM  (funded 2 tokens)
+# HgbeH7xScm5rFY6CRjSd5bN8KkRgyh3MHS6MpTp3UbSv  (funded 2 tokens)
