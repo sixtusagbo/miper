@@ -119,6 +119,8 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
 
 The `discovery` source detects the opportunities a researched set of high-performing sniper wallets trades, without copying their fills (their seconds-long holds are uncopyable at any polling latency). Full method: `research/discovery-scanner-design.md`.
 
+A research pass over 41 active wallets (299 entry snapshots) is already done — see **`research/discovery-findings.md`** for the results, and `research/discovery-profile.json` for the shipped, backtest-tuned scanner thresholds. Headline: the cluster's edge is on bonding-curve entries (the zone the scanner targets), 74% of their entries are explainable from public chain data, and the tuned profile reaches 54% winner-recall / 70% PnL-weighted recall. To re-run the research on a fresh wallet set, the pipeline is:
+
 ```bash
 # 1. Research: reconstruct the target wallets' entries from public chain data
 #    (token age / mcap / liquidity / holders AT entry, deployers, funding
