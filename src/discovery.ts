@@ -40,6 +40,11 @@ export interface DiscoveryConfig {
   sampleMs: number;
   watchCap: number;
   parsePerSample: number;
+  // Txs parsed in the LAUNCH window (the first sample of a token), where the
+  // research showed the cluster's same-slot entries land. These are the OLDEST
+  // signatures after the create, not the newest — so this budget is spent
+  // where the dominant smart-wallet signal actually is.
+  launchParse: number;
   alertScore: number;
   buyScore: number;
   bundleThreshold: number;
@@ -93,6 +98,10 @@ interface WatchEntry {
   intelReady: Promise<void>;
   // Signature cursor on the bonding curve; everything newer is "new flow".
   lastSig: string;
+  // False until the launch-window sample has run. The first sample parses the
+  // OLDEST signatures (launch-slot buyers, where same-slot smart money lands);
+  // every sample after parses the newest (recent-flow velocity).
+  launchSampled: boolean;
   totalSigsSeen: number;
   parsedTxs: number;
   uniquePayers: Set<string>;
@@ -192,6 +201,7 @@ export class DiscoveryScanner extends EventEmitter {
       intel,
       intelReady: this.collectT0Intel(pool, intel),
       lastSig: pool.txSignature,
+      launchSampled: false,
       totalSigsSeen: 0,
       parsedTxs: 0,
       uniquePayers: new Set(),
@@ -361,7 +371,15 @@ export class DiscoveryScanner extends EventEmitter {
     if (sigs.length > 0) {
       entry.lastSig = sigs[0].signature;
       entry.totalSigsSeen += sigs.length;
-      const toParse = sigs.filter((s) => !s.err).slice(0, this.cfg.parsePerSample);
+      // getSignaturesForAddress returns newest-first. The cluster's same-slot
+      // entries are the OLDEST signatures after the create, so the launch
+      // window (first sample) parses the tail (oldest) with the launch budget;
+      // steady-state samples parse the head (newest) for recent-flow velocity.
+      const ok = sigs.filter((s) => !s.err);
+      const toParse = entry.launchSampled
+        ? ok.slice(0, this.cfg.parsePerSample)
+        : ok.slice(-this.cfg.launchParse).reverse();
+      entry.launchSampled = true;
       for (const s of toParse) {
         const tx = await this.connection
           .getParsedTransaction(s.signature, {

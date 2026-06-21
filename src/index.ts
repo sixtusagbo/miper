@@ -177,6 +177,7 @@ async function snipeCommand(options: {
         sampleMs: cfg.discoverySampleSec * 1_000,
         watchCap: cfg.discoveryWatchCap,
         parsePerSample: cfg.discoveryParsePerSample,
+        launchParse: cfg.discoveryLaunchParse,
         alertScore: cfg.discoveryAlertScore,
         buyScore: cfg.discoveryBuyScore,
         bundleThreshold: cfg.discoveryBundleThreshold,

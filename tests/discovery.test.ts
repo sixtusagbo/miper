@@ -49,6 +49,7 @@ const CFG: DiscoveryConfig = {
   sampleMs: 1_000,
   watchCap: 10,
   parsePerSample: 5,
+  launchParse: 8,
   alertScore: 55,
   buyScore: 75,
   bundleThreshold: 3,
@@ -179,12 +180,59 @@ describe('DiscoveryScanner', () => {
     expect(alerts).toHaveLength(1);
     expect(alerts[0].score).toBe(85);
     expect(alerts[0].smartWalletBuys).toBe(1);
-    expect(alerts[0].holderCount).toBe(5); // 5 parsed buyers (cap)
+    expect(alerts[0].holderCount).toBe(6); // all 6 launch-window buyers parsed
     expect(alerts[0].mcapUsd).toBeGreaterThan(5_000);
     expect(alerts[0].mcapUsd).toBeLessThan(6_500);
     expect(alerts[0].liquiditySol).toBeCloseTo(14);
     expect(mocks.recordDiscoveryAlert).toHaveBeenCalledTimes(1);
     expect(candidates).toHaveLength(1); // 85 >= buyScore 75
+  });
+
+  it('catches a same-slot smart wallet in the launch window (oldest sigs), not just the newest', async () => {
+    // Newest-first batch: 6 unrelated newer buyers, then the smart wallet's
+    // launch-slot buy as the OLDEST. parsePerSample=1 would only see the newest
+    // and miss it; the launch-window parse reaches the tail.
+    const sigs = ['n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'smartOldest'].map((signature) => ({
+      signature,
+    }));
+    const txs: Record<string, ParsedTransactionWithMeta> = {
+      n1: flowTx('B1', 'buy'),
+      n2: flowTx('B2', 'buy'),
+      n3: flowTx('B3', 'buy'),
+      n4: flowTx('B4', 'buy'),
+      n5: flowTx('B5', 'buy'),
+      n6: flowTx('B6', 'buy'),
+      smartOldest: flowTx(SMART, 'buy'),
+    };
+    const conn = fakeConnection({ sigBatches: [sigs], txs });
+    const s = scanner(conn, { parsePerSample: 1, launchParse: 8 });
+    const alerts: DiscoveryAlert[] = [];
+    s.on('alert', (a: DiscoveryAlert) => alerts.push(a));
+    s.add(pool());
+    await tick();
+    await s.sweep();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].smartWalletBuys).toBe(1);
+  });
+
+  it('parses the newest sigs in steady state (recent flow), not the launch tail', async () => {
+    // First sample establishes the launch window; second sample is steady
+    // state and should read the head. SMART buys in the newer (steady) batch.
+    const conn = fakeConnection({
+      sigBatches: [
+        [{ signature: 'old1' }],
+        [{ signature: 'fresh-smart' }],
+      ],
+      txs: { old1: flowTx('B0', 'buy'), 'fresh-smart': flowTx(SMART, 'buy') },
+    });
+    const s = scanner(conn, { parsePerSample: 1, launchParse: 1 });
+    const alerts: DiscoveryAlert[] = [];
+    s.on('alert', (a: DiscoveryAlert) => alerts.push(a));
+    s.add(pool());
+    await tick();
+    await s.sweep(); // launch window — parses old1
+    await s.sweep(); // steady state — parses fresh-smart (newest)
+    expect(alerts.some((a) => a.smartWalletBuys === 1)).toBe(true);
   });
 
   it('alerts only once even when the score stays above the bar', async () => {

@@ -356,9 +356,10 @@ describe('discovery source config', () => {
     expect(cfg.discoveryAlertScore).toBe(55);
     expect(cfg.discoveryBuyScore).toBe(75);
     expect(cfg.discoveryWindowMin).toBe(5);
-    expect(cfg.discoverySampleSec).toBe(20);
-    expect(cfg.discoveryWatchCap).toBe(15);
-    expect(cfg.discoveryParsePerSample).toBe(3);
+    expect(cfg.discoverySampleSec).toBe(25);
+    expect(cfg.discoveryWatchCap).toBe(12);
+    expect(cfg.discoveryParsePerSample).toBe(2);
+    expect(cfg.discoveryLaunchParse).toBe(8);
     expect(cfg.discoveryBundleThreshold).toBe(3);
     expect(cfg.discoveryMinDevBuySol).toBe(0);
     expect(cfg.discoveryProfilePath).toBe('./research/discovery-profile.json');
@@ -382,6 +383,8 @@ describe('discovery source config', () => {
     expect(() => loadConfig()).toThrow(/DISCOVERY_BUY_SCORE/);
     setEnv({ SOURCE: 'discovery', DISCOVERY_MIN_DEV_BUY_SOL: '-1' });
     expect(() => loadConfig()).toThrow(/DISCOVERY_MIN_DEV_BUY_SOL/);
+    setEnv({ SOURCE: 'discovery', DISCOVERY_LAUNCH_PARSE: '-1' });
+    expect(() => loadConfig()).toThrow(/DISCOVERY_LAUNCH_PARSE/);
   });
 });
 

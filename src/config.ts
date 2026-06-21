@@ -174,9 +174,14 @@ export interface Config {
   discoveryWindowMin: number;
   discoverySampleSec: number;
   discoveryWatchCap: number;
-  // Tx parses per token per sample — the buyer-diversity / smart-wallet
-  // sampling budget. The sig-count velocity is exact regardless.
+  // Tx parses per token per STEADY-STATE sample — the buyer-diversity /
+  // smart-wallet sampling budget. The sig-count velocity is exact regardless.
   discoveryParsePerSample: number;
+  // Tx parses in the LAUNCH window (first sample), spent on the OLDEST
+  // signatures where the research showed the cluster's same-slot entries land.
+  // This is where the dominant smart-wallet signal is, so it gets a bigger,
+  // one-time budget than steady-state re-sampling.
+  discoveryLaunchParse: number;
   discoveryAlertScore: number;
   discoveryBuyScore: number;
   // Auto-buy phase. Off = alert-only (the v1 operating mode and the kill
@@ -442,9 +447,10 @@ export function loadConfig(): Config {
     // Keep sample cadence and per-sample parses modest: a full watchlist does
     // watchCap * (2 + parsePerSample) RPC calls per sample interval, and the
     // default budget must sit well under a free Helius tier's 10 req/s.
-    discoverySampleSec: numberFromEnv('DISCOVERY_SAMPLE_SEC', 20),
-    discoveryWatchCap: numberFromEnv('DISCOVERY_WATCH_CAP', 15),
-    discoveryParsePerSample: numberFromEnv('DISCOVERY_PARSE_PER_SAMPLE', 3),
+    discoverySampleSec: numberFromEnv('DISCOVERY_SAMPLE_SEC', 25),
+    discoveryWatchCap: numberFromEnv('DISCOVERY_WATCH_CAP', 12),
+    discoveryParsePerSample: numberFromEnv('DISCOVERY_PARSE_PER_SAMPLE', 2),
+    discoveryLaunchParse: numberFromEnv('DISCOVERY_LAUNCH_PARSE', 8),
     discoveryAlertScore: numberFromEnv('DISCOVERY_ALERT_SCORE', 55),
     discoveryBuyScore: numberFromEnv('DISCOVERY_BUY_SCORE', 75),
     discoveryAutobuy: boolFromEnv('DISCOVERY_AUTOBUY', false),
@@ -612,6 +618,11 @@ function validateConfig(c: Config): void {
   if (c.discoveryParsePerSample < 0) {
     throw new Error(
       `DISCOVERY_PARSE_PER_SAMPLE must be >= 0 (0 disables buyer sampling), got ${c.discoveryParsePerSample}`
+    );
+  }
+  if (c.discoveryLaunchParse < 0) {
+    throw new Error(
+      `DISCOVERY_LAUNCH_PARSE must be >= 0 (0 disables launch-window sampling), got ${c.discoveryLaunchParse}`
     );
   }
   if (c.discoveryAlertScore < 0 || c.discoveryAlertScore > 100) {
