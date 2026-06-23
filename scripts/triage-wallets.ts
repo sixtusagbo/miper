@@ -13,8 +13,9 @@
 
 import 'dotenv/config';
 import { Connection, PublicKey } from '@solana/web3.js';
-import { readFileSync, writeFileSync } from 'fs';
+import { writeFileSync } from 'fs';
 import { retry } from '../src/concurrency';
+import { readWalletList } from './walletList';
 import { resolveRpcUrls } from '../src/config';
 
 const SPACING_MS = 150; // ~6 req/s, polite to a free-tier 10 req/s cap
@@ -35,18 +36,11 @@ function arg(flag: string, fallback: string): string {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-function readWallets(path: string): string[] {
-  return readFileSync(path, 'utf8')
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.startsWith('#'));
-}
-
 async function main(): Promise<void> {
   const file = arg('--file', 'research/target-wallets.txt');
   const out = arg('--out', 'research/target-wallets.active.txt');
   const maxIdleDays = Number(arg('--max-idle-days', '14'));
-  const wallets = readWallets(file);
+  const wallets = readWalletList(file);
   if (wallets.length === 0) {
     console.error(`no wallets in ${file}`);
     process.exit(1);

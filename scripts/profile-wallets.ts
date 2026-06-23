@@ -25,8 +25,9 @@
 
 import 'dotenv/config';
 import { Connection, ParsedTransactionWithMeta, PublicKey } from '@solana/web3.js';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { readWalletList } from './walletList';
 import fetch from 'node-fetch';
 import {
   collectWalletTrades,
@@ -150,10 +151,7 @@ function readWallets(): string[] {
   if (fileIdx >= 0) {
     const path = args[fileIdx + 1];
     if (!path) throw new Error('--file needs a path');
-    return readFileSync(path, 'utf8')
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith('#'));
+    return readWalletList(path);
   }
   return args.filter((a) => !a.startsWith('--'));
 }

@@ -19,8 +19,8 @@
 
 import 'dotenv/config';
 import { Connection, PublicKey, ConfirmedSignatureInfo } from '@solana/web3.js';
-import { readFileSync } from 'fs';
 import { extractLeaderTrade } from '../src/walletListener';
+import { readWalletList } from './walletList';
 import { retry } from '../src/concurrency';
 import { resolveRpcUrls } from '../src/config';
 
@@ -284,10 +284,7 @@ function readWallets(): string[] {
   if (fileIdx >= 0) {
     const path = args[fileIdx + 1];
     if (!path) throw new Error('--file needs a path');
-    return readFileSync(path, 'utf8')
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith('#'));
+    return readWalletList(path);
   }
   return args.filter((a) => !a.startsWith('--'));
 }

@@ -16,8 +16,8 @@
 
 import 'dotenv/config';
 import { Connection, PublicKey } from '@solana/web3.js';
-import { readFileSync } from 'fs';
 import { extractLeaderTrade } from '../src/walletListener';
+import { readWalletList } from './walletList';
 import { retry } from '../src/concurrency';
 import { resolveRpcUrls } from '../src/config';
 
@@ -98,10 +98,7 @@ async function main(): Promise<void> {
 
   let args = process.argv.slice(2);
   if (args[0] === '--file') {
-    args = readFileSync(args[1], 'utf8')
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    args = readWalletList(args[1]);
   }
   const mints = args.filter(Boolean);
   if (mints.length === 0) {
