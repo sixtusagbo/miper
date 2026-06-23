@@ -768,9 +768,12 @@ async function snipeCommand(options: {
   // Auto-shutdown once the wallet can't fund a buy (balance < buyAmountSol) and
   // nothing is open to manage (CLOSE_WHEN_BELOW_MIN_BALANCE). Winds a tapped-out
   // run down instead of idling. Only checks when flat, so open positions still
-  // get managed to exit first.
+  // get managed to exit first. Skipped when the run never buys (alert-only
+  // discovery, autobuy off): it does useful work without spending SOL, so a low
+  // balance must not shut it down.
+  const willBuy = cfg.source !== 'discovery' || cfg.discoveryAutobuy;
   let lowBalanceTimer: NodeJS.Timeout | null = null;
-  if (cfg.closeWhenBelowMinBalance) {
+  if (cfg.closeWhenBelowMinBalance && willBuy) {
     lowBalanceTimer = setInterval(() => {
       void (async () => {
         if (countOpenPositions() > 0) return;
