@@ -117,6 +117,8 @@ npx ts-node src/index.ts sell 3 --pct 50 --source raydium
 
 ## Discovery scanner
 
+**Goal:** catch the same early, pre-graduation pump.fun winners the smart-money cluster catches, by recognizing a token's public on-chain fingerprint in real time, not by copying their wallets (their seconds-long holds are uncopyable at any polling latency, so there is no copy/latency wall to fight). Prove it alert-only with zero capital first, then enable autobuy behind a kill switch once the live numbers earn it. If it holds up, this is a strategy we run.
+
 The `discovery` source detects the opportunities a researched set of high-performing sniper wallets trades, without copying their fills (their seconds-long holds are uncopyable at any polling latency). Full method: `research/discovery-scanner-design.md`.
 
 A research pass over 41 active wallets (299 entry snapshots) is already done — see **`research/discovery-findings.md`** for the results, and `research/discovery-profile.json` for the shipped, backtest-tuned scanner thresholds. Headline: the cluster's edge is on bonding-curve entries (the zone the scanner targets), 74% of their entries are explainable from public chain data, and the tuned profile reaches 54% winner-recall / 70% PnL-weighted recall. To re-run the research on a fresh wallet set, the pipeline is:
