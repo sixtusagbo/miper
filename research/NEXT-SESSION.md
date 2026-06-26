@@ -29,38 +29,19 @@ const w=db.prepare(\\\"SELECT outcome, COUNT(*) n FROM discovery_alerts GROUP BY
 console.log(\\\"by outcome:\\\",JSON.stringify(w));\"'"
 ```
 
-## Current state (last update 2026-06-23, 4h run 12:02→16:02 UTC)
+## Current state (last update 2026-06-26, unbounded run started 12:30 UTC)
 
-**Run finished cleanly. Precision sample is TOO THIN to judge yet.**
+**An unbounded alert-only run is LIVE on the server** (no MAX_RUN_HOURS, will run until killed or RPC bites). Accruing the precision sample we couldn't get in a 4h window.
 
-| | value |
-|---|---|
-| run window | 4h, off-peak overlap with mid-day pump.fun |
-| RPC calls | 27,668 (~1.9/s) |
-| vetoes | 472 (301 mayhem, 171 bundled) |
-| smart-wallet buys seen | 25 |
-| **alerts** | **2** (scores 70 and 65, both ended flat 1.00x) |
-| precision so far | 0/2 winners — sample too thin |
+Prior 4h run (2026-06-23 12:02→16:02 UTC) only produced **2 alerts (both flat)** in 4h with 472 vetoes and ~28k RPC calls. Way too thin to judge precision. Hence: just let it run.
 
-What the alerts looked like: both ~$1.9k mcap (in band), both had smart wallets co-buying + dev buy in band + complete metadata + (one) high tx velocity. Textbook by the scorer's lights, just no run. Not enough data to know if that's the norm.
+To check the running sample, use the "Read the latest run's results" snippet above. Sanity: each ~4h of runtime ≈ 28k RPC calls (~7k/hr).
 
-## Next concrete action: get more alerts
+## Next concrete action: let it accrue, periodically check
 
-Need ~50-100 alerts before precision means anything. Two options:
+The aim is **50-100 alerts with outcomes recorded**, then judge precision. There's nothing to do *during* the run except periodically read `discovery_alerts` and watch for the unit going down. Kill it with `tmux kill-session -t miper-discovery` on the server when you've got enough data or want to change config.
 
-**A. Another bounded peak-hour window** (best for measuring NOW)
-Run during US/EU peak (pump.fun is most active ~14:00-22:00 UTC). Bounded so it auto-stops, keeping RPC costs sane.
-```
-ssh miper.server "sudo -u miper env HOME=/home/miper bash -lc '
-  tmux kill-session -t miper-discovery 2>/dev/null;
-  cd ~/miper-discovery &&
-  tmux new -d -s miper-discovery \"DISCOVERY_ALERT_SCORE=50 MAX_RUN_HOURS=4 SIMULATE=true npm run simulate:discovery > ~/miper-discovery/discovery-run.log 2>&1\"
-'"
-```
-Then wait ~4h, re-read with the snippet above.
-
-**B. Lower the alert threshold** (more alerts per hour, but more noise)
-Drop to 40 (the backtest's PnL-weighted recall jumps 70%→76%, at the cost of more false alarms — which is precisely what we're measuring). Same launch command with `DISCOVERY_ALERT_SCORE=40`. Only do this AFTER option A if alerts stay thin at 50.
+**If you want more alerts faster:** drop `DISCOVERY_ALERT_SCORE` from 50 to 40 (backtest's PnL-weighted recall climbs 70%→76% at the cost of more false alarms — which is precisely what we're measuring). Restart the run with the new threshold to switch.
 
 **Do NOT enable autobuy** (`DISCOVERY_AUTOBUY=true`) until at least 50 alerts have outcomes and precision is good — that's the gate.
 
