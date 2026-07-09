@@ -30,6 +30,14 @@ export interface DiscoveryProfile {
   // Distinct buyers / parsed txs below this looks like one wallet churning
   // (wash texture), not many wallets arriving.
   minBuyerDiversity: number;
+  // Real SOL in the bonding curve at scoring time. Below minLiquiditySol we
+  // veto: the 2026-07 precision data showed 61/98 alerts at score 70-79 had
+  // liquidity < 1 SOL (near-zero curves like 5e-9), and NONE of them won —
+  // a smart-wallet dab into an empty curve with no depth to hold demand.
+  // Above minStrongLiquiditySol we add a bonus, matching the winners' shape
+  // (avg 9 SOL for the 21% precision cohort at score>=80 & liq>=5).
+  minLiquiditySol: number;
+  minStrongLiquiditySol: number;
   // Creator reputation regimes (mirrors the analyzer's heuristics).
   freshCreatorMaxTxs: number;
   agedCreatorMinDays: number;
@@ -51,6 +59,8 @@ export const DEFAULT_DISCOVERY_PROFILE: DiscoveryProfile = {
   minBuyersPerMin: 8,
   minTxPerMin: 12,
   minBuyerDiversity: 0.5,
+  minLiquiditySol: 1,
+  minStrongLiquiditySol: 5,
   freshCreatorMaxTxs: 50,
   agedCreatorMinDays: 7,
   smartWallets: [],
@@ -122,6 +132,7 @@ const W = {
   freshCreator: -10,
   metadata: 5,
   mcapInBand: 10,
+  strongLiquidity: 10,
 } as const;
 
 export function scoreDiscovery(
@@ -159,6 +170,18 @@ export function scoreDiscovery(
       score: 0,
       vetoed: true,
       reasons: [`token ${Math.round(f.ageSec)}s old (band max ${profile.maxTokenAgeSec}s)`],
+    };
+  }
+  // Real SOL in the curve must clear a floor. The 2026-07 precision data:
+  // score 70-79 was 62% low-liq zombies, 0% win rate; score 60+ with liq >= 5
+  // is 16% (up from 9%); score 80+ with liq >= 5 is 21% (up from 13%).
+  if (f.liquiditySol !== null && f.liquiditySol < profile.minLiquiditySol) {
+    return {
+      score: 0,
+      vetoed: true,
+      reasons: [
+        `curve liquidity ${f.liquiditySol.toFixed(3)} SOL below floor ${profile.minLiquiditySol}`,
+      ],
     };
   }
 
@@ -223,6 +246,13 @@ export function scoreDiscovery(
   }
 
   if (f.hasMetadata) add(W.metadata, 'complete metadata');
+
+  if (f.liquiditySol !== null && f.liquiditySol >= profile.minStrongLiquiditySol) {
+    add(
+      W.strongLiquidity,
+      `curve liquidity ${f.liquiditySol.toFixed(1)} SOL (floor ${profile.minStrongLiquiditySol})`
+    );
+  }
 
   if (
     f.mcapUsd !== null &&

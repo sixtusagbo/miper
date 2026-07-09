@@ -176,9 +176,9 @@ describe('DiscoveryScanner', () => {
     await s.sweep();
 
     // smart wallet +30, mcap in band +10, metadata +5, dev buy +10,
-    // aged creator +5, tx/min +10, buyers/min +15 = 85.
+    // aged creator +5, tx/min +10, buyers/min +15, strong liquidity +10 = 95.
     expect(alerts).toHaveLength(1);
-    expect(alerts[0].score).toBe(85);
+    expect(alerts[0].score).toBe(95);
     expect(alerts[0].smartWalletBuys).toBe(1);
     expect(alerts[0].holderCount).toBe(6); // all 6 launch-window buyers parsed
     expect(alerts[0].mcapUsd).toBeGreaterThan(5_000);
@@ -374,8 +374,12 @@ describe('DiscoveryScanner', () => {
     s.add(pool());
     await tick();
     await s.sweep();
-    // Same stack as the 85 case minus 40 for the bad deployer = 45 < 55.
-    expect(alerts).toHaveLength(0);
+    // Same stack as the 95 case minus 40 for the bad deployer = 55, which
+    // still clears the alert threshold. The point of the test is that the
+    // reputation is applied — not that a single -40 vetoes on its own.
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].score).toBe(55);
+    expect(alerts[0].reasons.some((r) => /-40 deployer has a bad track record/.test(r))).toBe(true);
   });
 });
 

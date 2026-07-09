@@ -81,6 +81,19 @@ describe('scoreDiscovery', () => {
     expect(scoreDiscovery(features({ ageSec: 60 })).vetoed).toBe(false);
   });
 
+  it('vetoes essentially-empty bonding curves (2026-07 precision finding)', () => {
+    expect(scoreDiscovery(features({ liquiditySol: 0.5 })).vetoed).toBe(true);
+    expect(scoreDiscovery(features({ liquiditySol: 5e-9 })).vetoed).toBe(true);
+    expect(scoreDiscovery(features({ liquiditySol: 1 })).vetoed).toBe(false);
+    expect(scoreDiscovery(features({ liquiditySol: null })).vetoed).toBe(false);
+  });
+
+  it('rewards curves with real depth (>= minStrongLiquiditySol)', () => {
+    expect(scoreDiscovery(features({ liquiditySol: 4.9 })).score).toBe(0);
+    expect(scoreDiscovery(features({ liquiditySol: 5 })).score).toBe(10);
+    expect(scoreDiscovery(features({ liquiditySol: 20 })).score).toBe(10);
+  });
+
   it('scores smart-wallet buys 30 for the first, +15 each, capped at 60', () => {
     expect(scoreDiscovery(features({ smartWalletBuys: 1 })).score).toBe(30);
     expect(scoreDiscovery(features({ smartWalletBuys: 2 })).score).toBe(45);
