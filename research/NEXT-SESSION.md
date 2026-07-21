@@ -84,7 +84,7 @@ The banner on restart confirms these: `exit strategy: ALL-IN at 100x | stop-loss
 - `scripts/backtest-discovery.ts` — replay scorer over historical snapshots OR live alerts (`--db discovery.db` mode).
 - `scripts/walletList.ts` — shared wallet-file reader (strips inline `#` comments).
 
-## Recent code history (branch `claude/fervent-johnson-thvz0y`)
+## Recent code history (branch `main` — the discovery line became main on 2026-07-17; the old raydium-era main lives at `main-legacy`)
 
 ```
 22d8cda Veto essentially-empty curves and reward real depth in the discovery scorer
